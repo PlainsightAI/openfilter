@@ -593,7 +593,7 @@ class SignalStopper:
 
     def kill(self, reason=None):
         if self.logger:
-            self.logger.critical(f'{reason + ", " if reason else ""}killing all children and self!')
+            self.logger.critical(f'{reason + ", " if reason else ""}terminating all subprocesses, as well as this one!')
 
         selfpid = os.getpid()
         pids    = [p.pid for p in self.psutil.Process(selfpid).children(recursive=True)] + [selfpid]
