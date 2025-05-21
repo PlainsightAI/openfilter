@@ -971,7 +971,7 @@ class Filter:
             if (exit_time := self.exit_time if exit_time is None else exit_time) is not None:
                 def timeout(procs=self.procs):
                     if any(proc.is_alive() for proc in procs):
-                        logger.critical(f'TIMEOUT, killing all children, but not self!')
+                        logger.critical(f'TIMEOUT, terminating all subprocesses, but not self!')
 
                     for proc in procs:  # kill them anyway just to be reeeally sure, sometimes they come back... (because they haven't started yet)
                         proc.terminate()  # terminate() instead of kill() so that child SignalStopper can kill all ITS children as well

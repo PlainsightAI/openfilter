@@ -3,6 +3,11 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.2 - 2025-05-22
+
+### Fixed
+- Log messages
+
 ## v0.1.1 - 2025-05-22
 
 ### Added
