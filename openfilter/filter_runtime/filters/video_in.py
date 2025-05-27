@@ -606,6 +606,7 @@ class VideoIn(Filter):
         return config
 
     def init(self, config):
+        
         super().init(FilterConfig(config, sources=None))
 
     def setup(self, config):

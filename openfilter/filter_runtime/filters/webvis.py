@@ -124,11 +124,13 @@ class Webvis(Filter):
         return config
 
     def setup(self, config):
+       
         self.streams = {}  # {'topic': Queue, ...}
 
         Thread(target=self.serve, args=(config.host, config.port), daemon=True).start()
 
     def process(self, frames):
+        
         for topic, frame in frames.items():
             if frame.has_image:
                 if (queue := self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))).empty():

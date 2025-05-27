@@ -678,9 +678,48 @@ class Filter:
             be received downstream and sent on to process(). If you want nothing at all sent downstream then return None
             from your process().
         """
+        from openfilter.lineage import teste3 as FilterLineage
+        from openlineage.client.run import Job, Run
+        import uuid
 
+        client = FilterLineage.get_client(mode="console")
+        run_id = str(uuid.uuid4())
+        producer = "https://my-company.com/openlineage"
+
+        # Exemplo: coletando metadados do frame
+        if frames:
+            keys = list(frames.keys())
+            for key in keys:
+                frame = frames[key]
+                frame_dict = frame.__dict__
+                atributos = dict(list(frame_dict.items())[2:])  # ou o que você quiser filtrar
+
+                # Criando uma faceta customizada
+                from openlineage.client.facet import BaseFacet
+                class FrameMetadataFacet(BaseFacet):
+                    def __init__(self, source, frame_id, atributos):
+                        self._producer = producer
+                        self._schemaURL = "https://openlineage.io/spec/facet/frame_metadata_facet"
+                        self.source = source
+                        self.frame_id = frame_id
+                        self.atributos = atributos
+
+                facet = FrameMetadataFacet(
+                    source="camera 1",
+                    frame_id=key,
+                    atributos=atributos
+                )
+
+            # Monta o job e run com facetas
+            job = Job(namespace="openfilter", name="heartbeat_job")
+            run = Run(runId=run_id, facets={"frameMetadata": facet})
+
+            FilterLineage.emit_start(client, run_id, job, producer)
+            FilterLineage.emit_heartbeat(client, run_id, job, producer, count=5, interval=2)
+            FilterLineage.emit_complete(client, run_id, job, producer)
+ 
         raise NotImplementedError
-
+        
 
     # - PUBLIC ---------------------------------------------------------------------------------------------------------
 
