@@ -714,9 +714,9 @@ class Filter:
             job = Job(namespace="openfilter", name="heartbeat_job")
             run = Run(runId=run_id, facets={"frameMetadata": facet})
 
-            FilterLineage.emit_start(client, run_id, job, producer)
+            #FilterLineage.emit_start(client, run_id, job, producer)
             FilterLineage.emit_heartbeat(client, run_id, job, producer, count=5, interval=2)
-            FilterLineage.emit_complete(client, run_id, job, producer)
+            #FilterLineage.emit_complete(client, run_id, job, producer)
  
         raise NotImplementedError
         
