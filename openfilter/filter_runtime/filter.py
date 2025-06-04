@@ -504,12 +504,8 @@ class Filter:
     def set_open_lineage():
         try:
             
-            client = FilterLineage.get_http_client(url="https://oleander.dev", endpoint="api/v1/lineage",verify=True,api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdhbml6YXRpb25JZCI6IjJmOTExNjI3LWViNTgtNGVhOC04ZTQ3LWJkMGE5YjYxNjMwZCIsImlhdCI6MTc0ODk2MTQ5OH0.bvw-Blv1P3z3NxgDCCm5qbG83YGOHqzK_x90Es53H6o")
-         
-            #client = FilterLineage.get_http_client()
-           
-            producer = "https://my-company.com/openlineage"
-            return FilterLineage.OpenFilterLineage(client=client)
+          
+            return FilterLineage.OpenFilterLineage()
         except Exception as e:
             print(e)
     

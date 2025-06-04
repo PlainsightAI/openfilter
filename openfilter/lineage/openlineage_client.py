@@ -20,19 +20,19 @@ from dotenv import load_dotenv
 import logging
 load_dotenv()
 class OpenFilterLineage:
-    def __init__(self, client=None, producer = None, interval=10, facets={}, filter_name:str=None, job=None):
+    def __init__(self, client=None, producer = "https://my-company.com/openlineage", interval=10, facets={}, filter_name:str=None, job=None):
         self.client = client or get_http_client()
         self.run_id = self.get_run_id()
         self.facets = facets
         self.job = job or create_openlineage_job()
         self.producer = producer or os.getenv("OPENFILTER_LINEAGE_PRODUCER")
-        self.interval = int(os.getenv("OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL"))  or interval
+        self.interval = int(os.getenv("OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL") or interval)
         self._lock = threading.Lock()
         self._thread = None
         self._running = False
         self.filter_name = filter_name
         self.filter_model = self.filter_model = os.getenv(filter_name.upper() + "MODEL_NAME") if filter_name is not None else None
-        #1-add-openlineage-support
+       
         
     def _emit_event(self, event_type, run=None,facets=None):
         try:
@@ -65,7 +65,7 @@ class OpenFilterLineage:
         self.emit_complete()
 
     def emit_start(self, facets):
-        print(os.getenv("OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL"))
+        
         self.job.name = self.filter_name
         facets["filter_name"] = self.filter_name
         facets["model_name"] = self.filter_model
