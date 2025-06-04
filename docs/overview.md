@@ -461,6 +461,106 @@ Webvis video at `http://localhost:8000/yet_another`.
         )),
     ])
 
+# OpenLineage Events in OpenFilter
+
+OpenFilter uses the OpenLineage protocol to emit standardized metadata about filter executions. These events help track data lineage, system observability, and job health.
+
+## Types of Events Emitted
+
+OpenFilter emits three main types of lineage events:
+
+### 1. `START`
+- **When it's sent**: Right before the filter starts processing data.
+- **Purpose**: Signals the beginning of a new run.
+- **Metadata**:
+  - `eventType`: `"START"`
+  - `runId`: A new UUID for this run
+  - `job.name`: Filter name
+  - `run.facets`: Initial filter metadata (e.g., model name, filter name, etc.)
+---
+### 2. `RUNNING` (Heartbeat)
+- **When it's sent**: Periodically during execution (default every 10 seconds).
+- **Purpose**: Keeps the lineage system aware that the filter is active.
+- **Metadata**:
+  - `eventType`: `"RUNNING"`
+  - Includes dynamic and updated facets like:
+    - `filter_name`
+    - `model_name`
+    - Frame/video metadata (e.g., source path, timestamp, FPS)
+---
+### 3. `COMPLETE`
+- **When it's sent**: After the filter completes successfully.
+- **Purpose**: Marks the end of a successful execution.
+- **Metadata**:
+  - `eventType`: `"COMPLETE"`
+  - `runId`: Matches the original ID from `START`
+  - Can include summary facets or statistics
+
+> ⚠️ In case of interruption or failure, a fourth optional event `ABORT` can also be emitted to indicate early termination.
+
+## Summary of Metadata Fields
+
+| Field         | Description                                      |
+|---------------|--------------------------------------------------|
+| `eventTime`   | Timestamp of event emission                      |
+| `eventType`   | One of: `START`, `RUNNING`, `COMPLETE`           |
+| `runId`       | Unique ID for the filter run                     |
+| `filter_name` | Name of the filter                               |
+| `model_name`  | (Optional) model used by the filter              |
+| `job.name`    | Set to the filter name                           |
+| `namespace`   | Always `"Openfilter"`                            |
+| `facets`      | Flattened and structured metadata from the filter |
+
+---
+
+These events enable integration with OpenLineage-compatible tools (e.g., Marquez,Oleander and etc) for data observability and lineage visualization.
+
+### Setting Environment Variables for OpenFilterLineage
+
+The `OpenFilterLineage` class relies on several environment variables to configure its behavior. These variables can be set directly from the terminal before running your application.
+
+### Required Environment Variables
+
+| Variable Name                     | Description                                                |
+|----------------------------------|------------------------------------------------------------|
+| `OPENFILTER_LINEAGE_PRODUCER`    | URL identifying the producer of the lineage events         |
+| `OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL` | Interval in seconds between `RUNNING` events (default: 10) |
+| `HTTP_LINEAGE_CLIENT_URL`        | URL of the OpenLineage backend (e.g., http://localhost:5000) |
+| `HTTP_LINEAGE_CLIENT_APIKEY`     | API key used for authentication with the HTTP transport    |
+| `HTTP_LINEAGE_CLIENT_ENDPOINT_URL` | Optional endpoint path (e.g., `/api/v1/lineage`)          |
+| `HTTP_LINEAGE_VERIFY_CLIENT_URL` | `true` or `false` for SSL verification of the HTTP URL     |
+| `[FILTER_NAME]MODEL_NAME`        | Model name used by the filter (e.g., `WEBVISMODEL_NAME`)   |
+
+
+---
+
+## Setting Variables by Platform Example
+
+### On **Linux/macOS** (Bash or Zsh):
+
+```bash
+export OPENFILTER_LINEAGE_PRODUCER="https://my-company.com/openlineage"
+export OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL=10
+export HTTP_LINEAGE_CLIENT_URL="http://localhost:5000"
+export HTTP_LINEAGE_CLIENT_APIKEY="your_api_key"
+export HTTP_LINEAGE_CLIENT_ENDPOINT_URL="/api/v1/lineage"
+export HTTP_LINEAGE_VERIFY_CLIENT_URL=false
+export WEBVISMODEL_NAME="my-model-v1"
+```
+
+### On Windows (CMD):
+```bash
+set OPENFILTER_LINEAGE_PRODUCER=https://my-company.com/openlineage
+set OPENFILTER_LINEAGE_HEART_BEAT_INTERVAL=10
+set HTTP_LINEAGE_CLIENT_URL=http://localhost:5000
+set HTTP_LINEAGE_CLIENT_APIKEY=your_api_key
+set HTTP_LINEAGE_CLIENT_ENDPOINT_URL=/api/v1/lineage
+set HTTP_LINEAGE_VERIFY_CLIENT_URL=false
+set WEBVISMODEL_NAME=my-model-v1
+```
+> **Note:** These variables for Windows will only persist for the current CMD session.
+
+
 <a id="other_stuff"></a>
 # Other stuff:
 
