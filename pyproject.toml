@@ -27,8 +27,8 @@ dependencies = [
   "psutil==5.9.8",
   "pyzmq==26.2.0",
   "requests==2.32.3",
-  "openlineage-python==1.33.0",
-  "python-dotenv==1.1.0"
+  "openlineage-python==1.33.0"
+ 
 ]
 
 [tool.setuptools.dynamic]
