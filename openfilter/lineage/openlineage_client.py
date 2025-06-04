@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 
 from typing import Any
 import os
-from dotenv import load_dotenv
+
 import logging
-load_dotenv()
+
 class OpenFilterLineage:
     def __init__(self, client=None, producer = "https://my-company.com/openlineage", interval=10, facets={}, filter_name:str=None, job=None):
         self.client = client or get_http_client()
