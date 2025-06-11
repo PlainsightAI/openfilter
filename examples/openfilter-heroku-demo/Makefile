@@ -50,8 +50,8 @@ clean: ## Remove __pycache__ and *.pyc
 	find . -name '*.py[co]'     -exec rm -f  {} +
 
 # --- Heroku helpers ----------------------------------------
-deploy: ## Push current branch to Heroku (main)
-	git push heroku HEAD:main
+deploy: ## Push current branch to Heroku using subtree
+	cd ../.. && git subtree push --prefix examples/openfilter-heroku-demo heroku main
 
 logs:   ## Stream Heroku logs
 	heroku logs --tail --app $(HEROKU_APP)

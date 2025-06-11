@@ -71,13 +71,35 @@ This command opens your web browser to the Heroku login page. If your browser is
 
 Create an app on Heroku to prepare the platform to receive your source code by replacing <space-name> with the name of your Fir space in the command below:
 
-
-
 ```bash
 heroku create --space <space-name>
 ```
 
 When you create an app, a Git remote called heroku also gets created and associated with your local Git repository. Git remotes are versions of your repository that live on other servers. You deploy your app by pushing its code to that special Heroku-hosted remote associated with your app.
+
+### Setting up Heroku Remote
+
+Since this demo lives in a subdirectory of a larger repository, you need to set up the Heroku remote manually:
+
+```bash
+# Add the Heroku remote (replace <your-app-name> with your app name)
+git remote add heroku https://git.heroku.com/<your-app-name>.git
+```
+
+### Deployment
+
+To deploy the application, use the Makefile command which handles the subtree push:
+
+```bash
+make deploy
+```
+
+Or manually deploy using git subtree:
+
+```bash
+# From the root of the repository
+git subtree push --prefix examples/openfilter-heroku-demo heroku main
+```
 
 ## Development with Makefile
 
