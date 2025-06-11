@@ -1,4 +1,4 @@
-# License Plate Deteciton Demo
+# License Plate Detection Demo
 
 ## Table of Contents
 - [License Plate Detection Demo](#license-plate-detection-demo)
@@ -9,7 +9,7 @@
 
 ## Overview
 
-This example demonstrates serveral filter types easily composed together to achieve a simple task: Identify License Plate Numbers in a drive through
+This example demonstrates several filter types easily composed together to achieve a simple task: Identify License Plate Numbers in a drive through
 
 ```mermaid
 flowchart LR
