@@ -10,21 +10,10 @@ export VERSION
 # ---------------------------------
 PIPELINE := \
 	- VideoIn \
-		--sources 'file://example_video.mp4!loop' \
-	- filter_license_plate_detection.filter.FilterLicensePlateDetection \
-	- filter_crop.filter.FilterCrop \
-		--detection_key license_plate_detection \
-		--detection_class_field label \
-		--detection_roi_field box \
-		--output_prefix cropped_ \
-		--mutate_original_frames false \
-		--topic_mode main_only \
+		--sources 'file://hello.mov!loop' \
 	- filter_optical_character_recognition.filter.FilterOpticalCharacterRecognition \
-		--topic_pattern 'license_plate' \
 		--ocr_engine easyocr \
 		--forward_ocr_texts true \
-	- filter_license_annotation_demo.filter.FilterLicenseAnnotationDemo \
-		--cropped_topic_suffix license_plate \
 	- Webvis
 
 # ---------------------------------
@@ -39,17 +28,6 @@ help:
 install:  ## Install package with dev dependencies
 	pip install -e .[dev] \
 		--extra-index-url https://python.openfilter.io/simple
-
-	@if [ ! -f model.pth ]; then \
-		echo "model not found, downloading model archive..."; \
-		curl -L -o model.zip https://models.openfilter.io/license_plate_detection_model/v0.1.0.zip; \
-		echo "Unzipping model archive to current directory..."; \
-		unzip -o model.zip; \
-		echo "Removing model.zip..."; \
-		rm model.zip; \
-	else \
-		echo "model already exists, skipping download."; \
-	fi
 
 .PHONY: run
 run: # Open the browser and run the filters

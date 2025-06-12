@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Hello World Animation</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      position: relative;
+      height: 100vh;
+      background: black;
+    }
+    .hello {
+      position: absolute;
+      font-size: 32px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+<script>
+  const fonts = ['Arial', 'Verdana', 'Times New Roman', 'Courier New', 'Georgia', 'Impact', 'Comic Sans MS', 'Tahoma', 'Lucida Console'];
+  const interval = 500; // new message every 0.5s
+
+  function randomColor() {
+    return `hsl(${Math.random() * 360}, 100%, 70%)`;
+  }
+
+  function createHello() {
+    const el = document.createElement('div');
+    el.className = 'hello';
+    el.textContent = 'Hello World';
+    el.style.color = randomColor();
+    el.style.fontFamily = fonts[Math.floor(Math.random() * fonts.length)];
+    el.style.fontSize = `${Math.random() * 60 + 20}px`;
+    el.style.left = `${Math.random() * window.innerWidth}px`;
+    el.style.top = `${Math.random() * window.innerHeight}px`;
+    document.body.appendChild(el);
+
+    setTimeout(() => el.remove(), 1000); // remove after 1s
+  }
+
+  function runAnimation() {
+    setInterval(() => {
+      createHello();
+    }, interval);
+  }
+
+  runAnimation();
+</script>
+</body>
+</html>

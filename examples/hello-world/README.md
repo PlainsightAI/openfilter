@@ -44,6 +44,8 @@ This example demonstrates five filters composed together to achieve our **licens
 - [Python 3.11](https://www.python.org/downloads/release/python-3110/)
 - Linux system
 
+> Note: This project is designed with Linux support in mind. It should run on macOS, but your mileage may vary.
+
 ### Steps
 1. [Optional] Create a virtual environemnt using a tool of your choosing (`venv` is used here)
 ```
@@ -52,9 +54,9 @@ source venv/bin/activate
 ```
 2. run `make install`
 3. run `make run`
-4. Visit `http://localhost:8000`
+4. visit `http://localhost:8000`
 
-`make run` execute the filter pipeline via the openfilter CLI as follows:
+`make run` executes the filter pipeline via the openfilter CLI as follows:
 
 ```bash
 openfilter run \
