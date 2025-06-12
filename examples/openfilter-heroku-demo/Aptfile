@@ -1,0 +1,10 @@
+ffmpeg
+libsm6
+libxext6
+libxrender1
+libavcodec-extra
+libavformat-dev
+libavutil-dev
+libswscale-dev
+libavfilter-dev
+libavdevice-dev
