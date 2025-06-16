@@ -487,6 +487,7 @@ OpenFilter emits three main types of lineage events:
     - `filter_name`
     - `model_name`
     - Frame/video metadata (e.g., source path, timestamp, FPS)
+    - runId matches the original ID from START (as with COMPLETE)
 ---
 ### 3. `COMPLETE`
 - **When it's sent**: After the filter completes successfully.

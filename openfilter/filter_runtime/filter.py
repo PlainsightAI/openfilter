@@ -504,8 +504,8 @@ class Filter:
     def set_open_lineage():
         try:
             
-          
             return FilterLineage.OpenFilterLineage()
+            
         except Exception as e:
             print(e)
     
