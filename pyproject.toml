@@ -71,6 +71,7 @@ video = []
 video_in = [
   "setuptools==72.2.0",
   "vidgear[core]==0.3.3",
+  "boto3>=1.26.0",
 ]
 
 video_out = [
