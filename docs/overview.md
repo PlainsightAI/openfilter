@@ -461,6 +461,31 @@ Webvis video at `http://localhost:8000/yet_another`.
         )),
     ])
 
+## S3 Integration Example
+
+Process video files stored in Amazon S3 with OCR analysis. This example demonstrates downloading video from S3, processing with optical character recognition, and visualizing results. You can get a sample video file to test from `examples/hello-ocr/hello.mov`.
+
+```bash
+    AWS_PROFILE=<profile> openfilter run \
+      - VideoIn --sources 's3://<bucket_name>/test/hello.mov!loop' \
+      - filter_optical_character_recognition.filter.FilterOpticalCharacterRecognition --ocr_engine easyocr --forward_ocr_texts true \
+      - Webvis
+```
+
+Replace `<profile>` with your AWS profile name and `<bucket_name>` with your S3 bucket name. This example:
+
+* Downloads the video file from the specified S3 bucket using your AWS credentials
+* Processes each frame with OCR using EasyOCR to extract text content
+* Forwards the extracted text data along with the video frames
+* Displays both the video and OCR results in the browser at `http://localhost:8000`
+* The `!loop` option continuously replays the video for ongoing processing
+
+Prerequisites:
+* AWS credentials configured (via AWS CLI, environment variables, or IAM roles)
+* S3 bucket with read permissions for the specified video file
+* OpenFilter with S3 support: `pip install openfilter[all]`
+* OCR filter: `pip install filter-optical-character-recognition`
+
 <a id="other_stuff"></a>
 # Other stuff:
 
