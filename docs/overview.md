@@ -1,6 +1,6 @@
 ---
 sidebar_label: Overview
-title: filter-runtime
+title: openfilter
 description: Base library for building modular, event-driven filters using ZeroMQ and dynamic config.
 ---
 
@@ -9,9 +9,7 @@ description: Base library for building modular, event-driven filters using ZeroM
 For installation, go directly to [Installation](#installation). Examples, [Examples](#examples).
 
 More in depth guides can be found here:
-* [Filter Creation Guide](https://plainsight-ai.atlassian.net/wiki/spaces/Guides/pages/2282487810/Filter+Creation+Guide)
-* [Filter Run Guide](https://plainsight-ai.atlassian.net/wiki/spaces/Guides/pages/2283503638/Filter+Run+Guide)
-* [Filter Technical Guide](https://plainsight-ai.atlassian.net/wiki/spaces/Guides/pages/2283601931/Filter+Technical+Guide)
+* [Your First Filter](./your-first-filter.md)
 
 This is a framework for `Filter` components which compose an image processing pipeline. It mostly takes care of setup, serialization and communication between the components and various outher quality-of-life things. There are also some basic utility components included for stuff like reading and writing video, REST endpoint input, MQTT output, visualisation and more.
 
