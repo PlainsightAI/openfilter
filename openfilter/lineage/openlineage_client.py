@@ -104,7 +104,7 @@ class OpenFilterLineage:
         self._thread = None
         self._running = False
         self.filter_name = filter_name
-        self.filter_model = os.getenv(filter_name.upper() + "MODEL_NAME") if filter_name else None
+        self.filter_model = os.getenv(filter_name.upper() + "_MODEL_NAME") if filter_name else None
 
     def _emit_event(self, event_type, run=None, facets=None):
         try:
