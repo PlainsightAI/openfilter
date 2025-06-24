@@ -511,7 +511,7 @@ class Filter:
     
     emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
     def process_frames_metadata(self,frames, emitter):
-        
+            
             keys = list(frames.keys())
             filtered_dict = None
             for key in keys:
