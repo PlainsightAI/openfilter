@@ -494,7 +494,7 @@ class Filter:
 
         return text2, topics
 
-
+    
     # - FOR VERY SPECIAL SUBCLASS --------------------------------------------------------------------------------------
 
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
