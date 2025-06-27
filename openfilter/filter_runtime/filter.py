@@ -499,7 +499,7 @@ class Filter:
 
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
-
+        self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         if (frames := self.process(frames)) is None:
             return None
 
@@ -691,7 +691,7 @@ class Filter:
         return FilterConfig([
             (n[7:].lower(), json_getval(v)) for n, v in os.environ.items() if n.startswith('FILTER_') and v
         ])
-
+    filter_name = None
     @classmethod
     def run(cls,
         config:    dict[str, Any] | None = None,
@@ -742,6 +742,7 @@ class Filter:
             try:
                 loop_exc  = Filter.YesLoopException if (LOOP_EXC if loop_exc is None else loop_exc) else Exception
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
+                cls.filter_name = filter.__class__.__name__
 
                 filter.init(filter.config)
 
