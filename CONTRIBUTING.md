@@ -298,6 +298,7 @@ Extend model and artifact handling beyond current limitations.
     - `gcs://` (Google Cloud Storage)
     - `gar://` (Google Artifact Registry)
     - `s3://` (Amazon S3)
+      - The `s3://` us currently implemented in VideoIn outside of DLCache
   - Ensure models, videos, and other assets can be cached and reused without re-downloading on every run.
 
 ### 📈 Observability
@@ -331,12 +332,12 @@ Whether you're contributing a quick fix or a large feature, it's important to un
 - Pull requests should always **target `main`**, which serves as the active development branch.
 - Once PRs are approved and merged into `main`, they are queued for inclusion in the next release.
 
-> 🔒 **Important:** Only **core maintainers** are allowed to merge `main` into `release`. This ensures all published versions are stable, reviewed, and correctly documented.
+> 🔒 **Important:** Only **core maintainers** are allowed to merge code into `main`. This ensures all published versions are stable, reviewed, and correctly documented.
 
 ### 🛠️ Releasing
 
-- Releases are **cut from the `release` branch**, which always reflects the **latest stable version** of OpenFilter.
-- To merge from `main` into `release`, the following must be true:
+- Releases are **cut from the `main` branch**, which always reflects the **latest development version** of OpenFilter.
+- To create a release from `main`, the following must be true:
   - The `RELEASE.md` file contains an accurate and up-to-date changelog entry for the version.
   - The `VERSION` file matches the version declared in `RELEASE.md`.
 
@@ -344,16 +345,19 @@ Whether you're contributing a quick fix or a large feature, it's important to un
 
 Once merged, the release automation tags the version, pushes a GitHub release, publishes documentation, and optionally builds artifacts (e.g., Docker images, Python wheels).
 
+The final step in the CI pipeline requires manual review and approval by a core maintainer. Upon approval, the package version is automaticlaly published to PyPi.
+
 ### 🧯 Hotfixes
 
-Occasionally, an urgent fix may need to be deployed without waiting for the next full release cycle.
+We aspire to keep the main branch in a valid and ready-for-release condition at all times. Under ideal conditions, hotfixes should be included in the `main` branch and an expedited release should be triggered.
+Under less than ideal conditions, an urgent fix may need to be deployed without including additional code changes from main.
 
-- In these cases, hotfix branches are **cut from the `release` branch**, not `main`.
+- In these cases, hotfix branches are **branched from the latest tagged release commit**, not `main`.
 - Once the fix is ready, it's:
-  1. Merged back into `release`
+  1. Published to all avenues as a one-off release
   2. Then merged **forward into `main`** to ensure future releases retain the hotfix.
 
-This guarantees the stability of released versions without introducing unreviewed changes from `main`.
+This guarantees the stability of released versions as much as possible.
 
 ---
 
@@ -361,16 +365,13 @@ This guarantees the stability of released versions without introducing unreviewe
 
 ```mermaid
 gitGraph
-   commit id: "Main (dev ongoing)"
+   commit id: "Start of main"
    branch feature/my-new-filter
-   commit id: "Work on filter"
+   commit id: "Work on feature"
    checkout main
-   commit id: "More dev work"
+   commit id: "More development"
    merge feature/my-new-filter
-   commit id: "Ready for release"
-   branch release
-   checkout release
-   commit id: "Merge from main for v1.2.0"
+   commit id: "Release v1.2.0"
 
 ```
 
@@ -378,18 +379,14 @@ gitGraph
 
 ```mermaid
 gitGraph
-   commit id: "Initial release (v1.2.0)"
-   branch release
-   checkout release
-   commit id: "Prep for hotfix"
+   commit id: "v1.2.0"
    branch hotfix/fix-crash
    commit id: "Fix crash"
-   checkout release
-   merge hotfix/fix-crash id: "Merge hotfix into release"
-   commit id: "Release v1.2.1"
+   commit id: "Create Release"
    checkout main
-   commit id: "Ongoing main dev"
-   merge release id: "Back-merge hotfix into main"
+   commit id: "Ongoing dev"
+   merge hotfix/fix-crash
+   commit id: "Back-merge hotfix"
 
 ```
 
@@ -397,12 +394,12 @@ gitGraph
 
 ### ✅ TL;DR
 
-| Action                           | From           | To            | Who                  |
-|----------------------------------|----------------|----------------|-----------------------|
-| New features & fixes             | `main`         | `main`         | Anyone (via PR)       |
-| Release preparation              | `main`         | `release`      | Core maintainers only |
-| Hotfixes                         | `release`      | `release`      | Anyone (via PR), Core maintainers PR approvals are required to merge       |
-| Back-port hotfix to development | `release`      | `main`         | Core maintainers      |
+| Action                          | From               | To                | Who                                       |
+| ------------------------------- | ------------------ | ----------------- | ----------------------------------------- |
+| New features & fixes            | `main`             | `main`            | Anyone (via PR)                           |
+| Release preparation             | `main`             | `main` (tagged)   | Core maintainers only                     |
+| Hotfixes                        | Latest release tag | `main` (after PR) | Anyone (via PR), core maintainers approve |
+| Back-port hotfix to development | Hotfix branch      | `main`            | Core maintainers                          |
 
 ## Thank you 🙏
 

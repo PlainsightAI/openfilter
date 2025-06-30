@@ -69,7 +69,7 @@ test-coverage:  ## Run unit tests and generate coverage report
 
 .PHONY: build-wheel
 build-wheel:  ## Build python wheel
-	python -m pip install setuptools build wheel twine setuptools-scm --index-url https://pypi.org/simple --extra-index-url https://${PYPI_USERNAME}:${PYPI_API_KEY}@plainsight.jfrog.io/artifactory/api/pypi/plainsight-pypi/simple
+	python -m pip install setuptools build wheel twine setuptools-scm --index-url https://pypi.org/simple --extra-index-url https://python.openfilter.io/simple
 	python -m build --wheel
 
 .PHONY: clean

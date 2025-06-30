@@ -102,6 +102,7 @@ Explore real-world examples covering:
 * Load balancing using multiple filter processes
 * Sending metrics to MQTT
 * Ephemeral side-channel processing
+* S3 integration for cloud video processing
 * Fully declarative + class-based configuration
 
 ➡️ See [`docs/overview.md`](https://github.com/PlainsightAI/openfilter/blob/main/docs/overview.md) for all examples.

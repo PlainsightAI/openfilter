@@ -1,0 +1,258 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  run-unit-tests:
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install project and dependencies
+        run: make install
+
+      - name: Run tests
+        run: make test-all
+
+  create-release:
+    outputs:
+      is_release_created: ${{ steps.release_meta.outputs.is_release_created }}
+      version: ${{ steps.release_meta.outputs.version }}
+    runs-on: ubuntu-latest
+    needs: run-unit-tests
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run changelog parser
+        id: changelog
+        uses: PlainsightAI/changelog-parser-action@main
+        with:
+          path: RELEASE.md
+
+      - name: Show version
+        run: |
+          echo "Version: ${{ steps.changelog.outputs.version }}"
+
+      - name: Store Changelog Version
+        run: echo "CHANGELOG_VERSION=${{ steps.changelog.outputs.version }}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Check VERSION file (if exists)
+        run: |
+          if [[ -f "VERSION" ]]; then
+            VERSION_FILE=$(cat VERSION | tr -d '[:space:]')
+            echo "VERSION file: $VERSION_FILE"
+            echo "Changelog version: $CHANGELOG_VERSION"
+
+            if [[ "$VERSION_FILE" != "$CHANGELOG_VERSION" ]]; then
+              echo "❌ VERSION mismatch! VERSION file: $VERSION_FILE, RELEASE.md: $CHANGELOG_VERSION"
+              exit 1
+            else
+              echo "✅ VERSION matches!"
+            fi
+          else
+            echo "No VERSION file found, skipping version check."
+          fi
+        shell: bash
+
+      - name: Checking Tag (${{ env.CHANGELOG_VERSION }})
+        uses: mukunku/tag-exists-action@v1.6.0
+        id: check_tag
+        with:
+          tag: "${{ env.CHANGELOG_VERSION }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "$RELEASE_NOTES" > release-notes.md
+          gh release create ${{ env.CHANGELOG_VERSION }} \
+            --title "Release ${{ env.CHANGELOG_VERSION }}" \
+            --notes-file release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: ${{ steps.changelog.outputs.description }}
+        shell: bash
+
+      - name: Set outputs for release metadata
+        id: release_meta
+        run: |
+          if [[ "${{ steps.check_tag.outputs.exists }}" == "false" ]]; then
+            echo "is_release_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_release_created=false" >> $GITHUB_OUTPUT
+          fi
+          echo "version=${{ env.CHANGELOG_VERSION }}" >> $GITHUB_OUTPUT
+
+
+  prepare-pypi-publish:
+    runs-on: ubuntu-latest
+    needs: create-release
+    if: needs.create-release.outputs.is_release_created == 'true'
+    outputs:
+      package_name: ${{ steps.meta.outputs.package_name }}
+      package_version: ${{ steps.meta.outputs.package_version }}
+      already_exists: ${{ steps.check_pypi.outputs.already_exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install build twine
+
+      - name: Build wheel
+        run: python -m build --wheel
+
+      - name: Extract package metadata
+        id: meta
+        run: |
+          dist_file=$(ls dist/*.whl | head -n1)
+          unzip -p "$dist_file" "*.dist-info/METADATA" > METADATA
+
+          name=$(grep '^Name:' METADATA | cut -d ' ' -f2-)
+          version=$(grep '^Version:' METADATA | cut -d ' ' -f2-)
+
+          echo "package_name=$name" >> $GITHUB_OUTPUT
+          echo "package_version=$version" >> $GITHUB_OUTPUT
+          
+          rm -f METADATA
+      - name: Check if version already on PyPI
+        id: check_pypi
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://pypi.org/pypi/${{ steps.meta.outputs.package_name }}/${{ steps.meta.outputs.package_version }}/json)
+          if [ "$response" -eq 200 ]; then
+            echo "already_exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Already exists on PyPI"
+          else
+            echo "already_exists=false" >> $GITHUB_OUTPUT
+            echo "✅ Not yet on PyPI"
+          fi
+
+      - name: Inspect built wheel
+        run: |
+          dist_file=$(ls dist/*.whl 2>/dev/null | head -n1)
+
+          if [[ -z "$dist_file" ]]; then
+            echo "❌ No wheel file found in ./dist"
+            exit 1
+          fi
+
+          echo "📦 Inspecting package: $dist_file"
+          echo
+
+          metadata=$(unzip -p "$dist_file" "*.dist-info/METADATA" 2>/dev/null)
+
+          name=$(echo "$metadata" | grep '^Name:' | cut -d ' ' -f2-)
+          version=$(echo "$metadata" | grep '^Version:' | cut -d ' ' -f2-)
+          license=$(echo "$metadata" | grep -E '^(License|License-Expression):' | head -n1 | cut -d ' ' -f2-)
+
+          echo "📂 Top-level files bundled:"
+          unzip -l "$dist_file" | grep -E "(\.md|\.txt|\.py|\.json)$" | grep -v '__pycache__' | head -n 20
+          echo "   ..."
+
+          echo
+          echo "🧪 Checking README rendering and metadata with twine..."
+          twine check "$dist_file"
+          echo
+
+          echo "🔎 Package Metadata"
+          echo "   → Name    : $name"
+          echo "   → Version : $version"
+          echo "   → License : $license"
+          echo
+          echo "✅ Package inspection complete."
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-dist
+          path: dist/
+
+  publish-to-pypi:
+    runs-on: ubuntu-latest
+    needs: prepare-pypi-publish
+    if: needs.prepare-pypi-publish.outputs.already_exists == 'false'
+    environment:
+      name: pypi-release
+      url: https://pypi.org/project/${{ needs.prepare-pypi-publish.outputs.package_name }}/
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install twine
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-dist
+          path: dist/
+
+      - name: Inspect wheel
+        run: |
+          echo "📦 Downloaded wheel:"
+          ls -lh dist/
+          unzip -l dist/*.whl | head -n 40 || true
+
+      - name: Extract package metadata
+        id: meta
+        run: |
+          dist_file=$(ls dist/*.whl | head -n1)
+          unzip -p "$dist_file" "*.dist-info/METADATA" > METADATA
+
+          name=$(grep '^Name:' METADATA | cut -d ' ' -f2-)
+          version=$(grep '^Version:' METADATA | cut -d ' ' -f2-)
+
+          echo "package_name=$name" >> $GITHUB_OUTPUT
+          echo "package_version=$version" >> $GITHUB_OUTPUT
+
+          rm -f METADATA
+      - name: Check if version already on PyPI
+        id: check_pypi
+        run: |
+          echo "🔍 Checking if ${{ steps.meta.outputs.package_name }} ${{ steps.meta.outputs.package_version }} exists on PyPI..."
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://pypi.org/pypi/${{ steps.meta.outputs.package_name }}/${{ steps.meta.outputs.package_version }}/json)
+          if [ "$response" -eq 200 ]; then
+            echo "❌ Already exists on PyPI"
+            echo "already_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Not found on PyPI"
+            echo "already_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to PyPI
+        if: steps.check_pypi.outputs.already_exists == 'false'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PLAINSIGHT_PYPI_TOKEN }}
+        run: |
+          echo "🚀 Uploading to PyPI..."
+          twine upload dist/*.whl

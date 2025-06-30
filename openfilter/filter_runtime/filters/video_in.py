@@ -4,8 +4,16 @@ import re
 from threading import Condition, Event, Thread
 from time import time_ns, sleep
 from typing import Any
+from urllib.parse import urlparse
 
 import cv2
+
+try:
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
 
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, Deque
 
@@ -20,13 +28,14 @@ VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or '
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or None
 
-re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam)://')
+re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam|s3)://')
 re_video_stream   = re.compile(r'^(rtsp|rtmp|http|https)://')
 
 is_video          = lambda name: bool(re_video.match(name))
 is_video_file     = lambda name: name.startswith('file://')
 is_video_webcam   = lambda name: name.startswith('webcam://')
 is_video_stream   = lambda name: bool(re_video_stream.match(name))
+is_video_s3       = lambda name: name.startswith('s3://')
 
 
 re_size = re.compile(r'^\s* (\d+) \s* ([x+]) \s* (\d+) \s* (n(?:ear)? | l(?:in)? | c(?:ub)?)? \s*$', re.VERBOSE | re.IGNORECASE)
@@ -36,6 +45,73 @@ def parse_size(s: str):
         raise ValueError(f'invalid size {s!r}')
 
     return m.groups()
+
+
+def parse_s3_uri(s3_uri: str):
+    """Parse S3 URI into bucket and key components.
+    
+    Args:
+        s3_uri: S3 URI in format s3://bucket/key
+        
+    Returns:
+        tuple: (bucket, key)
+        
+    Raises:
+        ValueError: If URI format is invalid
+    """
+    if not s3_uri.startswith('s3://'):
+        raise ValueError(f'Invalid S3 URI: {s3_uri}')
+    
+    parsed = urlparse(s3_uri)
+    if not parsed.netloc:
+        raise ValueError(f'Invalid S3 URI: {s3_uri} (missing bucket)')
+    
+    bucket = parsed.netloc
+    key = parsed.path.lstrip('/')
+    
+    if not key:
+        raise ValueError(f'Invalid S3 URI: {s3_uri} (missing key)')
+    
+    return bucket, key
+
+
+def s3_to_presigned_url(s3_uri: str, expiration: int = 3600, region: str = None):
+    """Convert S3 URI to presigned HTTPS URL.
+    
+    Args:
+        s3_uri: S3 URI in format s3://bucket/key
+        expiration: URL expiration time in seconds (default: 1 hour)
+        region: AWS region (optional, will use default if not specified)
+        
+    Returns:
+        str: HTTPS URL for streaming the S3 object
+        
+    Raises:
+        ValueError: If S3 URI is invalid or boto3 not available
+        ClientError: If S3 access fails
+        NoCredentialsError: If AWS credentials not configured
+    """
+    if not HAS_BOTO3:
+        raise ValueError('boto3 is required for S3 support. Install with: pip install boto3')
+    
+    bucket, key = parse_s3_uri(s3_uri)
+    
+    s3_client = boto3.client('s3', region_name=region)
+    
+    try:
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=expiration
+        )
+        return presigned_url
+    except NoCredentialsError:
+        raise ValueError(
+            f'AWS credentials not found for {s3_uri}. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY '
+            'environment variables or configure AWS credentials file.'
+        )
+    except ClientError as e:
+        raise ValueError(f'Failed to generate presigned URL for {s3_uri}: {e}')
 
 
 class VideoReader:
@@ -49,6 +125,8 @@ class VideoReader:
         maxfps:  float | None = None,
         maxsize: str | None = None,
         resize:  str | None = None,
+        region:  str | None = None,
+        expiration: int | None = None,
     ):
         """Read a single video file, network stream or webcam until the end.
 
@@ -91,14 +169,24 @@ class VideoReader:
         self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
-        self.is_file       = is_file = is_video_file(source)
+        self.is_file       = is_file = is_video_file(source) or is_video_s3(source)
         self.as_bgr        = bool(VIDEO_IN_BGR if bgr is None else bgr)  # only validated after first frame is read (set to False if frames are grayscale)
 
         if self.maxsize and self.resize:
             raise ValueError(f"can not specify both 'maxsize' and 'resize' together in {self.source!r}")
 
         if is_file:
-            source       = source[7:]
+            if is_video_file(source):
+                source = source[7:]  # Remove 'file://' prefix
+            elif is_video_s3(source):
+                # Convert S3 URI to presigned HTTPS URL
+                logger.info(f"Converting S3 URI to presigned URL: {hide_uri_users_and_pwds(source)}")
+                try:
+                    s3_expiration = expiration or 3600  # Default 1 hour
+                    source = s3_to_presigned_url(source, expiration=s3_expiration, region=region)
+                    logger.debug(f"Generated presigned URL for S3 video (region={region}, expiration={s3_expiration}s)")
+                except Exception as e:
+                    raise ValueError(f'Failed to generate presigned URL for S3 source {self.source!r}: {e}')
             self.is_file = True
 
             if sync := VIDEO_IN_SYNC if sync is None else sync:
@@ -452,12 +540,14 @@ is_video_or_cached_file = lambda s: is_video(s) or is_cached_file(s)
 class VideoInConfig(FilterConfig):
     class Source(adict):
         class Options(adict):
-            bgr:     bool | None
-            sync:    bool | None
-            loop:    bool | int | None
-            maxfps:  float | None
-            maxsize: str | None
-            resize:  str | None
+            bgr:        bool | None
+            sync:       bool | None
+            loop:       bool | int | None
+            maxfps:     float | None
+            maxsize:    str | None
+            resize:     str | None
+            region:     str | None
+            expiration: int | None
 
         source:  str
         topic:   str | None
@@ -481,19 +571,21 @@ class VideoIn(Filter):
 
     config:
         sources:
-            The source(s) of the video(s), comma delimited, can be file://, rtsp:// stream or a webcam:// index.
+            The source(s) of the video(s), comma delimited, can be file://, rtsp:// stream, s3:// bucket object, 
+            or a webcam:// index.
 
             Examples:
-                'file://a.mp4!sync!loop=3, rtsp://b.com!no-bgr;c, webcam://0;e'
+                'file://a.mp4!sync!loop=3, rtsp://b.com!no-bgr;c, s3://bucket/video.mp4!region=us-west-2, webcam://0;e'
 
                     is the same as
 
-                ['file://a.mp4!sync!loop=3', 'rtsp://b.com!no-bgr;c', 'webcam://0;e']
+                ['file://a.mp4!sync!loop=3', 'rtsp://b.com!no-bgr;c', 's3://bucket/video.mp4!region=us-west-2', 'webcam://0;e']
 
                     is the same as
 
                 [{'source': 'file://a.mp4', 'topic': 'main', 'options': {'sync': True, 'loop': 3}},
                  {'source': 'rtsp://b.com', 'topic': 'c', 'options': {'bgr': False}},
+                 {'source': 's3://bucket/video.mp4', 'topic': 'main', 'options': {'region': 'us-west-2'}},
                  {'source': 'webcam://0', 'topic': 'e', 'options': {}}]
 
                     For 'options' see below.
@@ -516,6 +608,13 @@ class VideoIn(Filter):
 
                 '!resize=1280x720lin', '!resize=1280+720':
                     Set `resize` option for this source.
+
+                '!region=us-west-2':
+                    Set AWS region for S3 sources. Only applies to s3:// sources.
+
+                '!expiration=7200':
+                    Set presigned URL expiration time in seconds for S3 sources. Default is 3600 (1 hour).
+                    Only applies to s3:// sources.
 
         bgr:
             True means images in BGR format, False means RGB. Doesn't really affect anythong other than procesing speed
@@ -562,6 +661,19 @@ class VideoIn(Filter):
         VIDEO_IN_MAXFPS
         VIDEO_IN_MAXSIZE
         VIDEO_IN_RESIZE
+
+    S3 Configuration:
+        For s3:// sources, AWS credentials are required. Set these environment variables:
+        
+        AWS_ACCESS_KEY_ID - Your AWS access key ID
+        AWS_SECRET_ACCESS_KEY - Your AWS secret access key  
+        AWS_DEFAULT_REGION - Default AWS region (optional, can be overridden per source)
+        AWS_PROFILE - AWS credentials profile to use (alternative to access keys)
+        
+        S3 sources are converted to presigned HTTPS URLs and streamed directly without local storage.
+        
+        Example S3 usage:
+            openfilter run - VideoIn --sources s3://my-bucket/video.mp4!region=us-west-2 - Webvis
     """
 
     FILTER_TYPE = 'Input'
@@ -595,7 +707,7 @@ class VideoIn(Filter):
                 source.topic = 'main'
             if not isinstance(options := source.options, VideoInConfig.Source.Options):
                 source.options = options = VideoInConfig.Source.Options() if options is None else VideoInConfig.Source.Options(options)
-            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize') for o in options):
+            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize', 'region', 'expiration') for o in options):
                 raise ValueError(f'unknown option {option!r} in {source!r}')
 
         if len(set(source.topic for source in sources)) != len(sources):

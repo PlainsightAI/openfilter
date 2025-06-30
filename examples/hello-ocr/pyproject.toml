@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = { find = { include = ["filter_hello_ocr"] } }
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[project]
+name = "filter_hello_ocr"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+license = "Apache-2.0"
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+dynamic = ["version"]
+
+dependencies = [
+  "openfilter[all]==0.1.2",
+  "filter-optical-character-recognition==0.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build==1.2.1",
+  "setuptools==72.2.0",
+  "twine>=6.1.0,<7",
+  "wheel==0.44.0",
+  "pytest==8.3.4",
+  "pytest-cov==6.0.0",
+]
+
+[[tool.uv.index]]
+name = "openfilter"
+url = "https://python.openfilter.io/simple"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
