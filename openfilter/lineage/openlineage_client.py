@@ -51,8 +51,8 @@ def create_openfilter_facet_with_fields(data: dict,filter_name:str) -> BaseFacet
 
     fields += [
         ("_producer", str, field(default="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage")),
-        ("_schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/lineage/schema/OpenFilterConfigRunFacet.json")),
-        ("_type", str, field(default=filter_name))
+        ("schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/lineage/schema/OpenFilterConfigRunFacet.json")),
+        ("type", str, field(default=filter_name))
     ]
 
     DynamicFacet = make_dataclass("OpenFilterFacet", fields, bases=(BaseFacet,))

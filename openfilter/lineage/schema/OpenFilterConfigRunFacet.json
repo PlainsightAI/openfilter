@@ -9,7 +9,7 @@
         },
         {
           "type": "object",
-          "required": ["_producer", "_schemaURL","_type"],
+          "required": ["_producer", "_schemaURL","type"],
           "properties": {
             "_producer": { "type": "string", "format": "uri" },
             "_schemaURL": { "type": "string", "format": "uri" },
