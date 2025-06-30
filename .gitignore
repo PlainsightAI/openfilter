@@ -112,6 +112,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+open-filter/
 
 # Spyder project settings
 .spyderproject

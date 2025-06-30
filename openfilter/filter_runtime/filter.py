@@ -17,6 +17,9 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
 
+
+from openfilter.lineage import openlineage_client as FilterLineage
+
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -395,7 +398,8 @@ class Filter:
 
         if not self.stop_evt.is_set():  # because we don't want to potentially log multiple exits
             self.stop_evt.set()
-
+            self.emitter.stop_lineage_heart_beat()
+            self.emitter.emit_stop()
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
@@ -497,9 +501,29 @@ class Filter:
 
     # - FOR VERY SPECIAL SUBCLASS --------------------------------------------------------------------------------------
 
+    def set_open_lineage():
+        try:
+            
+            return FilterLineage.OpenFilterLineage()
+            
+        except Exception as e:
+            print(e)
+    
+    emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
+    def process_frames_metadata(self,frames, emitter):
+            
+            keys = list(frames.keys())
+            filtered_dict = None
+            for key in keys:
+                frame_dict = frames[key].__dict__
+                filtered_dict = dict(list(frame_dict.items())[2:])
+            emitter.update_heartbeat_lineage(facets=filtered_dict)
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
-
+        if frames:
+            proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(frames, self.emitter))
+            proces_frames_data.start()
+       
         if (frames := self.process(frames)) is None:
             return None
 
@@ -534,13 +558,16 @@ class Filter:
 
         if (exit_after_t := self.exit_after_t) is not None and time() >= exit_after_t:
             self.exit('exit_after')
-
+  
 
     # - FOR SPECIAL SUBCLASS -------------------------------------------------------------------------------------------
 
+    
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
-
+        
+        self.emitter.emit_start(facets=dict(config))
+        self.emitter.start_lineage_heart_beat()
         def on_exit_msg(reason: str):
             if reason == 'error':
                 if self.obey_exit & PROP_EXIT_FLAGS['error']:
@@ -605,7 +632,7 @@ class Filter:
 
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-
+        self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -719,7 +746,7 @@ class Filter:
             sig_stop: Whether to hook signals SIGINT and SIGTERM to do clean exit, can not hook in non-main thread.
                 This is a terminal stopper, if it is triggered it WILL eventually kill the process.
         """
-
+        
         if sig_stop:
             stop_evt = SignalStopper(logger, stop_evt).stop_evt
         elif stop_evt is None:
@@ -728,7 +755,7 @@ class Filter:
         try:
             if config is None:
                 config = cls.get_config()
-
+               
             if '__env_run' in config:
                 logger.warning(f"setting run environment variables for {cls.__name__} here may not take effect, "
                     "consider setting them outside the process or running the filter with the Runner in 'spawn' mode")
@@ -738,10 +765,12 @@ class Filter:
                 config = dict_without(config, '__env_run')
 
             filter = cls(config, stop_evt, obey_exit)  # will call .start_logging()
-
+           
             try:
                 loop_exc  = Filter.YesLoopException if (LOOP_EXC if loop_exc is None else loop_exc) else Exception
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
+                
+                cls.emitter.filter_name = filter.__class__.__name__
 
                 filter.init(filter.config)
 
@@ -772,17 +801,24 @@ class Filter:
                     filter.fini()
 
             except Exception as exc:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
                 logger.error(exc)
 
                 raise
 
             except Filter.Exit:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
                 pass
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
         finally:
+            cls.emitter.stop_lineage_heart_beat()
+            cls.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod
