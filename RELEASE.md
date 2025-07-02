@@ -3,6 +3,16 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.4 - 2025-07-2
+
+### Added
+- **FilterContext**: Added a static context class to provide build and model metadata at runtime. This includes:
+  - `filter_version` (from VERSION)
+  - `model_version` (from VERSION.MODEL)
+  - `git_sha` (from GITHUB_SHA, set by CI/CD or manually)
+  - `models` (from models.toml, with model name, version, and path)
+- The context is accessible via `FilterContext.get(key)`, `FilterContext.as_dict()`, and `FilterContext.log()` for logging/debugging purposes.
+
 ## v0.1.7 - 2025-07-17
 
 ### Updated
