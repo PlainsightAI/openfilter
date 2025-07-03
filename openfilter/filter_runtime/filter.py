@@ -16,6 +16,12 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     timestr, parse_time_interval, parse_date_and_or_time, hide_uri_users_and_pwds, \
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib # python <3.11 uses tomli instead of tomllib
 
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
@@ -98,7 +104,100 @@ class FilterConfig(adict):  # types are informative to you as in the end they're
 
         return self.__class__({k: v for k, v in self.items() if not k.startswith('_')})
 
+class FilterContext:
+    """
+    FilterContext: Static context for Docker image and model metadata.
 
+    The FilterContext class provides static access to build and model metadata for the filter runtime. It is initialized once per process and stores the following information:
+
+    - filter_version: The version of the filter runtime, read from the file 'VERSION'.
+    - model_version: The version of the model, read from the file 'VERSION.MODEL'.
+    - git_sha: The GitHub commit SHA, read from the file 'GITHUB_SHA'. This should be set at build time by CI/CD or manually.
+    - models: A dictionary of models loaded from 'models.toml'. Each entry contains:
+        - model name (key)
+        - version: The version string for the model
+        - path: The path to the model file (if present), or 'No path' if not specified
+
+    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), and FilterContext.log().
+
+    Example usage:
+        FilterContext.init()  # Initializes context if not already done
+        version = FilterContext.get('filter_version')
+        FilterContext.log()   # Logs all context info
+    """
+
+    _data = {}
+
+    @classmethod
+    def init(cls):
+        if cls._data:
+            return  # already initialized
+
+        cls._data = {
+            "filter_version": cls._read_file("VERSION"),
+            "model_version": cls._read_file("VERSION.MODEL"),
+            "git_sha": cls._read_file("GITHUB_SHA"),
+            "models": cls._read_models_toml()
+        }
+
+    @classmethod
+    def get(cls, key):
+        return cls._data.get(key)
+
+    @classmethod
+    def as_dict(cls):
+        return dict(cls._data)
+
+    @classmethod
+    def log(cls):
+        """Log all available static context information."""
+        for key, value in cls._data.items():
+            if key == "models":
+                logger.info("Models config:")
+                for name, model in value.items():
+                    logger.info(f"  Model: {name} ({model['version']}) - {model.get('path', 'No path')}")
+                logger.info(f"  Total models: {len(value)}")
+            else:
+                logger.info(f"{key.replace('_', ' ').title()}: {value}")
+
+    @staticmethod
+    def _read_file(filename):
+        try:
+            path = Path(filename)
+            if path.exists():
+                return path.read_text().strip()
+            logger.warning(f"{filename} not found")
+        except Exception as e:
+            logger.warning(f"Error reading {filename}: {e}")
+        return None
+
+    @staticmethod
+    def _read_models_toml():
+        path = Path("models.toml")
+        if not path.exists():
+            logger.warning("models.toml not found")
+            return {}
+
+        try:
+            with path.open("rb") as f:
+                raw = tomllib.load(f)
+
+            models = {}
+            for name, data in raw.items():
+                if isinstance(data, dict) and 'version' in data:
+                    models[name] = {
+                        "version": data["version"],
+                        "path": data.get("path", "No path")
+                    }
+                else:
+                    logger.warning(f"Model {name} missing version field")
+
+            return models
+
+        except Exception as e:
+            logger.error(f"Error reading models.toml: {e}")
+            return {}
+        
 class Filter:
     """Filter base class. All filters derive from this and can override any of these config options but in practice
     mostly override `sources` and `outputs` to specify other sources or outputs than the filter pipeline.
@@ -354,6 +453,8 @@ class Filter:
     ):
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must hava an ID for sanity
+
+        FilterContext.init()
 
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
 
@@ -691,6 +792,11 @@ class Filter:
         return FilterConfig([
             (n[7:].lower(), json_getval(v)) for n, v in os.environ.items() if n.startswith('FILTER_') and v
         ])
+    @classmethod
+    def get_context(cls) -> FilterContext:
+        """Get context from Files in root Directory."""
+
+        return FilterContext.as_dict()
 
     @classmethod
     def run(cls,
