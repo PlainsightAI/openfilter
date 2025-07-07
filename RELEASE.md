@@ -3,6 +3,16 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.4 - 2025-07-07
+- `OpenLineage` support to the `OpenFilter`.
+  - For `OpenLineage` usage:
+    - `OPENLINEAGE_URL`- OpenLineage client URL
+    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed             
+    - `OPENLINEAGE_VERIFY_CLIENT_URL` - False by default
+    - `OPENLINEAGE_ENDPOINT` - OpenLineage client endpoint
+    - `OPENLINEAGE_PRODUCER` - OpenLineage producer
+    - `OPENLINEAGE__HEART__BEAT__INTERVAL` - OpenLineage RUNNING event period
+
 ## v0.1.3 - 2025-06-19
 
 ### Added
