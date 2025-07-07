@@ -104,6 +104,7 @@ class OpenFilterLineage:
         self._thread = None
         self._running = False
         self.filter_name = filter_name
+        self._stop_event = threading.Event()
         self.filter_model = os.getenv(filter_name.upper() + "_MODEL_NAME") if filter_name else None
 
     def _emit_event(self, event_type, run=None, facets=None):
@@ -130,7 +131,7 @@ class OpenFilterLineage:
                 )
 
                 self.client.emit(event)
-                print("rodando")
+               
         except Exception as e:
             logging.error(f"\033[93m[OpenFilterLineage] Failed to emit event {event_type}: {e}\033[0m")
 
@@ -138,12 +139,12 @@ class OpenFilterLineage:
     def _heartbeat_loop(self):
        
         if self.filter_model:
-            
             self.facets["model_name"] = self.filter_model
-        while self._running:
+        
+        while not self._stop_event.is_set():
             with self._lock:
                 self._emit_event(RunState.RUNNING)
-            time.sleep(self.interval)
+            self._stop_event.wait(self.interval)
         self.emit_complete()
 
     def emit_start(self, facets):
@@ -169,16 +170,15 @@ class OpenFilterLineage:
         self._emit_event(event_type=RunState.ABORT)
 
     def start_lineage_heart_beat(self):
-        if self._running:
+        if self._thread and self._thread.is_alive():
             return
-        self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._thread.start()
 
     def stop_lineage_heart_beat(self):
-        self._running = False
-        if self._thread:
-            self._thread.join()
+        self._stop_event.set()
+            
 
     def update_heartbeat_lineage(self, *, facets=None, job=None, producer=None):
         with self._lock:
