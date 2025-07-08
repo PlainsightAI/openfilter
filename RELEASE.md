@@ -3,7 +3,19 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.5 - 2025-07-07
+
+### Added
+- Support for Python 3.13 (Publishing and CI)
+  - Note we do not support for Python 3.13t, i.e. threaded see here: https://docs.python.org/3/howto/free-threading-python.html.
+
+### Updated
+- Dependencies in `pyproject.toml`
+
 ## v0.1.4 - 2025-07-07
+
+### Added
+
 - `OpenLineage` support to the `OpenFilter`.
   - For `OpenLineage` usage:
     - `OPENLINEAGE_URL`- OpenLineage client URL
