@@ -16,6 +16,18 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     timestr, parse_time_interval, parse_date_and_or_time, hide_uri_users_and_pwds, \
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
+from filter_runtime.metrics import Metrics
+
+from uuid import uuid4
+from openfilter.lineage import openlineage_client as FilterLineage
+from openfilter.filter_runtime.telemetry.open_telemetry_client import OpenTelemetryClient 
+
+from multiprocessing import Queue
+from openfilter.filter_runtime.telemetry2.open_telemetry_client import OpenTelemetryClient2 as OpenTelemetryClient2
+from openfilter.filter_runtime.telemetry2.metrics_emitter import MetricEmitter
+#device_name = os.uname().nodename
+#device_id =None
+#otel = OpenTelemetryClient(service_name="openfilter",instance_id=device_id)
 
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
@@ -352,9 +364,15 @@ class Filter:
         stop_evt:  threading.Event | synchronize.Event | None = None,
         obey_exit: str | None = None,
     ):
+        self.otel_emitter = MetricEmitter(queue=config.get("metrics_queue"))
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must hava an ID for sanity
-
+        
+        pipeline_id = config.get("pipeline_id")
+        self.device_id_name = config.get("device_name")
+        self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+        
+        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
 
         try:
@@ -395,7 +413,8 @@ class Filter:
 
         if not self.stop_evt.is_set():  # because we don't want to potentially log multiple exits
             self.stop_evt.set()
-
+            #self.emitter.stop_lineage_heart_beat()
+            self.emitter.emit_stop()
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
@@ -494,12 +513,56 @@ class Filter:
 
         return text2, topics
 
-    
+
     # - FOR VERY SPECIAL SUBCLASS --------------------------------------------------------------------------------------
 
+    def set_open_lineage():
+        try:
+            
+            return FilterLineage.OpenFilterLineage()
+            
+        except Exception as e:
+            print(e)
+    
+    emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
+    def process_frames_metadata(self,frames, emitter):
+            
+            keys = list(frames.keys())
+            
+            filtered_dict = None
+            for key in keys:
+                frame_dict = frames[key].__dict__
+                filtered_dict = dict(list(frame_dict.items())[2:])
+            emitter.update_heartbeat_lineage(facets=filtered_dict)
+   
+    
+    #otel = OpenTelemetryClient(service_name="openfilter",instance_id=DEVICE_ID)
+    
+    def get_normalized_setup_metrics(self,prefix: str = "dim_") -> dict[str, Any]:
+        """Remove o prefixo 'dim_' das chaves das métricas fixas."""
+        metrics = self.logger.fixed_metrics
+
+        return {
+            (k[len(prefix):] if k.startswith(prefix) else k): v
+            for k, v in metrics.items()
+        }
+    
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
+         #metrics:Metrics = Metrics()
+        #self.otel_emitter.emit("cpu_usage", 0.91, filter_name="MyFilter")
+        
+        combined_metrics = self.setup_metrics | self.metrics
+        
+        self.otel_emitter.emit(metric_data=combined_metrics)
+        
         self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
+        
+        if frames:
+           
+            proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(frames, self.emitter))
+            proces_frames_data.start()
+       
         if (frames := self.process(frames)) is None:
             return None
 
@@ -534,13 +597,17 @@ class Filter:
 
         if (exit_after_t := self.exit_after_t) is not None and time() >= exit_after_t:
             self.exit('exit_after')
-
+  
 
     # - FOR SPECIAL SUBCLASS -------------------------------------------------------------------------------------------
 
+    
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
-
+        
+        self.emitter.emit_start(facets=dict(config))
+        self.emitter.start_lineage_heart_beat()
+       
         def on_exit_msg(reason: str):
             if reason == 'error':
                 if self.obey_exit & PROP_EXIT_FLAGS['error']:
@@ -570,7 +637,14 @@ class Filter:
             dim_filter_name            = self.__class__.__qualname__,
             dim_filter_type            = self.FILTER_TYPE,
             dim_filter_version         = get_package_version(get_real_module_name(self.__class__.__module__).split('.', 1)[0]),
+            dim_pipeline_id = self.pipeline_id,
+            dim_device_id_name =  self.device_id_name
+            
         )
+        self.setup_metrics = self.get_normalized_setup_metrics()
+        
+        self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
+        print("\033[92motel initiated *-----------------------------------------------\033[0m")
 
         if (exit_after := config.exit_after) is None:
             self.exit_after_t = None
@@ -605,7 +679,7 @@ class Filter:
 
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-
+        self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -693,6 +767,7 @@ class Filter:
         ])
     filter_name = None
     @classmethod
+    
     def run(cls,
         config:    dict[str, Any] | None = None,
         *,
@@ -719,7 +794,7 @@ class Filter:
             sig_stop: Whether to hook signals SIGINT and SIGTERM to do clean exit, can not hook in non-main thread.
                 This is a terminal stopper, if it is triggered it WILL eventually kill the process.
         """
-
+        
         if sig_stop:
             stop_evt = SignalStopper(logger, stop_evt).stop_evt
         elif stop_evt is None:
@@ -728,7 +803,7 @@ class Filter:
         try:
             if config is None:
                 config = cls.get_config()
-
+               
             if '__env_run' in config:
                 logger.warning(f"setting run environment variables for {cls.__name__} here may not take effect, "
                     "consider setting them outside the process or running the filter with the Runner in 'spawn' mode")
@@ -738,12 +813,13 @@ class Filter:
                 config = dict_without(config, '__env_run')
 
             filter = cls(config, stop_evt, obey_exit)  # will call .start_logging()
-
+           
             try:
                 loop_exc  = Filter.YesLoopException if (LOOP_EXC if loop_exc is None else loop_exc) else Exception
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
+                
+                cls.emitter.filter_name = filter.__class__.__name__
                 cls.filter_name = filter.__class__.__name__
-
                 filter.init(filter.config)
 
                 try:
@@ -773,17 +849,24 @@ class Filter:
                     filter.fini()
 
             except Exception as exc:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
                 logger.error(exc)
 
                 raise
 
             except Filter.Exit:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
                 pass
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
         finally:
+            cls.emitter.stop_lineage_heart_beat()
+            cls.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod
@@ -811,11 +894,12 @@ class Filter:
         Returns:
             A list of process exit codes, 0 means clean exit, otherwise some kind of error or exception.
         """
-
+        
         step_call = step_call or (lambda: None)
         runner    = Filter.Runner(filters, loop_exc=loop_exc, prop_exit=prop_exit, obey_exit=obey_exit,
             stop_exit=stop_exit, stop_evt=stop_evt, sig_stop=sig_stop, exit_time=exit_time, step_wait=step_wait,
             daemon=daemon)
+        
 
         while not (retcodes := runner.step()):
             step_call()
@@ -836,6 +920,7 @@ class Filter:
             step_wait: float = 0.05,
             daemon:    bool | None = None,
             start:     bool = True,
+            
         ) -> list[int]:
             """Run multiple filters in their own processes. They will be run until one or all of them exit cleanly
             (depending on options) or one of them errors out. The simple loop is:
@@ -892,7 +977,9 @@ class Filter:
             Returns:
                 A list of process exit codes, 0 means clean exit, otherwise some kind of error or exception.
             """
-
+           
+            self.device_name = os.uname().nodename
+            self.pipeline_id = f"{self.device_name}-{uuid4()}"
             if not filters:
                 raise ValueError('must specify at least one Filter to run')
 
@@ -904,6 +991,28 @@ class Filter:
             self.step_wait  = step_wait
             self.retcodes   = None
             self.proc_stops = [mp.Event() for _ in range(len(filters))]
+            """
+                eu gostaria de instanciar o Otel client aqui ou em outra parte do codigo que me possibilititer ter uma unica instancia do OpenTelemtry client,pois da formar que estou fazendo está sendo criada uma instancia por filtro.
+            """
+            self.metrics_queue = Queue()
+            self.otel_client2 = OpenTelemetryClient2(
+            exporter_type="console",
+            exporter_config={"project_id": "plainsightai-dev"},
+            setup_metrics={
+                "pipeline_id": self.pipeline_id,
+                "device_id_name": self.device_name
+            },
+            )
+            print("\033[96motel client 2 testing\033[0m")
+            self.otel_client2.start_consuming_queue(self.metrics_queue)
+            for i, (filter_cls, config) in enumerate(filters):
+                pipeline_id = self.pipeline_id
+                device_name = self.device_name
+                config["pipeline_id"] = pipeline_id
+                config["device_name"] = device_name
+                config["metrics_queue"] = self.metrics_queue
+                filters[i] = (filter_cls, config)
+                
             self.procs      = [mp.Process(target=filter.run, args=(dict_without(config, '__env_run'),), daemon=daemon,
                 kwargs=dict(loop_exc=loop_exc, prop_exit=prop_exit, obey_exit=obey_exit, stop_evt=proc_stop_evt))
                 for proc_stop_evt, (filter, config) in zip(self.proc_stops, filters)]
