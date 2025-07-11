@@ -18,8 +18,8 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
-# Ajuste o caminho conforme necessário
-from openfilter.filter_runtime.telemetry.open_telemetry_exporter_factory import ExporterFactory
+
+from openfilter.filter_runtime.open_telemetry.open_telemetry_exporter_factory import ExporterFactory
 
 
 class OpenTelemetryClient:
