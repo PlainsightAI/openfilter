@@ -19,7 +19,7 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
 
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
-from openfilter.filter_runtime.telemetry.open_telemetry_client import OpenTelemetryClient 
+from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
