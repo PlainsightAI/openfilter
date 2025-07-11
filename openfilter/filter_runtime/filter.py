@@ -17,9 +17,9 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
 
-
+from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
-
+from openfilter.filter_runtime.telemetry.open_telemetry_client import OpenTelemetryClient 
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,11 @@ class Filter:
     ):
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must hava an ID for sanity
-
+        
+        pipeline_id = config.get("pipeline_id")
+        self.device_id_name = config.get("device_name")
+        self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+       
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
 
         try:
@@ -510,6 +514,7 @@ class Filter:
             print(e)
     
     emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
+
     def process_frames_metadata(self,frames, emitter):
             
             keys = list(frames.keys())
@@ -518,8 +523,18 @@ class Filter:
                 frame_dict = frames[key].__dict__
                 filtered_dict = dict(list(frame_dict.items())[2:])
             emitter.update_heartbeat_lineage(facets=filtered_dict)
+    def get_normalized_setup_metrics(self,prefix: str = "dim_") -> dict[str, Any]:
+        
+        metrics = self.logger.fixed_metrics
+
+        return {
+            (k[len(prefix):] if k.startswith(prefix) else k): v
+            for k, v in metrics.items()
+        }
+    
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
+        self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         if frames:
             proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(frames, self.emitter))
             proces_frames_data.start()
@@ -597,7 +612,13 @@ class Filter:
             dim_filter_name            = self.__class__.__qualname__,
             dim_filter_type            = self.FILTER_TYPE,
             dim_filter_version         = get_package_version(get_real_module_name(self.__class__.__module__).split('.', 1)[0]),
+            dim_pipeline_id = self.pipeline_id,
+            dim_device_id_name =  self.device_id_name
         )
+
+        self.setup_metrics = self.get_normalized_setup_metrics()
+        
+        self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
 
         if (exit_after := config.exit_after) is None:
             self.exit_after_t = None
@@ -927,7 +948,8 @@ class Filter:
             Returns:
                 A list of process exit codes, 0 means clean exit, otherwise some kind of error or exception.
             """
-
+            self.device_name = os.uname().nodename
+            self.pipeline_id = f"{self.device_name}-{uuid4()}"
             if not filters:
                 raise ValueError('must specify at least one Filter to run')
 

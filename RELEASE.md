@@ -3,6 +3,12 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.5 - 2025-07-07
+- `Open Telemety` support to the `OpenFilter`.
+  - For `Open Telemety` usage:
+    - `TELEMETRY_EXPORTER_TYPE`- OpenTelemetry exporte mode
+    - `TELEMETRY_EXPORTER_ENABLED` - Enables/Disables telemetry             
+    
 ## v0.1.4 - 2025-07-07
 - `OpenLineage` support to the `OpenFilter`.
   - For `OpenLineage` usage:
