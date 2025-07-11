@@ -739,7 +739,7 @@ class Filter:
         return FilterConfig([
             (n[7:].lower(), json_getval(v)) for n, v in os.environ.items() if n.startswith('FILTER_') and v
         ])
-
+    filter_name = None
     @classmethod
     def run(cls,
         config:    dict[str, Any] | None = None,
@@ -792,7 +792,7 @@ class Filter:
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
                 
                 cls.emitter.filter_name = filter.__class__.__name__
-
+                cls.filter_name = filter.__class__.__name__
                 filter.init(filter.config)
 
                 try:
