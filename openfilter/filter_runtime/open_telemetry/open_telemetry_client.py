@@ -34,10 +34,7 @@ class OpenTelemetryClient:
         exporter_config: Optional[dict] = None,
         enabled: bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", True),  
     ):
-        """
-        Args:
-            enabled (bool): se False, todas as operações de métrica são ignoradas.
-        """
+
         self.enabled = enabled
         self.instance_id = instance_id
         self.setup_metrics = setup_metrics or {}
