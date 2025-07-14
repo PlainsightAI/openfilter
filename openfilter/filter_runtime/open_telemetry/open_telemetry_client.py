@@ -24,7 +24,7 @@ from openfilter.filter_runtime.open_telemetry.open_telemetry_exporter_factory im
 DEFAULT_EXPORTER_TYPE = "console"
 DEFAULT_EXPORT_INTERVAL_MS = 60000
 DEFAULT_PROJECT_ID = "plainsightai-dev"
-DEFAULT_TELEMETRY_ENABLED = True
+DEFAULT_TELEMETRY_ENABLED = False
 
 
 
@@ -48,27 +48,33 @@ class OpenTelemetryClient:
         exporter_config = exporter_config or {}
 
         if self.enabled:
-            resource = Resource.create(
-                {
-                    SERVICE_NAME: service_name,
-                    SERVICE_NAMESPACE: namespace,
-                    SERVICE_INSTANCE_ID: self.instance_id,
-                    "cloud.account.id": project_id,
-                    "cloud.resource_type": "global",
-                }
-            )
+            try:
 
-            exporter = ExporterFactory.build(exporter_type, **exporter_config)
+                resource = Resource.create(
+                    {
+                        SERVICE_NAME: service_name,
+                        SERVICE_NAMESPACE: namespace,
+                        SERVICE_INSTANCE_ID: self.instance_id,
+                        "cloud.account.id": project_id,
+                        "cloud.resource_type": "global",
+                    }
+                )
 
-            metric_reader = PeriodicExportingMetricReader(
-                exporter=exporter, export_interval_millis=export_interval_millis
-            )
+                exporter = ExporterFactory.build(exporter_type, **exporter_config)
 
-            self.provider = MeterProvider(
-                resource=resource, metric_readers=[metric_reader]
-            )
-            set_meter_provider(self.provider)
-            self.meter = get_meter(service_name)
+                metric_reader = PeriodicExportingMetricReader(
+                    exporter=exporter, export_interval_millis=export_interval_millis
+                )
+
+                self.provider = MeterProvider(
+                    resource=resource, metric_readers=[metric_reader]
+                )
+                set_meter_provider(self.provider)
+                self.meter = get_meter(service_name)
+            except Exception as e:
+                logging.exception(f"Failed to initialize telemetry exporter '{exporter_type}': {e}")
+                logging.warning("Telemetry will be disabled due to initialization failure.")
+                self.enabled = False
         else:
             self.provider = None
             self.meter = None

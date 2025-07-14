@@ -29,6 +29,7 @@ LOG_FORMAT = os.getenv('LOG_FORMAT') or None
 LOG_PID    = bool(json_getval((os.getenv('LOG_PID') or ('false' if running_in_container() else 'true')).lower()))
 LOG_THID   = bool(json_getval((os.getenv('LOG_THID') or 'false').lower()))
 LOG_UTC    = bool(json_getval((os.getenv('LOG_UTC') or 'false').lower()))
+DEFAULT_TELEMETRY_ENABLED = True
 
 if LOG_UTC:
     from time import gmtime
@@ -361,6 +362,7 @@ class Filter:
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
         self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+        self.telemetry_enabled:bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", DEFAULT_TELEMETRY_ENABLED)
         print("rodando telemetria aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
 
@@ -534,8 +536,10 @@ class Filter:
     
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
-       
-        self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
+        
+        if DEFAULT_TELEMETRY_ENABLED == True:
+
+            self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         
         if frames:
             
@@ -621,7 +625,8 @@ class Filter:
 
         self.setup_metrics = self.get_normalized_setup_metrics()
         
-        self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
+        if self.telemetry_enabled:
+            self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
 
         if (exit_after := config.exit_after) is None:
             self.exit_after_t = None
