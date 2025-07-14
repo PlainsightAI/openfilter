@@ -3,7 +3,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.5 - 2025-07-07
+
+## v0.1.6 - 2025-07-14
 
 ### Added
 - Support for Python 3.13 (Publishing and CI)
@@ -11,6 +12,22 @@ OpenFilter Library release notes
 
 ### Updated
 - Dependencies in `pyproject.toml`
+
+## v0.1.5 - 2025-07-14
+
+### Added
+- `OpenLineage` support to the `OpenFilter`.
+  - For `OpenLineage` usage:
+    - `OPENLINEAGE_URL`- OpenLineage client URL
+    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed             
+    - `OPENLINEAGE_VERIFY_CLIENT_URL` - False by default
+    - `OPENLINEAGE_ENDPOINT` - OpenLineage client endpoint
+    - `OPENLINEAGE_PRODUCER` - OpenLineage producer
+    - `OPENLINEAGE__HEART__BEAT__INTERVAL` - OpenLineage RUNNING event period
+
+### Updated
+- `OpenLineage` support to the `OpenFilter`.
+  - `run_id` updated the code so that events have the same run_id
 
 ## v0.1.4 - 2025-07-07
 
