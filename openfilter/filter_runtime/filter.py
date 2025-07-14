@@ -361,7 +361,7 @@ class Filter:
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
         self.pipeline_id = pipeline_id  # se quiser guardar como atributo
-       
+        print("rodando telemetria aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
 
         try:
@@ -534,8 +534,11 @@ class Filter:
     
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
+       
         self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
+        
         if frames:
+            
             proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(frames, self.emitter))
             proces_frames_data.start()
        
@@ -961,10 +964,18 @@ class Filter:
             self.step_wait  = step_wait
             self.retcodes   = None
             self.proc_stops = [mp.Event() for _ in range(len(filters))]
+            for i, (filter_cls, config) in enumerate(filters):
+                pipeline_id = self.pipeline_id
+                device_name = self.device_name
+                config["pipeline_id"] = pipeline_id
+                config["device_name"] = device_name
+                filters[i] = (filter_cls, config)
             self.procs      = [mp.Process(target=filter.run, args=(dict_without(config, '__env_run'),), daemon=daemon,
                 kwargs=dict(loop_exc=loop_exc, prop_exit=prop_exit, obey_exit=obey_exit, stop_evt=proc_stop_evt))
                 for proc_stop_evt, (filter, config) in zip(self.proc_stops, filters)]
             self.stop_      = lambda s: (logger.info(s), self.stop_evt.set())
+
+          
 
             if start:
                 self.start()

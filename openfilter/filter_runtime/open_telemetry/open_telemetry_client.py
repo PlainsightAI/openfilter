@@ -21,6 +21,12 @@ from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
 from openfilter.filter_runtime.open_telemetry.open_telemetry_exporter_factory import ExporterFactory
 
+DEFAULT_EXPORTER_TYPE = "console"
+DEFAULT_EXPORT_INTERVAL_MS = 60000
+DEFAULT_PROJECT_ID = "plainsightai-dev"
+DEFAULT_TELEMETRY_ENABLED = True
+
+
 
 class OpenTelemetryClient:
     def __init__(
@@ -29,10 +35,11 @@ class OpenTelemetryClient:
         namespace: str = "telemetry",
         instance_id: Optional[str] = None,
         setup_metrics: Optional[dict] = None,
-        exporter_type: str = os.getenv("TELEMETRY_EXPORTER_TYPE", "console"),
-        export_interval_millis: int = 60000,
+        exporter_type: str = os.getenv("TELEMETRY_EXPORTER_TYPE", DEFAULT_EXPORTER_TYPE),
+        export_interval_millis: int = DEFAULT_EXPORT_INTERVAL_MS,
         exporter_config: Optional[dict] = None,
-        enabled: bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", True),  
+        enabled: bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", DEFAULT_TELEMETRY_ENABLED),  
+        project_id: str | None = DEFAULT_PROJECT_ID
     ):
 
         self.enabled = enabled
@@ -46,6 +53,7 @@ class OpenTelemetryClient:
                     SERVICE_NAME: service_name,
                     SERVICE_NAMESPACE: namespace,
                     SERVICE_INSTANCE_ID: self.instance_id,
+                    "cloud.account.id": project_id,
                     "cloud.resource_type": "global",
                 }
             )
@@ -64,7 +72,7 @@ class OpenTelemetryClient:
         else:
             self.provider = None
             self.meter = None
-            logging.info("telemetry is disable")
+            logging.info("telemetry is disabled")
 
         self._lock = threading.Lock()
         self._values: dict[str, float] = {}
@@ -92,7 +100,7 @@ class OpenTelemetryClient:
                     grouped[base_name].append(value)
 
                 for base_name, values in grouped.items():
-                    # Limita a emissão de agregados a 1 vez por 60 s
+                    # send one point per second
                     if now - self._last_emit.get(base_name, 0) < 60:
                         continue
                     self._last_emit[base_name] = now
@@ -117,6 +125,7 @@ class OpenTelemetryClient:
 
    
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
+        
         if not self.enabled:
             return
 
@@ -151,4 +160,4 @@ class OpenTelemetryClient:
                         )
                         self._metrics[metric_key] = instrument
         except Exception as e:
-          logging.info("error with telemetry {e}")
+          logging.error("error with telemetry {e}")
