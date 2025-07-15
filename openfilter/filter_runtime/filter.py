@@ -361,11 +361,11 @@ class Filter:
         
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
-        self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+        self.pipeline_id = pipeline_id 
         self.telemetry_enabled:bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", DEFAULT_TELEMETRY_ENABLED)
-        print("rodando telemetria aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
-
+        
         try:
             try:
                 self.config = config = self.normalize_config(config)
@@ -537,8 +537,7 @@ class Filter:
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
         
-        if DEFAULT_TELEMETRY_ENABLED == True:
-
+        if self.telemetry_enabled == True:
             self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         
         if frames:

@@ -145,7 +145,7 @@ class OpenTelemetryClient:
                     self._values[metric_key] = value
                     self._metric_groups[name].append(metric_key)
 
-                    # Cria o gauge observável na primeira vez
+                
                     if metric_key not in self._metrics:
                         attributes = {
                             **self.setup_metrics,
