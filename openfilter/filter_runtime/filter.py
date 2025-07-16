@@ -361,7 +361,7 @@ class Filter:
         
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
-        self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+        self.pipeline_id = pipeline_id  # to store as an attribute
        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
