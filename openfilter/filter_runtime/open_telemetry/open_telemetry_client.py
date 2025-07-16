@@ -146,7 +146,7 @@ class OpenTelemetryClient:
         
         if not self.enabled:
             return
-        print("oiioo")
+        
         try:
             with self._lock:
                 
