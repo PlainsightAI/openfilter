@@ -35,7 +35,7 @@ class ExporterFactory:
                     headers=kwargs.get("headers") or {}
                 )
             except Exception as e:
-                logging.error("Failed to set OTLP_HTTP exporter {e}")
+                logging.error(f"Failed to set OTLP_HTTP exporter {e}")
 
         elif exporter_type == "console":
             try:
