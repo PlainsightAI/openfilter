@@ -365,7 +365,11 @@ class Filter:
        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
-        self.telemetry_enabled:bool =  bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
+        try:
+             self.telemetry_enabled: bool = bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
+        except ValueError:
+             logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {enabled_otel_env}. Defaulting to False.")
+    self.telemetry_enabled = False
         
     
         try:
