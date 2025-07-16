@@ -10,9 +10,22 @@ OpenFilter Library release notes
   - Note we do not support for Python 3.13t, i.e. threaded see here: https://docs.python.org/3/howto/free-threading-python.html.
 
 ### Updated
-- Dependencies in `pyproject.toml`
+- Updated latest versions for all examples using `pyproject.toml` and `requirements.txt`
 
-## v0.1.6 - 2025-07-14
+## v0.1.6 - 2025-07-16
+
+### Added
+- `OpenTelemetry` support to the `OpenFilter`.
+  - For `OpenTelemetry` usage:
+    - `TELEMETRY_EXPORTER_TYPE`- OpenTelemetry exporter (eg:console,gcm,OTLP_GRPC,OTLP_HTTP)
+    - `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT` - If the client is OTLP_GRPC           
+    - `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT` - If the client is OTLP_HTTP
+    - `OTLP_GRPC_ENDPOINT_SECURITY` - Sets OpenTelemtry GRPC client endpoint security 
+    - `TELEMETRY_EXPORTER_ENABLED` - Enable/disable OpenTelemetry
+    - `EXPORT_INTERVAL` - OpenTelemetry metrics Export interval
+    - `PROJECT_ID` - GCP project
+
+## v0.1.5 - 2025-07-14
 
 ### Added
 - `OpenLineage` support to the `OpenFilter`.

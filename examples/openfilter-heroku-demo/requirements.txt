@@ -1,2 +1,1 @@
-openfilter[all]
-python-dotenv
+openfilter[all]==0.1.5
