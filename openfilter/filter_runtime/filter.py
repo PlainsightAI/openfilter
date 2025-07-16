@@ -20,7 +20,7 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
 from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
-from distutils.util import strtobool
+from openfilter.filter_runtime.utils import strtobool
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -365,11 +365,12 @@ class Filter:
        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
+        self._metrics_updater_thread = None
         try:
              self.telemetry_enabled: bool = bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
         except ValueError:
              logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {enabled_otel_env}. Defaulting to False.")
-    self.telemetry_enabled = False
+             self.telemetry_enabled = False
         
     
         try:
@@ -411,10 +412,12 @@ class Filter:
         if not self.stop_evt.is_set():  # because we don't want to potentially log multiple exits
             self.stop_evt.set()
             self.emitter.stop_lineage_heart_beat()
+            self.stop_metrics_updater_thread()
             self.emitter.emit_stop()
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
+    """
     def start_metrics_updater_thread(self):
         interval = self.otel.export_interval_millis / 1000  
         
@@ -427,6 +430,31 @@ class Filter:
                 self.stop_evt.wait(interval)  
 
         threading.Thread(target=loop, daemon=True).start()
+    """
+    def start_metrics_updater_thread(self):
+        interval = self.otel.export_interval_millis / 1000  
+
+        def loop():
+            while not self.stop_evt.is_set():
+                try:
+                    self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
+                except Exception as e:
+                    logger.error(f"[metrics_updater] erro ao atualizar métricas: {e}")
+                self.stop_evt.wait(interval)  
+
+        # Store the thread handle
+        self._metrics_updater_thread = threading.Thread(target=loop, daemon=True)
+        self._metrics_updater_thread.start()
+
+    def stop_metrics_updater_thread(self):
+        if not getattr(self, "telemetry_enabled", False):
+            # Telemetry not enabled, nothing to stop
+            return
+        if self._metrics_updater_thread is not None:
+            self.stop_evt.set()
+            self._metrics_updater_thread.join(timeout=5)
+            self._metrics_updater_thread = None
+
 
     @staticmethod
     def download_cached_files(config: FilterConfig):
