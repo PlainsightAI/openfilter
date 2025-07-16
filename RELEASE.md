@@ -3,9 +3,7 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-<<<<<<< HEAD
-
-## v0.1.6 - 2025-07-14
+## v0.1.7 - 2025-07-14
 
 ### Added
 - Support for Python 3.13 (Publishing and CI)
@@ -14,24 +12,7 @@ OpenFilter Library release notes
 ### Updated
 - Dependencies in `pyproject.toml`
 
-||||||| parent of 34ed43c (Open Telemetry on OpenFilter (#14))
-=======
-
-## v0.1.6 - 2025-07-16
-
-### Added
-- `OpenTelemetry` support to the `OpenFilter`.
-  - For `OpenTelemetry` usage:
-    - `TELEMETRY_EXPORTER_TYPE`- OpenTelemetry exporter (eg:console,gcm,OTLP_GRPC,OTLP_HTTP)
-    - `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT` - If the client is OTLP_GRPC           
-    - `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT` - If the client is OTLP_HTTP
-    - `OTLP_GRPC_ENDPOINT_SECURITY` - Sets OpenTelemtry GRPC client endpoint security 
-    - `TELEMETRY_EXPORTER_ENABLED` - Enable/disable OpenTelemetry
-    - `EXPORT_INTERVAL` - OpenTelemetry metrics Export interval
-    - `PROJECT_ID` - GCP project
-
->>>>>>> 34ed43c (Open Telemetry on OpenFilter (#14))
-## v0.1.5 - 2025-07-14
+## v0.1.6 - 2025-07-14
 
 ### Added
 - `OpenLineage` support to the `OpenFilter`.
@@ -45,18 +26,8 @@ OpenFilter Library release notes
 
 ### Updated
 - `OpenLineage` support to the `OpenFilter`.
-<<<<<<< HEAD
   - `run_id` updated the code so that events have the same run_id
 
-||||||| parent of 34ed43c (Open Telemetry on OpenFilter (#14))
-  - `run_id` updated the code so that events have the same run_id
-
-
-
-=======
-  - `run_id` updated the code so that events have the same run_id            
-
->>>>>>> 34ed43c (Open Telemetry on OpenFilter (#14))
 ## v0.1.4 - 2025-07-07
 
 ### Added
