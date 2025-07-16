@@ -18,12 +18,11 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
-
+from distutils.util import strtobool
 from openfilter.filter_runtime.open_telemetry.open_telemetry_exporter_factory import ExporterFactory
 
 DEFAULT_EXPORTER_TYPE = "console"
-DEFAULT_EXPORT_INTERVAL_MS = 60000
-DEFAULT_PROJECT_ID = "plainsightai-dev"
+DEFAULT_EXPORT_INTERVAL_MS = 30000
 DEFAULT_TELEMETRY_ENABLED = False
 
 
@@ -36,16 +35,30 @@ class OpenTelemetryClient:
         instance_id: Optional[str] = None,
         setup_metrics: Optional[dict] = None,
         exporter_type: str = os.getenv("TELEMETRY_EXPORTER_TYPE", DEFAULT_EXPORTER_TYPE),
-        export_interval_millis: int = DEFAULT_EXPORT_INTERVAL_MS,
+        export_interval_millis: int = None,
         exporter_config: Optional[dict] = None,
-        enabled: bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", DEFAULT_TELEMETRY_ENABLED),  
-        project_id: str | None = DEFAULT_PROJECT_ID
+        enabled: bool = None,  
+        project_id: str | None = os.getenv("PROJECT_ID", None)
     ):
+        enabled_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
+        if enabled is not None:
+            self.enabled = enabled
+        elif enabled_env is not None:
+            try:
+                self.enabled = bool(strtobool(enabled_env))
+            except ValueError:
+                self.enabled = DEFAULT_TELEMETRY_ENABLED
+        else:
+            self.enabled = DEFAULT_TELEMETRY_ENABLED
 
-        self.enabled = enabled
         self.instance_id = instance_id
         self.setup_metrics = setup_metrics or {}
         exporter_config = exporter_config or {}
+
+        self.export_interval_millis = max(
+            int(os.getenv("EXPORT_INTERVAL", 0)) if os.getenv("EXPORT_INTERVAL") else export_interval_millis or 0,
+            DEFAULT_EXPORT_INTERVAL_MS
+        )
 
         if self.enabled:
             try:
@@ -63,7 +76,7 @@ class OpenTelemetryClient:
                 exporter = ExporterFactory.build(exporter_type, **exporter_config)
 
                 metric_reader = PeriodicExportingMetricReader(
-                    exporter=exporter, export_interval_millis=export_interval_millis
+                    exporter=exporter, export_interval_millis=self.export_interval_millis
                 )
 
                 self.provider = MeterProvider(
@@ -72,9 +85,7 @@ class OpenTelemetryClient:
                 set_meter_provider(self.provider)
                 self.meter = get_meter(service_name)
             except Exception as e:
-                logging.exception(f"Failed to initialize telemetry exporter '{exporter_type}': {e}")
-                logging.warning("Telemetry will be disabled due to initialization failure.")
-                self.enabled = False
+                logging.error("Error setting Open Telemtry {e}")
         else:
             self.provider = None
             self.meter = None
@@ -90,6 +101,7 @@ class OpenTelemetryClient:
 
    
     def _create_aggregate_metric_callback(self):
+        
         if not self.enabled:
             return
 
@@ -134,9 +146,10 @@ class OpenTelemetryClient:
         
         if not self.enabled:
             return
-
+        print("oiioo")
         try:
             with self._lock:
+                
                 for name, value in metrics_dict.items():
                     if not isinstance(value, (int, float)):
                         continue
@@ -145,7 +158,7 @@ class OpenTelemetryClient:
                     self._values[metric_key] = value
                     self._metric_groups[name].append(metric_key)
 
-                
+                   
                     if metric_key not in self._metrics:
                         attributes = {
                             **self.setup_metrics,
@@ -167,3 +180,7 @@ class OpenTelemetryClient:
                         self._metrics[metric_key] = instrument
         except Exception as e:
           logging.error("error with telemetry {e}")
+
+
+
+   

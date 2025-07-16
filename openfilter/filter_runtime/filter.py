@@ -20,6 +20,7 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
 from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
+from distutils.util import strtobool
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,6 @@ LOG_FORMAT = os.getenv('LOG_FORMAT') or None
 LOG_PID    = bool(json_getval((os.getenv('LOG_PID') or ('false' if running_in_container() else 'true')).lower()))
 LOG_THID   = bool(json_getval((os.getenv('LOG_THID') or 'false').lower()))
 LOG_UTC    = bool(json_getval((os.getenv('LOG_UTC') or 'false').lower()))
-DEFAULT_TELEMETRY_ENABLED = True
 
 if LOG_UTC:
     from time import gmtime
@@ -361,11 +361,13 @@ class Filter:
         
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
-        self.pipeline_id = pipeline_id 
-        self.telemetry_enabled:bool = os.getenv("TELEMETRY_EXPORTER_ENABLED", DEFAULT_TELEMETRY_ENABLED)
-        
+        self.pipeline_id = pipeline_id  # se quiser guardar como atributo
+       
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
+        enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
+        self.telemetry_enabled:bool =  bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
         
+    
         try:
             try:
                 self.config = config = self.normalize_config(config)
@@ -409,6 +411,18 @@ class Filter:
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
+    def start_metrics_updater_thread(self):
+        interval = self.otel.export_interval_millis / 1000  
+        
+        def loop():
+            while not self.stop_evt.is_set():
+                try:
+                    self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
+                except Exception as e:
+                    logger.error(f"[metrics_updater] erro ao atualizar métricas: {e}")
+                self.stop_evt.wait(interval)  
+
+        threading.Thread(target=loop, daemon=True).start()
 
     @staticmethod
     def download_cached_files(config: FilterConfig):
@@ -536,9 +550,8 @@ class Filter:
     
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
-        
-        if self.telemetry_enabled == True:
-            self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
+       
+        #self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         
         if frames:
             
@@ -589,6 +602,7 @@ class Filter:
         
         self.emitter.emit_start(facets=dict(config))
         self.emitter.start_lineage_heart_beat()
+        
         def on_exit_msg(reason: str):
             if reason == 'error':
                 if self.obey_exit & PROP_EXIT_FLAGS['error']:
@@ -623,9 +637,13 @@ class Filter:
         )
 
         self.setup_metrics = self.get_normalized_setup_metrics()
-        
+
         if self.telemetry_enabled:
-            self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
+            try:
+                self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
+                self.start_metrics_updater_thread()
+            except Exception as e:
+                logger.error("Failed to init Open Telemetry client: {e}")
 
         if (exit_after := config.exit_after) is None:
             self.exit_after_t = None
@@ -657,7 +675,7 @@ class Filter:
             mq_log        = config.mq_log,
             mq_msgid_sync = config.mq_msgid_sync,
         )
-
+   
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
         self.emitter.emit_stop()
