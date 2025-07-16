@@ -423,7 +423,7 @@ class Filter:
                 try:
                     self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
                 except Exception as e:
-                    logger.error(f"[metrics_updater] erro ao atualizar métricas: {e}")
+                    logger.error(f"[metrics_updater] error when trying to update metrics: {e}")
                 self.stop_evt.wait(interval)  
 
         threading.Thread(target=loop, daemon=True).start()
