@@ -3,6 +3,7 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+
 ## v0.1.6 - 2025-07-16
 
 ### Added
@@ -31,8 +32,10 @@ OpenFilter Library release notes
 ### Updated
 - `OpenLineage` support to the `OpenFilter`.
   - `run_id` updated the code so that events have the same run_id            
-    
+
 ## v0.1.4 - 2025-07-07
+
+### Added
 - `OpenLineage` support to the `OpenFilter`.
   - For `OpenLineage` usage:
     - `OPENLINEAGE_URL`- OpenLineage client URL

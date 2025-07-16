@@ -120,7 +120,7 @@ class OpenFilterLineage:
                 run_facets = {"openfilter": create_openfilter_facet_with_fields(data = data_to_use,filter_name=self.filter_name)}
                 
                 
-                run_obj = run or Run(runId=self.get_run_id(), facets=run_facets)
+                run_obj = run or Run(runId=self.run_id, facets=run_facets)
 
                 event = RunEvent(
                     eventType=event_type,
