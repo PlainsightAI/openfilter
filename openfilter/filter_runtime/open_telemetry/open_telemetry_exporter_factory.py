@@ -26,7 +26,7 @@ class ExporterFactory:
                     insecure=kwargs.get("insecure", os.getenv("OTLP_GRPC_ENDPOINT_SECURITY",True))
                 )
             except Exception as e:
-                logging.error("Failed to set OTLP_GRPC exporter {e}")
+                logging.error(f"Failed to set OTLP_GRPC exporter {e}")
 
         elif exporter_type == "otlp_http":
             try:
