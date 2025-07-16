@@ -608,3 +608,19 @@ class SignalStopper:
                 pass
 
         # we do not exist here any longer...
+
+
+# inside of openfilter/filter_runtime/utils.py
+def strtobool(val: str) -> bool:
+    """Convert a string representation of truth to True/False.
+
+    Accepts 'y', 'yes', 't', 'true', 'on', '1' as true values and
+    'n', 'no', 'f', 'false', 'off', '0' as false values.
+    Raises ValueError on anything else (matches distutils.behaviour).
+    """
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    if val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    raise ValueError(f"invalid truth value {val!r}")

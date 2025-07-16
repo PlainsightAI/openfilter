@@ -869,7 +869,88 @@ Once the script is running, visit the Marquez UI:
 
 And explore the jobs, runs, and facets related to the pipeline above.
 
-=======
+
+
+# OpenTelemetryClient for OpenFilter
+
+This module provides a telemetry client for [OpenTelemetry](https://opentelemetry.io/) that integrates seamlessly with **OpenFilter**. It enables structured, periodic metric collection and export for filters running inside a pipeline — supporting observability across distributed processing components.
+
+---
+
+## 🎯 Purpose in OpenFilter
+
+The `OpenTelemetryClient` is used to **track, aggregate, and export runtime metrics** from OpenFilter components (called "filters"). It is intended to:
+
+- Collect runtime metrics (e.g. CPU, memory, FPS, latency) from each filter
+- Expose those metrics using OpenTelemetry instruments (`ObservableGauge`)
+- Export them periodically to external systems (Google Cloud Monitoring, OTLP, Console, etc.)
+- Aggregate metrics for each filter for  observability and health monitoring
+
+This is crucial for **monitoring pipeline performance**, **troubleshooting**, and **scaling decision-making** in production environments using OpenFilter.
+
+---
+
+## ✨ Features
+
+- 🕒 **Periodic metric export** (default: every 3 seconds)
+- 🧩 **Built-in support for multiple exporters**:
+  - `console`: print metrics to stdout
+  - `gcm`: Google Cloud Monitoring
+  - `otlp_grpc` and `otlp_http`: OpenTelemetry Protocol via gRPC or HTTP
+- ⚙️ **Customizable via environment variables or constructor params**
+- 🧠 **Auto-creation of observable gauges** for each filter + metric
+- 📈 **Aggregation of metrics**  (e.g., mean CPU per pipeline)
+- 🔒 **Thread-safe metric updates**
+- ⛔ **Export skipping logic** to avoid redundant updates per interval
+
+---
+
+## 🛠️ How to Use (Environment Variables)
+
+The `OpenTelemetryClient` can be configured entirely through environment variables — allowing flexible, deployment-friendly setups without modifying application code.
+
+---
+
+### 🌍 Environment Variables and Their Purpose
+
+| Variable                             | Purpose                                                                 | Example Value                   |
+|--------------------------------------|-------------------------------------------------------------------------|----------------------------------|
+| `TELEMETRY_EXPORTER_ENABLED`         | Enables or disables telemetry collection                               | `"true"` / `"false"`            |
+| `TELEMETRY_EXPORTER_TYPE`            | Selects exporter type: `console`, `gcm`, `otlp_grpc`, or `otlp_http`   | `"console"`                     |
+| `PROJECT_ID`                         | Google Cloud project ID (used for GCM exporter)                        | `"my-gcp-project"`              |
+| `EXPORT_INTERVAL`                    | Interval in milliseconds between metric exports                        | `"10000"` (for 10 seconds)      |
+| `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT`   | Endpoint for OTLP gRPC export                                          | `"http://localhost:4317"`       |
+| `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT`   | Endpoint for OTLP HTTP export                                          | `"http://localhost:4318"`       |
+
+---
+
+### 🐧 Linux (bash) and 🖥 macOS (zsh)
+
+#### ⏱ Temporary (valid only for the current terminal session)
+
+```
+export TELEMETRY_EXPORTER_ENABLED=true
+export TELEMETRY_EXPORTER_TYPE=otlp_http
+export PROJECT_ID=my-gcp-project
+export EXPORT_INTERVAL=10000
+export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT=http://localhost:4318
+```
+### 🪟 Windows
+---
+#### ⏱ Temporary (valid only for the current CMD session)
+
+Run these commands directly in the Command Prompt:
+
+```
+set TELEMETRY_EXPORTER_ENABLED=true
+set TELEMETRY_EXPORTER_TYPE=otlp_http
+set PROJECT_ID=my-gcp-project
+set EXPORT_INTERVAL=10000
+set OTEL_EXPORTER_OTLP_HTTP_ENDPOINT=http://localhost:4318
+
+```
+
+---
 ## S3 Integration Example
 
 Process video files stored in Amazon S3 with OCR analysis. This example demonstrates downloading video from S3, processing with optical character recognition, and visualizing results. You can get a sample video file to test from `examples/hello-ocr/hello.mov`.
