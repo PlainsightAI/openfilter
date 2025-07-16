@@ -2,7 +2,8 @@
 OpenFilter Library release notes
 
 ## [Unreleased]
-
+### Modified
+- Updated latest versions for all examples using `pyproject.toml` and `requirements.txt`
 
 ## v0.1.6 - 2025-07-16
 

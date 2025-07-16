@@ -24,11 +24,11 @@ classifiers = [
 dynamic = ["version"]
 
 dependencies = [
-  "openfilter[all]==0.1.2",
-  "filter-license-plate-detection==0.1.3",
-  "filter-crop==0.1.2",
-  "filter-optical-character-recognition==0.1.1",
-  "filter-license-annotation-demo==0.1.1"
+  "openfilter[all]==0.1.5",
+  "filter-license-plate-detection==0.1.4",
+  "filter-crop==0.1.3",
+  "filter-optical-character-recognition==0.1.2",
+  "filter-license-annotation-demo==0.1.2"
 ]
 
 [project.optional-dependencies]
