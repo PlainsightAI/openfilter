@@ -2,6 +2,13 @@
 OpenFilter Library release notes
 
 ## [Unreleased]
+
+## v0.1.7 - 2025-07-17
+
+### Updated
+- Support for Python 3.13 (Publishing and CI)
+  - Note we do not support for Python 3.13t, i.e. threaded see here: https://docs.python.org/3/howto/free-threading-python.html.
+
 ### Modified
 - Updated latest versions for all examples using `pyproject.toml` and `requirements.txt`
 
