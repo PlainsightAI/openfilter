@@ -413,8 +413,12 @@ class Filter:
             self.stop_evt.set()
             self.emitter.stop_lineage_heart_beat()
             self.stop_metrics_updater_thread()
-            self.emitter.emit_stop()
-            logger.info(f'{reason}, exiting...' if reason else 'exiting...')
+            if exc is None:
+                self.emitter.emit_complete()
+                logger.info(f'{reason}, exiting (COMPLETE)' if reason else 'exiting (COMPLETE)')
+            else:
+                self.emitter.emit_stop()
+                logger.info(f'{reason}, exiting (ABORT)'     if reason else 'exiting (ABORT)')
 
         raise exc or Filter.Exit
     """
@@ -710,7 +714,6 @@ class Filter:
    
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-        self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -824,9 +827,17 @@ class Filter:
             sig_stop: Whether to hook signals SIGINT and SIGTERM to do clean exit, can not hook in non-main thread.
                 This is a terminal stopper, if it is triggered it WILL eventually kill the process.
         """
-        
+        import signal
         if sig_stop:
-            stop_evt = SignalStopper(logger, stop_evt).stop_evt
+            # stop_evt = SignalStopper(logger, stop_evt).stop_evt
+            prev_int = signal.getsignal(signal.SIGINT)
+            stop_evt = threading.Event()
+
+            def _handler(sig, frame):
+                    stop_evt.set()
+                    prev_int(sig, frame)
+
+            signal.signal(signal.SIGINT, _handler)
         elif stop_evt is None:
             stop_evt = threading.Event()
 
@@ -878,6 +889,12 @@ class Filter:
                 finally:
                     filter.fini()
 
+            except KeyboardInterrupt:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_stop()
+                logger.info('exiting (ABORT)')
+                raise
+
             except Exception as exc:
                 cls.emitter.stop_lineage_heart_beat()
                 cls.emitter.emit_stop()
@@ -887,16 +904,15 @@ class Filter:
 
             except Filter.Exit:
                 cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
                 pass
+
+            else:
+                cls.emitter.stop_lineage_heart_beat()
+                cls.emitter.emit_complete()
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
         finally:
-            cls.emitter.stop_lineage_heart_beat()
-            cls.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod

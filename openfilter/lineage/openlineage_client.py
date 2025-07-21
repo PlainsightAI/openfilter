@@ -145,7 +145,7 @@ class OpenFilterLineage:
             with self._lock:
                 self._emit_event(RunState.RUNNING)
             self._stop_event.wait(self.interval)
-        self.emit_complete()
+
 
     def emit_start(self, facets):
         try:
