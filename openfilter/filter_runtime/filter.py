@@ -362,7 +362,7 @@ class Filter:
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
         self.pipeline_id = pipeline_id  # to store as an attribute
-        
+
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
         self._metrics_updater_thread = None
@@ -559,8 +559,11 @@ class Filter:
 
     def set_open_lineage():
         try:
-            
-            return FilterLineage.OpenFilterLineage()
+            skip_frames = os.getenv("OPENLINEAGE__HEART__BEAT__SKIP__FRAMES")
+            if skip_frames is not None:
+                return FilterLineage.OpenFilterLineage(skip_frames=int(skip_frames))
+            else:
+                return FilterLineage.OpenFilterLineage()
             
         except Exception as e:
             print(e)

@@ -93,13 +93,16 @@ def get_http_client(url: str=None, endpoint: str = None, verify: bool = False, a
 
 
 class OpenFilterLineage:
-    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage", interval=10, facets={}, filter_name: str = None, job=None):
+    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage", interval=10, facets={}, filter_name: str = None, job=None, skip_frames:int = None):
         self.client = client or get_http_client()
         self.run_id = self.get_run_id()
         self.facets = facets
         self.job = job or create_openlineage_job()
         self.producer = os.getenv("OPENLINEAGE_PRODUCER") or producer
         self.interval = int(os.getenv("OPENLINEAGE__HEART__BEAT__INTERVAL") or interval)
+        env_skip_frames = os.getenv("OPENLINEAGE__HEART__BEAT__SKIP__FRAMES")
+        self.skip_frames = int(env_skip_frames) if env_skip_frames else skip_frames
+        self.frames_counter = 0
         self._lock = threading.Lock()
         self._thread = None
         self._running = False
@@ -137,7 +140,9 @@ class OpenFilterLineage:
 
 
     def _heartbeat_loop(self):
-       
+        if self.skip_frames:
+            return
+        
         if self.filter_model:
             self.facets["model_name"] = self.filter_model
         
@@ -191,6 +196,10 @@ class OpenFilterLineage:
                 self.job = job
             if producer:
                 self.producer = producer
+            if self.skip_frames:
+                self.frames_counter += 1
+                if self.frames_counter%self.skip_frames == 0:
+                    self._emit_event(RunState.RUNNING)
 
     def get_run_id(self):
         return str(uuid.uuid4())
