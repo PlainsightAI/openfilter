@@ -12,7 +12,8 @@ OpenFilter Library release notes
 ### Added
 - `OpenTelemetry` support to the `OpenFilter`
   - For `OpenLineage` usage:
-    - `OPENLINEAGE__HEART__BEAT__SKIP__FRAMES` - OpenLineage running event period in terms of frames to be skipped
+    - `OPENLINEAGE_HEARTBEAT_SKIP_FRAMES` - OpenLineage running event period in terms of frames to be skipped
+    - Changed `OPENLINEAGE__HEART__BEAT__INTERVAL` to `OPENLINEAGE_HEARTBEAT_INTERVAL`
 
 ## v0.1.7 - 2025-07-17
 

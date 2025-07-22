@@ -99,8 +99,8 @@ class OpenFilterLineage:
         self.facets = facets
         self.job = job or create_openlineage_job()
         self.producer = os.getenv("OPENLINEAGE_PRODUCER") or producer
-        self.interval = int(os.getenv("OPENLINEAGE__HEART__BEAT__INTERVAL") or interval)
-        env_skip_frames = os.getenv("OPENLINEAGE__HEART__BEAT__SKIP__FRAMES")
+        self.interval = int(os.getenv("OPENLINEAGE_HEARTBEAT_INTERVAL") or interval)
+        env_skip_frames = os.getenv("OPENLINEAGE_HEARTBEAT_SKIP_FRAMES")
         self.skip_frames = int(env_skip_frames) if env_skip_frames else skip_frames
         self.frames_counter = 0
         self._lock = threading.Lock()

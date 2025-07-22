@@ -559,7 +559,7 @@ class Filter:
 
     def set_open_lineage():
         try:
-            skip_frames = os.getenv("OPENLINEAGE__HEART__BEAT__SKIP__FRAMES")
+            skip_frames = os.getenv("OPENLINEAGE_HEARTBEAT_SKIP_FRAMES")
             if skip_frames is not None:
                 return FilterLineage.OpenFilterLineage(skip_frames=int(skip_frames))
             else:
