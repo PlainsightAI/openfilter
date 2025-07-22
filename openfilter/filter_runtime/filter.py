@@ -362,7 +362,7 @@ class Filter:
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
         self.pipeline_id = pipeline_id  # to store as an attribute
-       
+        
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
         self._metrics_updater_thread = None
@@ -889,15 +889,9 @@ class Filter:
 
                 except Filter.PropagateError:  # it has done its job, now eat it
                     pass
-
+                       
                 finally:
                     filter.fini()
-
-            except KeyboardInterrupt:
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
-                logger.info('exiting (ABORT)')
-                raise
 
             except Exception as exc:
                 cls.emitter.stop_lineage_heart_beat()
@@ -908,11 +902,11 @@ class Filter:
 
             except Filter.Exit:
                 cls.emitter.stop_lineage_heart_beat()
-                pass
 
             else:
                 cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_complete()
+                cls.emitter.emit_stop()
+                logger.info('exiting (ABORT) from else')
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
