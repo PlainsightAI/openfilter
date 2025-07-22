@@ -748,6 +748,26 @@ class VideoIn(Filter):
 
             self.id = id = self.id + 1
 
+            if self.emitter.skip_frames:
+                frame = Frame(
+                    image_n_tframes[0][0],  
+                    {
+                        'meta': {
+                            'id':   id,
+                            'ts':   image_n_tframes[0][1] / 1_000_000_000,
+                            'src':  self.mvreader.videos[0].source,
+                            'src_fps': self.mvreader.videos[0].fps
+                        }
+                    },
+                    'BGR' if self.mvreader.videos[0].as_bgr else 'RGB'
+                )
+                
+                try:
+                    # sends run event every skip_frames frames
+                    self.emitter.update_heartbeat_lineage(facets=frame.data)
+                except Exception:
+                    pass
+
             return {topic: Frame(img,
                 {'meta': {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}},
                 'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
