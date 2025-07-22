@@ -828,18 +828,22 @@ class Filter:
                 This is a terminal stopper, if it is triggered it WILL eventually kill the process.
         """
         import signal
-        if sig_stop:
-            # stop_evt = SignalStopper(logger, stop_evt).stop_evt
-            prev_int = signal.getsignal(signal.SIGINT)
+        import sys
+
+        if stop_evt is None:
             stop_evt = threading.Event()
+
+        if sig_stop:
 
             def _handler(sig, frame):
+                if not stop_evt.is_set():
                     stop_evt.set()
-                    prev_int(sig, frame)
+                    cls.emitter.stop_lineage_heart_beat()
+                    cls.emitter.emit_stop()
+                    logger.info('exiting (ABORT)')
+                    sys.exit(1)
 
             signal.signal(signal.SIGINT, _handler)
-        elif stop_evt is None:
-            stop_evt = threading.Event()
 
         try:
             if config is None:
