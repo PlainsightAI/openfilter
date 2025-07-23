@@ -606,7 +606,7 @@ OPENLINEAGE_URL=http://localhost:5000
 OPENLINEAGE_API_KEY=                     # Optional: leave empty if not required
 OPENLINEAGE_VERIFY_CLIENT_URL=false
 OPENLINEAGE_ENDPOINT=/api/v1/lineage
-OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage
+OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage
 OPENLINEAGE_HEARTBEAT_INTERVAL=10
 
 ```
