@@ -525,7 +525,6 @@ The `OpenFilterLineage` class relies on several environment variables to configu
 |----------------------------------|------------------------------------------------------------|
 | `OPENLINEAGE_PRODUCER`    | URL identifying the producer of the lineage events         |
 | `OPENLINEAGE_HEARTBEAT_INTERVAL` | Interval in seconds between `RUNNING` events (default: 10) |
-| `OPENLINEAGE_HEARTBEAT_SKIP_FRAMES` | Interval in terms of frames to be skipped (Optional to define, but emits events consistently)|
 | `OPENLINEAGE_URL`        | URL of the OpenLineage backend (e.g., http://localhost:5000) |
 | `OPENLINEAGE_API_KEY`     | API key used for authentication with the HTTP transport    |
 | `OPENLINEAGE_ENDPOINT` | Optional endpoint path (e.g., `/api/v1/lineage`)          |
@@ -537,9 +536,6 @@ The `OpenFilterLineage` class relies on several environment variables to configu
 ---
 
 ## Setting Variables by Platform Example
-
-> **Note:** The `OPENLINEAGE_HEARTBEAT_SKIP_FRAMES` environment variable is optional. If it is _not_ set, the heartbeat will fall back to using `OPENLINEAGE_HEARTBEAT_INTERVAL` (time-based).  
-> You only need to define one of the two—but if _both_ are set, **`OPENLINEAGE_HEARTBEAT_SKIP_FRAMES` takes precedence**.
 
 ### On **Linux/macOS** (Bash or Zsh):
 

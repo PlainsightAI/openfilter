@@ -16,7 +16,6 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     timestr, parse_time_interval, parse_date_and_or_time, hide_uri_users_and_pwds, \
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
-
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
 from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
@@ -559,11 +558,7 @@ class Filter:
 
     def set_open_lineage():
         try:
-            skip_frames = os.getenv("OPENLINEAGE_HEARTBEAT_SKIP_FRAMES")
-            if skip_frames is not None:
-                return FilterLineage.OpenFilterLineage(skip_frames=int(skip_frames))
-            else:
-                return FilterLineage.OpenFilterLineage()
+            return FilterLineage.OpenFilterLineage()
             
         except Exception as e:
             print(e)

@@ -3,17 +3,15 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.8 - 2025-07-22
+## v0.1.8 - 2025-07-23
 
 ### Fixed
 - `OpenLineage` support to the `OpenFilter`
   - Multiple abort/Complete event emission is fixed now.
 
-### Added
-- `OpenTelemetry` support to the `OpenFilter`
-  - For `OpenLineage` usage:
-    - `OPENLINEAGE_HEARTBEAT_SKIP_FRAMES` - OpenLineage running event period in terms of frames to be skipped
-    - Changed `OPENLINEAGE__HEART__BEAT__INTERVAL` to `OPENLINEAGE_HEARTBEAT_INTERVAL`
+### Modified
+  - Changed `OPENLINEAGE__HEART__BEAT__INTERVAL` to `OPENLINEAGE_HEARTBEAT_INTERVAL`
+  - The link for `producer` and `_producer` in openlineage_client.py
 
 ## v0.1.7 - 2025-07-17
 
