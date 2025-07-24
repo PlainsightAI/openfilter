@@ -20,6 +20,14 @@ from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
 from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
 from openfilter.filter_runtime.utils import strtobool
+import pathlib
+_VERSION_FILE = pathlib.Path(__file__).resolve().parent.parent.parent / "VERSION"
+try:
+    raw_version = _VERSION_FILE.read_text(encoding="utf-8").strip()
+    openfilter_version = raw_version[1:] if raw_version.lower().startswith('v') else raw_version
+except Exception:
+    openfilter_version = "unknown"
+
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -633,8 +641,14 @@ class Filter:
     
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
-        
-        self.emitter.emit_start(facets=dict(config))
+        facets = dict(config)
+
+        pkg_name = get_real_module_name(self.__class__.__module__).split('.', 1)[0]
+        filter_version = get_package_version(pkg_name)
+        facets["filter_version"] = filter_version
+        facets["openfilter_version"] = openfilter_version
+
+        self.emitter.emit_start(facets=facets)
         self.emitter.start_lineage_heart_beat()
         
         def on_exit_msg(reason: str):
@@ -665,7 +679,7 @@ class Filter:
             dim_model_runtime_version  = get_package_version('protege-runtime'),
             dim_filter_name            = self.__class__.__qualname__,
             dim_filter_type            = self.FILTER_TYPE,
-            dim_filter_version         = get_package_version(get_real_module_name(self.__class__.__module__).split('.', 1)[0]),
+            dim_filter_version         = filter_version,
             dim_pipeline_id = self.pipeline_id,
             dim_device_id_name =  self.device_id_name
         )
