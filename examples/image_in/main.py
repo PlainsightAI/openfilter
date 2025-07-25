@@ -66,7 +66,7 @@ def main():
     Filter.run_multi([
         # ImageIn: Read images from the test directory with looping
         (ImageIn, dict(
-            sources=f'file://{test_dir}!loop!maxfps=1',
+            sources=f'file://{test_dir}!loop!maxfps=2',
             outputs='tcp://*:5550',
             loop=True,  # Infinite loop
             poll_interval=2.0,  # Check for new images every 2 seconds
