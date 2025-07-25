@@ -21,6 +21,7 @@ Press Ctrl+C to stop the pipeline.
 import os
 import time
 import shutil
+import threading
 import cv2
 import numpy as np
 from openfilter.filter_runtime.filter import Filter
@@ -64,6 +65,27 @@ def create_sample_image(test_dir, image_num):
     print(f"Created image: {image_path}")
     return image_path
 
+def image_addition_thread(test_dir, stop_event):
+    """Thread function to add images over time."""
+    # Add images at different times
+    image_times = [5, 15, 25, 35, 45]  # seconds after start
+    
+    print("\nTimeline for image addition:")
+    for i, delay in enumerate(image_times):
+        print(f"  {delay}s: Will add image {i+1}")
+    
+    try:
+        for i, delay in enumerate(image_times):
+            if stop_event.is_set():
+                break
+            time.sleep(delay)
+            if not stop_event.is_set():
+                create_sample_image(test_dir, i+1)
+                print(f"\n[{time.strftime('%H:%M:%S')}] Added image {i+1} - Pipeline should pick it up automatically!")
+            
+    except Exception as e:
+        print(f"Error in image addition thread: {e}")
+
 def simulate_image_addition(test_dir):
     """Simulate adding images to the folder over time."""
     print("\n" + "="*60)
@@ -72,51 +94,51 @@ def simulate_image_addition(test_dir):
     print("Pipeline is running with empty folder...")
     print("Images will be added automatically to simulate real-world scenario.")
     print("Open http://localhost:8000 to see the images appear.")
-    print("\nTimeline:")
     
-    # Add images at different times
-    image_times = [5, 15, 25, 35, 45]  # seconds after start
+    # Create stop event for thread control
+    stop_event = threading.Event()
     
-    for i, delay in enumerate(image_times):
-        print(f"  {delay}s: Will add image {i+1}")
+    # Start image addition thread
+    image_thread = threading.Thread(
+        target=image_addition_thread, 
+        args=(test_dir, stop_event),
+        daemon=True
+    )
+    image_thread.start()
     
     print("\nStarting pipeline...")
     
-    # Start the pipeline
-    pipeline_process = Filter.run_multi([
-        # ImageIn: Read images from the test directory
-        (ImageIn, dict(
-            sources=f'file://{test_dir}!loop!maxfps=0.5',  # 1 image every 2 seconds
-            outputs='tcp://*:5550',
-            loop=True,  # Infinite loop
-            poll_interval=1.0,  # Check for new images every 1 second
-        )),
-        
-        # Util: Apply some transformations to the images
-        (Util, dict(
-            sources='tcp://127.0.0.1:5550',
-            outputs='tcp://*:5552',
-            xforms='resize 640x480, box 0.1+0.1x0.3x0.2#00ff00',  # Resize and add green box
-        )),
-        
-        # Webvis: Display images in web browser
-        (Webvis, dict(
-            sources='tcp://127.0.0.1:5552',
-            host='127.0.0.1',
-            port=8000,
-        )),
-    ])
-    
-    # Simulate adding images over time
     try:
-        for i, delay in enumerate(image_times):
-            time.sleep(delay)
-            create_sample_image(test_dir, i+1)
-            print(f"\n[{time.strftime('%H:%M:%S')}] Added image {i+1} - Pipeline should pick it up automatically!")
+        # Start the pipeline
+        Filter.run_multi([
+            # ImageIn: Read images from the test directory
+            (ImageIn, dict(
+                sources=f'file://{test_dir}!loop!maxfps=0.5',  # 1 image every 2 seconds
+                outputs='tcp://*:5550',
+                loop=True,  # Infinite loop
+                poll_interval=1.0,  # Check for new images every 1 second
+            )),
             
+            # Util: Apply some transformations to the images
+            (Util, dict(
+                sources='tcp://127.0.0.1:5550',
+                outputs='tcp://*:5552',
+                xforms='resize 640x480, box 0.1+0.1x0.3x0.2#00ff00',  # Resize and add green box
+            )),
+            
+            # Webvis: Display images in web browser
+            (Webvis, dict(
+                sources='tcp://127.0.0.1:5552',
+                host='127.0.0.1',
+                port=8000,
+            )),
+        ])
+        
     except KeyboardInterrupt:
         print("\nStopping pipeline...")
-        return pipeline_process
+        stop_event.set()
+        image_thread.join(timeout=2)
+        print("Pipeline stopped.")
 
 def main():
     """Run the empty start scenario."""

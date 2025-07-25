@@ -1,6 +1,6 @@
 # ImageIn Filter
 
-The ImageIn filter is a robust input filter for OpenFilter that reads images from local filesystems and cloud storage, emitting them as OpenFilter Frames. It follows the same design patterns as VideoIn and provides comprehensive support for various image sources, filtering, looping, and continuous monitoring.
+The ImageIn filter is a input filter for OpenFilter that reads images from local filesystems and cloud storage, emitting them as OpenFilter Frames. It follows the same design patterns as VideoIn and provides comprehensive support for various image sources, filtering, looping, continuous monitoring, and FPS control.
 
 ## Overview
 
@@ -11,6 +11,8 @@ The ImageIn filter is designed to handle image ingestion scenarios where you nee
 - Apply pattern filtering to select specific images
 - Loop through images for demonstrations or testing
 - Handle multiple sources with different topics
+- Control the display rate of images with FPS limiting
+- Test dynamic file system scenarios
 
 ## Key Features
 
@@ -20,8 +22,10 @@ The ImageIn filter is designed to handle image ingestion scenarios where you nee
 - **Recursive Scanning**: Scan subdirectories for local files
 - **Continuous Polling**: Background thread monitors for new images
 - **Multiple Topics**: Different sources can emit to different topics
+- **FPS Control**: Control image display rate with `maxfps` parameter
 - **Robust Error Handling**: Graceful handling of missing files, network issues, etc.
 - **Thread-Safe**: Background polling with proper synchronization
+- **Dynamic File Handling**: Respond to file additions, removals, and changes
 
 ## Configuration
 
@@ -40,16 +44,17 @@ Filter.run_multi([
 ])
 ```
 
-### Advanced Configuration
+### Advanced Configuration with FPS Control
 
 ```python
-# Multiple sources with different topics
+# Multiple sources with FPS limiting
 Filter.run_multi([
     (ImageIn, dict(
         sources='file:///path1;main, s3://bucket/images;cloud',
         outputs='tcp://*:5550',
         poll_interval=5.0,  # Check for new images every 5 seconds
         recursive=True,  # Scan subdirectories
+        maxfps=1.0,  # Display 1 image per second
     )),
 ])
 ```
@@ -64,6 +69,7 @@ export FILTER_PATTERN="*.jpg"
 export FILTER_POLL_INTERVAL="5.0"
 export FILTER_LOOP="true"
 export FILTER_RECURSIVE="false"
+export IMAGE_IN_MAXFPS="1.0"  # Control display rate
 ```
 
 ## Source URI Formats
@@ -105,6 +111,10 @@ You can append options to source URIs using the `!` syntax:
 - `!recursive` - Scan subdirectories
 - `!no-recursive` - Don't scan subdirectories (default)
 
+### FPS Control
+- `!maxfps=2.0` - Display 2 images per second
+- `!maxfps=0.5` - Display 1 image every 2 seconds
+
 ### AWS Region (S3 Only)
 - `!region=us-west-2` - Specify AWS region
 
@@ -118,6 +128,7 @@ These apply to all sources unless overridden:
 - `poll_interval`: Seconds between directory scans (default: 5.0)
 - `loop`: Global loop behavior
 - `recursive`: Global recursive scanning
+- `maxfps`: Global FPS limiting (images per second)
 
 ### Per-Source Options
 These can be set per source using the `!` syntax:
@@ -125,7 +136,62 @@ These can be set per source using the `!` syntax:
 - `loop`: Loop behavior for this source
 - `pattern`: Pattern filter for this source
 - `recursive`: Recursive scanning for this source
+- `maxfps`: FPS limiting for this source
 - `region`: AWS region for S3 sources
+
+## FPS Control
+
+The ImageIn filter supports FPS (Frames Per Second) control to limit the rate at which images are displayed. This is useful for:
+
+- **Demo scenarios**: Control display rate for presentations
+- **Performance optimization**: Prevent overwhelming downstream filters
+- **User experience**: Provide consistent viewing pace
+- **Resource management**: Control memory and CPU usage
+
+### FPS Configuration
+
+```python
+# Global FPS control
+Filter.run_multi([
+    (ImageIn, dict(
+        sources='file:///images',
+        outputs='tcp://*:5550',
+        maxfps=1.0,  # 1 image per second
+    )),
+])
+
+# Per-source FPS control
+Filter.run_multi([
+    (ImageIn, dict(
+        sources='file:///images!maxfps=2.0, s3://bucket/images!maxfps=0.5',
+        outputs='tcp://*:5550',
+    )),
+])
+```
+
+### FPS Behavior
+
+- **Default**: No FPS limiting (images processed as fast as possible)
+- **Global setting**: Applies to all sources unless overridden
+- **Per-source setting**: Overrides global setting for specific source
+- **Environment variable**: `IMAGE_IN_MAXFPS` sets default value
+- **Timing precision**: Uses nanosecond precision for accurate timing
+
+### FPS Implementation
+
+The FPS control uses the same timing mechanism as VideoIn:
+
+```python
+def _wait_for_fps(self, topic):
+    """Wait if necessary to maintain FPS limit."""
+    if topic in self.ns_per_maxfps:
+        now = time_ns()
+        if now - self.tmaxfps[topic] < self.ns_per_maxfps[topic]:
+            sleep_time = (self.ns_per_maxfps[topic] - (now - self.tmaxfps[topic])) / 1e9
+            if sleep_time > 0:
+                sleep(sleep_time)
+        self.tmaxfps[topic] = time_ns()
+```
 
 ## Queue Behavior and Empty Queue Handling
 
@@ -137,9 +203,11 @@ The ImageIn filter uses a sophisticated queue system to manage image processing.
 self.queues = {}      # topic → list[path]
 self.processed = {}   # topic → set[path]
 self.loop_counts = {} # topic → int (remaining loops)
+self.ns_per_maxfps = {}  # topic → nanoseconds per frame
+self.tmaxfps = {}     # topic → last frame timestamp
 ```
 
-Each topic has its own queue and tracking system.
+Each topic has its own queue, tracking system, and FPS control.
 
 ### Empty Queue Scenarios
 
@@ -246,6 +314,46 @@ def _poll_loop(self):
 - Only unprocessed images are added (prevents duplicates)
 - Processing resumes when `get_next_frame()` is called again
 
+## Test Scenarios
+
+The ImageIn filter includes comprehensive test coverage for various scenarios:
+
+### Scenario 1: Empty Directory Start
+**Test**: `test_empty_directory_scenario()`
+
+**Simulates**: Pipeline starts with an empty folder and waits for images to appear.
+
+**What it tests:**
+- Creates empty directory
+- Pre-populates with images before starting filter
+- Tests that images are processed correctly
+- Verifies metadata and image loading
+
+**Real-world use case**: Monitoring directories for new image uploads.
+
+### Scenario 2: Excluded Images with Pattern Filtering
+**Test**: `test_excluded_images_scenario()`
+
+**Simulates**: Pipeline starts with excluded images, remains idle, then processes matching images.
+
+**What it tests:**
+- Creates directory with excluded format images (.bmp, .png)
+- Adds matching JPG images
+- Tests pattern filtering (`*.jpg`)
+- Verifies only matching images are processed
+
+**Real-world use case**: Mixed file type environments with selective processing.
+
+### Additional Test Coverage
+
+- **Basic Functionality**: `test_basic_read()`, `test_pattern_filtering()`
+- **Looping Behavior**: `test_loop()`, `test_recursive_scanning()`
+- **Configuration**: `test_normalize_config()`, `test_config_params()`
+- **FPS Control**: `test_maxfps_config()`
+- **Multiple Sources**: `test_multiple_sources()`
+- **Error Handling**: `test_invalid_source()`, `test_file_scheme_parsing()`
+- **Dynamic Behavior**: `test_dynamic_file_changes()`
+
 ## Usage Examples
 
 ### Example 1: Basic Image Processing
@@ -263,13 +371,14 @@ Filter.run_multi([
 
 **Behavior:** Processes all images once, then stops.
 
-### Example 2: Continuous Monitoring
+### Example 2: Continuous Monitoring with FPS Control
 ```python
 Filter.run_multi([
     (ImageIn, dict(
         sources='file:///path/to/images',
         outputs='tcp://*:5550',
         poll_interval=2.0,  # Check every 2 seconds
+        maxfps=1.0,  # Display 1 image per second
     )),
     (Webvis, dict(
         sources='tcp://localhost:5550',
@@ -277,13 +386,13 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Processes existing images, then monitors for new ones.
+**Behavior:** Processes existing images at controlled rate, then monitors for new ones.
 
-### Example 3: Infinite Loop for Demo
+### Example 3: Infinite Loop for Demo with FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///path/to/images!loop',
+        sources='file:///path/to/images!loop!maxfps=0.5',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -292,13 +401,13 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Continuously loops through images for demonstrations.
+**Behavior:** Continuously loops through images at 0.5 FPS for demonstrations.
 
-### Example 4: Pattern Filtering
+### Example 4: Pattern Filtering with FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///path/to/images!pattern=*.jpg',
+        sources='file:///path/to/images!pattern=*.jpg!maxfps=2.0',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -307,13 +416,13 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Only processes JPEG files.
+**Behavior:** Only processes JPEG files at 2 FPS.
 
-### Example 5: Multiple Sources
+### Example 5: Multiple Sources with Different FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///local/images;main, s3://bucket/images;cloud',
+        sources='file:///local/images!maxfps=1.0;main, s3://bucket/images!maxfps=0.5;cloud',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -322,13 +431,13 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Processes images from both local and cloud sources.
+**Behavior:** Processes local images at 1 FPS, cloud images at 0.5 FPS.
 
-### Example 6: S3 with Options
+### Example 6: S3 with Options and FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='s3://my-bucket/images!pattern=*.png!region=us-west-2',
+        sources='s3://my-bucket/images!pattern=*.png!region=us-west-2!maxfps=1.0',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -337,13 +446,13 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Processes PNG files from S3 bucket in specific region.
+**Behavior:** Processes PNG files from S3 bucket at 1 FPS.
 
-### Example 7: GCS with Recursive Scanning
+### Example 7: GCS with Recursive Scanning and FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='gs://my-bucket/images!recursive!pattern=*.jpg',
+        sources='gs://my-bucket/images!recursive!pattern=*.jpg!maxfps=0.5',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -352,7 +461,7 @@ Filter.run_multi([
 ])
 ```
 
-**Behavior:** Recursively scans GCS bucket for JPEG files.
+**Behavior:** Recursively scans GCS bucket for JPEG files at 0.5 FPS.
 
 ## Cloud Storage Setup
 
@@ -400,6 +509,11 @@ The ImageIn filter handles various error conditions gracefully:
 - Falls back to literal string matching
 - Continues processing
 
+### FPS Control Errors
+- Logs timing errors
+- Continues processing without FPS limiting
+- Graceful degradation
+
 ## Performance Considerations
 
 ### Memory Usage
@@ -412,6 +526,12 @@ The ImageIn filter handles various error conditions gracefully:
 - Configurable via `poll_interval`
 - Lower values = faster response to new images
 - Higher values = less system load
+
+### FPS Control Impact
+- Minimal CPU overhead for timing
+- Nanosecond precision for accurate control
+- Per-topic FPS tracking
+- Graceful handling of timing errors
 
 ### Threading
 - Background polling thread
@@ -443,11 +563,18 @@ The ImageIn filter handles various error conditions gracefully:
 1. Increase `poll_interval`
 2. Use more specific patterns
 3. Avoid recursive scanning on large directories
+4. Adjust FPS settings if too aggressive
 
 #### Memory Issues
 1. Reduce number of sources
 2. Use more specific patterns
 3. Increase `poll_interval`
+4. Lower FPS settings
+
+#### FPS Control Issues
+1. Check `maxfps` values are reasonable (> 0)
+2. Verify timing precision on your system
+3. Monitor for timing-related errors in logs
 
 ### Debug Logging
 ```python
@@ -459,15 +586,16 @@ This will show detailed information about:
 - Image discovery
 - Queue operations
 - Polling activity
+- FPS timing
 - Error conditions
 
 ## Advanced Usage
 
-### Custom Image Processing Pipeline
+### Custom Image Processing Pipeline with FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///images!loop',
+        sources='file:///images!loop!maxfps=1.0',
         outputs='tcp://*:5550',
     )),
     (Util, dict(
@@ -481,11 +609,11 @@ Filter.run_multi([
 ])
 ```
 
-### Multi-Source with Different Topics
+### Multi-Source with Different Topics and FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///local;main, s3://bucket/cloud;cloud',
+        sources='file:///local!maxfps=1.0;main, s3://bucket/cloud!maxfps=0.5;cloud',
         outputs='tcp://*:5550',
     )),
     (Webvis, dict(
@@ -494,11 +622,11 @@ Filter.run_multi([
 ])
 ```
 
-### Batch Processing with Exit
+### Batch Processing with Exit and FPS
 ```python
 Filter.run_multi([
     (ImageIn, dict(
-        sources='file:///batch',
+        sources='file:///batch!maxfps=2.0',
         outputs='tcp://*:5550',
         exit_after=300,  # Exit after 5 minutes
     )),
@@ -518,6 +646,7 @@ class ImageInConfig(FilterConfig):
     poll_interval: float = 5.0
     loop: bool | int | None = False
     recursive: bool = False
+    maxfps: float | None = None  # New FPS control
 ```
 
 ### ImageIn
@@ -530,19 +659,16 @@ class ImageIn(Filter):
     def setup(self, config)
     def process(self, frames)
     def shutdown(self)
+    def _wait_for_fps(self, topic)  # New FPS method
 ```
 
 ### Environment Variables
 - `IMAGE_IN_POLL_INTERVAL`: Default polling interval
 - `IMAGE_IN_LOOP`: Default loop behavior
 - `IMAGE_IN_RECURSIVE`: Default recursive scanning
+- `IMAGE_IN_MAXFPS`: Default FPS limiting (new)
 - `FILTER_SOURCES`: Image sources
 - `FILTER_PATTERN`: Global pattern filter
 - `FILTER_LOOP`: Global loop behavior
 - `FILTER_RECURSIVE`: Global recursive scanning
-
-## Conclusion
-
-The ImageIn filter provides a robust, flexible solution for image ingestion in OpenFilter pipelines. Its sophisticated queue management, comprehensive error handling, and support for multiple source types make it suitable for both simple batch processing and complex continuous monitoring scenarios.
-
-The filter's design follows OpenFilter best practices and integrates seamlessly with other filters in the ecosystem, making it an essential component for image processing pipelines. 
+- `FILTER_MAXFPS`: Global FPS limiting (new)
