@@ -3,7 +3,7 @@ import os
 import re
 import glob
 from threading import Thread, Event
-from time import time
+from time import time, time_ns, sleep
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 
@@ -24,7 +24,9 @@ except ImportError:
     HAS_GCS = False
 
 from openfilter.filter_runtime.filter import Filter, Frame, FilterConfig
-from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without
+from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without, adict
+
+__all__ = ['ImageInConfig', 'ImageIn']
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 IMAGE_IN_POLL_INTERVAL = float(json_getval((os.getenv('IMAGE_IN_POLL_INTERVAL') or '5.0')))
 IMAGE_IN_LOOP = json_getval((os.getenv('IMAGE_IN_LOOP') or 'false').lower())
 IMAGE_IN_RECURSIVE = bool(json_getval((os.getenv('IMAGE_IN_RECURSIVE') or 'false').lower()))
+IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or 'null').lower())) is None else float(_)
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif', 'webp'}
@@ -95,12 +98,13 @@ class ImageInConfig(FilterConfig):
     """Configuration for the ImageIn filter. Follows the same pattern as VideoInConfig.
     More details in the docstring of the ImageIn filter.
     """
-    class Source(dict):
-        class Options(dict):
+    class Source(adict):
+        class Options(adict):
             loop: bool | int | None
             recursive: bool | None
             pattern: str | None
             region: str | None
+            maxfps: float | None
 
         source: str
         topic: str | None
@@ -113,6 +117,7 @@ class ImageInConfig(FilterConfig):
     recursive: bool | None
     pattern: str | None
     poll_interval: float | None
+    maxfps: float | None
     
 
 class ImageIn(Filter):
@@ -150,6 +155,10 @@ class ImageIn(Filter):
                 '!region=us-west-2':
                     Set AWS region for S3 sources. Only applies to s3:// sources.
 
+                '!maxfps=1.0':
+                    Set `maxfps` option for this source. Controls how many images per second are displayed.
+                    For example, maxfps=1.0 means each image is displayed for 1 second.
+
         loop:
             Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
             the images only once, otherwise an int value loops through the images that number of times. Set here to apply
@@ -169,6 +178,11 @@ class ImageIn(Filter):
         
         region:
             AWS region for S3 sources. Only applies to s3:// sources.
+
+        maxfps:
+            Restrict image display to this FPS. Controls how many images per second are displayed.
+            For example, maxfps=1.0 means each image is displayed for 1 second.
+            Set here to apply to all sources or can be set individually per source. Global env var default IMAGE_IN_MAXFPS.
             
         Example:
             openfilter run - ImageIn --sources s3://my-bucket/images!pattern=*.jpg - Webvis
@@ -178,11 +192,13 @@ class ImageIn(Filter):
             openfilter run - ImageIn --sources file:///path/to/images!recursive!pattern=*.jpg!loop=3!poll_interval=10 - Webvis
             openfilter run - ImageIn --sources file:///path/to/images!recursive!pattern=*.jpg!loop=3!poll_interval=10!region=us-west-2 - Webvis
             openfilter run - ImageIn --sources file:///path/to/images!recursive!pattern=*.jpg!loop=3!poll_interval=10!region=us-west-2 - Webvis
+            openfilter run - ImageIn --sources file:///path/to/images!maxfps=1.0 - Webvis
 
     Environment variables:
         IMAGE_IN_LOOP
         IMAGE_IN_RECURSIVE
         IMAGE_IN_POLL_INTERVAL
+        IMAGE_IN_MAXFPS
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
@@ -228,7 +244,7 @@ class ImageIn(Filter):
                 source.topic = 'main'
             if not isinstance(options := source.options, ImageInConfig.Source.Options):
                 source.options = options = ImageInConfig.Source.Options() if options is None else ImageInConfig.Source.Options(options)
-            if any((option := o) not in ('loop', 'recursive', 'pattern', 'region') for o in options):
+            if any((option := o) not in ('loop', 'recursive', 'pattern', 'region', 'maxfps') for o in options):
                 raise ValueError(f'unknown option {option!r} in {source!r}')
 
         if len(set(source.topic for source in sources)) != len(sources):
@@ -248,6 +264,10 @@ class ImageIn(Filter):
         self.loop_counts = {}           # topic -> int (remaining loops)
         self.stop_event = Event()
         
+        # FPS control variables
+        self.ns_per_maxfps = {}         # topic -> int (nanoseconds per maxfps)
+        self.tmaxfps = {}               # topic -> int (last maxfps timestamp)
+        
         # Initialize queues and processed sets for each topic
         for source in config.sources:
             topic = source.topic or 'main'
@@ -255,6 +275,13 @@ class ImageIn(Filter):
                 self.queues[topic] = []
                 self.processed[topic] = set()
                 self.loop_counts[topic] = source.options.loop if isinstance(source.options.loop, int) else (0 if source.options.loop else 1)
+                
+                # Initialize FPS control for this topic
+                maxfps = source.options.maxfps or config.maxfps or IMAGE_IN_MAXFPS
+                if maxfps is not None:
+                    self.ns_per_maxfps[topic] = int(1_000_000_000 // maxfps)
+                    self.tmaxfps[topic] = time_ns()
+                    logger.info(f"ImageIn topic '{topic}' FPS limited to {maxfps:.1f} fps")
         
         # Load initial images
         self._load_initial_images()
@@ -408,6 +435,24 @@ class ImageIn(Filter):
             # Sleep for poll interval
             self.stop_event.wait(poll_interval)
 
+    def _wait_for_fps(self, topic: str) -> bool:
+        """Wait for FPS timing if maxfps is set for this topic. Returns True if frame should be sent."""
+        if topic not in self.ns_per_maxfps:
+            return True  # No FPS limit for this topic
+            
+        t = time_ns()
+        ns_per_maxfps = self.ns_per_maxfps[topic]
+        tmaxfps = self.tmaxfps[topic]
+        
+        # Check if enough time has passed since last frame
+        if (tdiff := t - tmaxfps) < ns_per_maxfps:
+            # Not enough time has passed, skip this frame
+            return False
+            
+        # Update the timestamp for next frame
+        self.tmaxfps[topic] = tmaxfps + (tdiff // ns_per_maxfps) * ns_per_maxfps
+        return True
+
     def process(self, frames):
         """Return a callable that provides the next frame when called."""
         def get_next_frame():
@@ -431,6 +476,10 @@ class ImageIn(Filter):
                         continue
 
                 if queue:
+                    # Check FPS timing before sending frame
+                    if not self._wait_for_fps(topic):
+                        continue  # Skip this frame due to FPS limit
+                        
                     path = queue.pop(0)
                     self.processed[topic].add(path)
 

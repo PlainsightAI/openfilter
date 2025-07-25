@@ -26,7 +26,8 @@ def create_sample_images():
     test_dir = "test_images"
     os.makedirs(test_dir, exist_ok=True)
     
-    # Create multiple test images
+    # Create multiple test images in different formats
+    formats = ['jpg', 'png', 'bmp']
     for i in range(3):
         img = np.zeros((480, 640, 3), dtype=np.uint8)
         
@@ -41,8 +42,9 @@ def create_sample_images():
         cv2.putText(img, "OpenFilter ImageIn Demo", (50, 350), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
-        # Save the image
-        image_path = os.path.join(test_dir, f"sample_image_{i+1}.jpg")
+        # Save the image in different formats
+        format_ext = formats[i % len(formats)]
+        image_path = os.path.join(test_dir, f"sample_image_{i+1}.{format_ext}")
         cv2.imwrite(image_path, img)
         print(f"Created sample image: {image_path}")
     
@@ -64,7 +66,7 @@ def main():
     Filter.run_multi([
         # ImageIn: Read images from the test directory with looping
         (ImageIn, dict(
-            sources=f'file://{test_dir}!loop!pattern=*.jpg',
+            sources=f'file://{test_dir}!loop!maxfps=1',
             outputs='tcp://*:5550',
             loop=True,  # Infinite loop
             poll_interval=2.0,  # Check for new images every 2 seconds
@@ -72,15 +74,15 @@ def main():
         
         # Util: Apply some transformations to the images
         (Util, dict(
-            sources='tcp://localhost:5550',
+            sources='tcp://127.0.0.1:5550',
             outputs='tcp://*:5552',
             xforms='resize 640x480, box 0.1+0.1x0.3x0.2#ff0000',  # Resize and add red box
         )),
         
         # Webvis: Display images in web browser
         (Webvis, dict(
-            sources='tcp://localhost:5552',
-            host='0.0.0.0',
+            sources='tcp://127.0.0.1:5552',
+            host='127.0.0.1',
             port=8000,
         )),
     ])
