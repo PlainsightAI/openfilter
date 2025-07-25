@@ -3,11 +3,12 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.8 - 2025-07-24
+## v0.1.8 - 2025-07-25
 
 ### Fixed
 - `OpenLineage` support to the `OpenFilter`
   - Multiple abort/Complete event emission is fixed now.
+- `filter_runtime_version` to `openfilter_version` for telemetry.
 
 ### Modified
 - Changed `OPENLINEAGE__HEART__BEAT__INTERVAL` to `OPENLINEAGE_HEARTBEAT_INTERVAL`
