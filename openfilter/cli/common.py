@@ -19,6 +19,7 @@ PARAM_ORDER = list(FilterConfig.__annotations__)
 
 SHORTHAND = {
     "Filter": "openfilter.filter_runtime.filter.Filter",
+    "ImageIn": "openfilter.filter_runtime.filters.image_in.ImageIn",
     "MQTTOut": "openfilter.filter_runtime.filters.mqtt_out.MQTTOut",
     "Recorder": "openfilter.filter_runtime.filters.recorder.Recorder",
     "REST": "openfilter.filter_runtime.filters.rest.REST",
@@ -32,6 +33,7 @@ SHORTHAND = {
 }
 
 DOCKER_IMAGES = {
+    "filter_runtime.filters.image_in.ImageIn": "us-west1-docker.pkg.dev/plainsightai-prod/oci/image_in",
     "filter_runtime.filters.mqtt_out.MQTTOut": "us-west1-docker.pkg.dev/plainsightai-prod/oci/mqtt_out",
     "filter_runtime.filters.recorder.Recorder": "us-west1-docker.pkg.dev/plainsightai-prod/oci/recorder",
     "filter_runtime.filters.rest.REST": "us-west1-docker.pkg.dev/plainsightai-prod/oci/rest",

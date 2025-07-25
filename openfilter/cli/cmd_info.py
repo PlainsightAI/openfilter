@@ -13,6 +13,8 @@ logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'INFO').upper())
 
 SHORTERHAND = {
     'filter':       'Filter',
+    'imagein':      'ImageIn',
+    'image_in':     'ImageIn',
     'mqtt':         'MQTTOut',
     'mqttout':      'MQTTOut',
     'mqtt_out':     'MQTTOut',
