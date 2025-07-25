@@ -3,7 +3,7 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.8 - 2025-07-2
+## v0.1.8 - 2025-07-25
 
 ### Added
 - **FilterContext**: Added a static context class to provide build and model metadata at runtime. This includes:
