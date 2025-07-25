@@ -481,6 +481,153 @@ export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
 gcloud auth application-default login
 ```
 
+## Google Cloud Authg for Docker and Container Authentication
+
+When running the ImageIn filter in Docker containers or other containerized environments, you need to handle cloud storage authentication differently than in local development. Here are the best practices for different scenarios:
+
+### Authentication Methods
+
+#### 1. Service Account Key (Recommended for Production)
+
+**How it works:**
+- Create a service account in Google Cloud Console with appropriate permissions
+- Download the JSON key file
+- Mount it as a volume in your Docker container
+- Set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+
+**Steps:**
+1. Go to Google Cloud Console → IAM & Admin → Service Accounts
+2. Create a new service account with Storage Object Viewer permissions
+3. Create and download a JSON key file
+4. Mount the key file in your Docker container
+5. Set the environment variable to point to the mounted file
+
+**Docker Example:**
+```bash
+docker run -v /path/to/service-account-key.json:/app/credentials/key.json:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/key.json \
+  your-openfilter-image
+```
+
+**Security considerations:**
+- Never commit the key file to version control
+- Use Docker secrets or Kubernetes secrets in production
+- Rotate keys regularly
+- Use least-privilege principle for service account permissions
+
+#### 2. Workload Identity (Kubernetes/GKE)
+
+**How it works:**
+- Uses Kubernetes service accounts with Google Cloud IAM
+- No key files needed
+- Automatic credential rotation
+- Most secure for Kubernetes environments
+
+#### 3. Application Default Credentials (Development)
+
+**How it works:**
+- Mount your local gcloud credentials into the container
+- Uses the same credentials as your development environment
+- Good for development/testing scenarios
+
+**Steps:**
+1. Run `gcloud auth application-default login` on your host machine
+2. Mount the credentials directory into the container
+3. Set the environment variable to point to the mounted credentials
+
+**Docker Example:**
+```bash
+docker run -v ~/.config/gcloud:/root/.config/gcloud:ro \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json \
+  your-openfilter-image
+```
+
+#### 4. Environment Variables (Alternative)
+
+**How it works:**
+- Pass credentials directly as environment variables
+- Less secure, not recommended for production
+- Good for quick testing or CI/CD pipelines
+
+**Steps:**
+1. Set `GOOGLE_APPLICATION_CREDENTIALS_JSON` with the entire key content
+2. Modify your application to read from this environment variable
+3. Write the content to a temporary file at runtime
+
+**Docker Example:**
+```bash
+docker run -e GOOGLE_APPLICATION_CREDENTIALS_JSON='{"type": "service_account", ...}' \
+  your-openfilter-image
+```
+
+### Security Best Practices
+
+#### Never Do:
+- ❌ Commit service account keys to version control
+- ❌ Use root user in containers
+- ❌ Store credentials in Docker images
+- ❌ Use overly broad permissions
+- ❌ Use the same credentials across environments
+
+#### Always Do:
+- ✅ Use least-privilege service accounts
+- ✅ Rotate credentials regularly
+- ✅ Use secrets management (Docker secrets, Kubernetes secrets)
+- ✅ Monitor access and audit logs
+- ✅ Use workload identity when possible
+- ✅ Use separate service accounts for different environments
+
+### Error Handling for Authentication Failures
+
+The ImageIn filter should handle authentication failures gracefully:
+
+#### Common Error Messages:
+```
+Failed to list GCS images from gs://bucket/path: Your default credentials were not found.
+To set up Application Default Credentials, see https://cloud.google.com/docs/authentication/external/set-up-adc
+```
+
+#### What the Filter Does:
+1. **Logs clear error messages** about what's missing
+2. **Provides helpful instructions** for setting up credentials
+3. **Gracefully handles failures** without crashing the entire pipeline
+4. **Continues processing other sources** if available
+5. **Retries on next polling cycle** for transient failures
+
+#### User Actions Required:
+1. **For Service Account Key**: Ensure the key file is mounted and accessible
+2. **For Workload Identity**: Verify service account annotations and IAM bindings
+3. **For Application Default Credentials**: Check that credentials are properly mounted
+4. **For Environment Variables**: Verify the JSON content is correct and complete
+
+### Docker Compose Example
+
+```yaml
+version: '3.8'
+services:
+  openfilter-gcs:
+    build: .
+    volumes:
+      # Mount service account key from host
+      - ./service-account-key.json:/app/credentials/service-account-key.json:ro
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account-key.json
+      - FILTER_SOURCES=gs://your-bucket/images!loop!maxfps=1.0
+    ports:
+      - "8000:8000"
+```
+
+### Production Recommendations
+
+1. **Use Workload Identity** if running on GKE
+2. **Use Service Account Keys** with proper secrets management
+3. **Implement proper error handling** in your filter code
+4. **Monitor authentication failures** and alert on them
+5. **Use separate service accounts** for different environments (dev/staging/prod)
+6. **Regularly rotate credentials** and monitor access logs
+7. **Use least-privilege permissions** for service accounts
+8. **Test authentication in CI/CD** before deploying to production
+
 ## Error Handling
 
 The ImageIn filter handles various error conditions gracefully:
