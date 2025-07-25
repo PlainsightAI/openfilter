@@ -32,7 +32,7 @@ test-coverage:  ## Run unit tests and generate coverage report
 
 .PHONY: clean
 clean:  ## Delete all generated files and directories
-	sudo rm -rf build/ cache/ dist/ filter_runtime.egg-info/ telemetry/ ipc_*
+	sudo rm -rf build/ cache/ dist/ filter_runtime.egg-info/ telemetry/ ipc_* 
 	find . -name __pycache__ -type d -exec rm -rf {} +
 
 
