@@ -17,7 +17,10 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
 from pathlib import Path
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib # python <3.11 uses tomli instead of tomllib
 
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
