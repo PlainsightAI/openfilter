@@ -675,7 +675,7 @@ class Filter:
 
         self.logger.set_fixed_metrics(**(config.extra_metrics or {}),
             dim_environment            = ENVIRONMENT if (env := config.environment) is None else env,
-            dim_filter_runtime_version = get_package_version('filter_runtime'),
+            dim_openfilter_version     = openfilter_version,
             dim_model_runtime_version  = get_package_version('protege-runtime'),
             dim_filter_name            = self.__class__.__qualname__,
             dim_filter_type            = self.FILTER_TYPE,
