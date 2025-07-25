@@ -16,11 +16,11 @@ from .utils import JSONType, json_getval, simpledeepcopy, dict_without, split_co
     timestr, parse_time_interval, parse_date_and_or_time, hide_uri_users_and_pwds, \
     get_real_module_name, get_packages, get_package_version, set_env_vars, running_in_container, \
     adict, DaemonicTimer, SignalStopper
-
 from uuid import uuid4
 from openfilter.lineage import openlineage_client as FilterLineage
 from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
 from openfilter.filter_runtime.utils import strtobool
+
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
@@ -362,7 +362,7 @@ class Filter:
         pipeline_id = config.get("pipeline_id")
         self.device_id_name = config.get("device_name")
         self.pipeline_id = pipeline_id  # to store as an attribute
-       
+
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
         self._metrics_updater_thread = None
@@ -413,8 +413,12 @@ class Filter:
             self.stop_evt.set()
             self.emitter.stop_lineage_heart_beat()
             self.stop_metrics_updater_thread()
-            self.emitter.emit_stop()
-            logger.info(f'{reason}, exiting...' if reason else 'exiting...')
+            if exc is None:
+                self.emitter.emit_complete()
+                logger.info(f'{reason}, exiting (COMPLETE)' if reason else 'exiting (COMPLETE)')
+            else:
+                self.emitter.emit_stop()
+                logger.info(f'{reason}, exiting (ABORT)'     if reason else 'exiting (ABORT)')
 
         raise exc or Filter.Exit
     """
@@ -555,7 +559,6 @@ class Filter:
 
     def set_open_lineage():
         try:
-            
             return FilterLineage.OpenFilterLineage()
             
         except Exception as e:
@@ -631,7 +634,7 @@ class Filter:
     
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
-        
+
         self.emitter.emit_start(facets=dict(config))
         self.emitter.start_lineage_heart_beat()
         
@@ -710,7 +713,6 @@ class Filter:
    
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-        self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -824,11 +826,23 @@ class Filter:
             sig_stop: Whether to hook signals SIGINT and SIGTERM to do clean exit, can not hook in non-main thread.
                 This is a terminal stopper, if it is triggered it WILL eventually kill the process.
         """
-        
-        if sig_stop:
-            stop_evt = SignalStopper(logger, stop_evt).stop_evt
-        elif stop_evt is None:
+        import signal
+        import sys
+
+        if stop_evt is None:
             stop_evt = threading.Event()
+
+        if sig_stop:
+
+            def _handler(sig, frame):
+                if not stop_evt.is_set():
+                    stop_evt.set()
+                    cls.emitter.stop_lineage_heart_beat()
+                    cls.emitter.emit_stop()
+                    logger.info('exiting (ABORT)')
+                    sys.exit(1)
+
+            signal.signal(signal.SIGINT, _handler)
 
         try:
             if config is None:
@@ -874,7 +888,7 @@ class Filter:
 
                 except Filter.PropagateError:  # it has done its job, now eat it
                     pass
-
+                       
                 finally:
                     filter.fini()
 
@@ -887,16 +901,15 @@ class Filter:
 
             except Filter.Exit:
                 cls.emitter.stop_lineage_heart_beat()
+
+            else:
+                cls.emitter.stop_lineage_heart_beat()
                 cls.emitter.emit_stop()
-                pass
+                logger.info('exiting (ABORT) from else')
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
         finally:
-            cls.emitter.stop_lineage_heart_beat()
-            cls.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod
