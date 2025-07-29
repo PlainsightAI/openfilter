@@ -524,7 +524,7 @@ The `OpenFilterLineage` class relies on several environment variables to configu
 | Variable Name                     | Description                                                |
 |----------------------------------|------------------------------------------------------------|
 | `OPENLINEAGE_PRODUCER`    | URL identifying the producer of the lineage events         |
-| `OPENLINEAGE__HEART__BEAT__INTERVAL` | Interval in seconds between `RUNNING` events (default: 10) |
+| `OPENLINEAGE_HEARTBEAT_INTERVAL` | Interval in seconds between `RUNNING` events (default: 10) |
 | `OPENLINEAGE_URL`        | URL of the OpenLineage backend (e.g., http://localhost:5000) |
 | `OPENLINEAGE_API_KEY`     | API key used for authentication with the HTTP transport    |
 | `OPENLINEAGE_ENDPOINT` | Optional endpoint path (e.g., `/api/v1/lineage`)          |
@@ -541,7 +541,7 @@ The `OpenFilterLineage` class relies on several environment variables to configu
 
 ```bash
 export OPENLINEAGE_PRODUCER="https://my-company.com/openlineage"
-export OPENLINEAGE__HEART__BEAT__INTERVAL=10
+export OPENLINEAGE_HEARTBEAT_INTERVAL=10
 export OPENLINEAGE_URL="http://localhost:5000"
 export OPENLINEAGE_API_KEY="your_api_key"
 export OPENLINEAGE_ENDPOINT="/api/v1/lineage"
@@ -552,7 +552,7 @@ export WEBVIS_MODEL_NAME="my-model-v1"
 ### On Windows (CMD):
 ```bash
 set OPENLINEAGE_PRODUCER=https://my-company.com/openlineage
-set OPENLINEAGE__HEART__BEAT__INTERVAL=10
+set OPENLINEAGE_HEARTBEAT_INTERVAL=10
 set OPENLINEAGE_URL=http://localhost:5000
 set OPENLINEAGE_API_KEY=your_api_key
 set OPENLINEAGE_ENDPOINT=/api/v1/lineage
@@ -606,8 +606,8 @@ OPENLINEAGE_URL=http://localhost:5000
 OPENLINEAGE_API_KEY=                     # Optional: leave empty if not required
 OPENLINEAGE_VERIFY_CLIENT_URL=false
 OPENLINEAGE_ENDPOINT=/api/v1/lineage
-OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage
-OPENLINEAGE__HEART__BEAT__INTERVAL=10
+OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage
+OPENLINEAGE_HEARTBEAT_INTERVAL=10
 
 ```
 
