@@ -665,13 +665,24 @@ class Filter:
     emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
 
     def process_frames_metadata(self,frames, emitter):
+        keys = list(frames.keys())
+        
+        accumulated_data = {}
+        for key in keys:
+            frame = frames[key]
             
-            keys = list(frames.keys())
-            filtered_dict = None
-            for key in keys:
-                frame_dict = frames[key].__dict__
-                filtered_dict = dict(list(frame_dict.items())[2:])
-            emitter.update_heartbeat_lineage(facets=filtered_dict)
+            # Get the data attribute directly (this contains the actual frame data)
+            if hasattr(frame, 'data') and isinstance(frame.data, dict):
+                frame_data = frame.data
+                
+                # Add the data with the correct structure
+                for data_key, data_value in frame_data.items():
+                    accumulated_data[data_key] = data_value
+            else:
+                logging.warning(f"[{self.filter_name}] Frame '{key}' has no data attribute or data is not a dict")
+    
+        emitter.update_heartbeat_lineage(facets=accumulated_data)
+        
     def get_normalized_setup_metrics(self,prefix: str = "dim_") -> dict[str, Any]:
         
         metrics = self.logger.fixed_metrics
@@ -686,18 +697,20 @@ class Filter:
        
         #self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
         
-        if frames:
-            
-            proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(frames, self.emitter))
-            proces_frames_data.start()
-       
-        if (frames := self.process(frames)) is None:
+        # Process the frames first, so the filter can add its own results
+        if (processed_frames := self.process(frames)) is None:
             return None
 
-        if callable(frames):
-            return lambda: None if (f := frames()) is None else {'main': f} if isinstance(f, Frame) else f
+        # Now emit heartbeat with the processed frames that include this filter's results
+        if processed_frames and not callable(processed_frames):
+            final_frames = {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
+            proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(final_frames, self.emitter))
+            proces_frames_data.start()
+
+        if callable(processed_frames):
+            return lambda: None if (f := processed_frames()) is None else {'main': f} if isinstance(f, Frame) else f
         else:
-            return {'main': frames} if isinstance(frames, Frame) else frames
+            return {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
 
     def loop_once(self) -> None:
         """Loop twice."""
