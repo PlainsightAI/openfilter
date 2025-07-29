@@ -3,7 +3,7 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.8 - 2025-07-25
+## v0.1.9 - 2025-07-29
 
 ### Fixed
 - `OpenLineage` support to the `OpenFilter`
@@ -12,6 +12,16 @@ OpenFilter Library release notes
 ### Modified
 - Changed `OPENLINEAGE__HEART__BEAT__INTERVAL` to `OPENLINEAGE_HEARTBEAT_INTERVAL`
 - The link for `producer` and `_producer` in openlineage_client.py
+
+## v0.1.8 - 2025-07-25
+
+### Added
+- **FilterContext**: Added a static context class to provide build and model metadata at runtime. This includes:
+  - `filter_version` (from VERSION)
+  - `model_version` (from VERSION.MODEL)
+  - `git_sha` (from GITHUB_SHA, set by CI/CD or manually)
+  - `models` (from models.toml, with model name, version, and path)
+- The context is accessible via `FilterContext.get(key)`, `FilterContext.as_dict()`, and `FilterContext.log()` for logging/debugging purposes.
 
 ## v0.1.7 - 2025-07-17
 
