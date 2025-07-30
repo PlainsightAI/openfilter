@@ -3,6 +3,11 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.9 - 2025-07-30
+
+### Modified
+- `Running` events now include the filter's own meta data as well.
+
 ## v0.1.8 - 2025-07-25
 
 ### Added
