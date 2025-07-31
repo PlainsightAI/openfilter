@@ -6,7 +6,7 @@ import sys
 import threading
 from multiprocessing import synchronize
 from time import time
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, List
 
 from .dlcache import is_cached_file, dlcache
 from .frame import Frame
@@ -23,8 +23,8 @@ except ImportError:
     import tomli as tomllib # python <3.11 uses tomli instead of tomllib
 
 from uuid import uuid4
-from openfilter.lineage import openlineage_client as FilterLineage
-from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
+from openfilter.observability import OpenFilterLineage, TelemetryRegistry, MetricSpec
+from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient
 from openfilter.filter_runtime.utils import strtobool
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
@@ -204,233 +204,23 @@ class FilterContext:
 class Filter:
     """Filter base class. All filters derive from this and can override any of these config options but in practice
     mostly override `sources` and `outputs` to specify other sources or outputs than the filter pipeline.
-
-    config:
-        id:
-            Unique string identifier for this filter. If this is not provided then it will be randomly generated.
-
-        sources:
-            Sources for this filter, they can be either other filters ('tcp://', 'ipc://') or filter specific URIs like
-            'file://', 'rtsp://', 'http://', etc... When thet are other filters they are handled here and take the
-            following form (there can be multiple delimited by commas, whitespace is ignored):
-
-                "tcp://127.0.0.1" - All topics are received (not including "_metrics" if present).
-                "tcp://127.0.0.1;" - Only the 'main' topic is received.
-                "tcp://127.0.0.1;>" - Same.
-                "tcp://127.0.0.1;>other" - The 'main' topic is received as 'other'.
-                "tcp://127.0.0.1;that>" - The 'that' topic is received as 'main'.
-                "tcp://127.0.0.1;that>other" - The 'that' topic is received as 'other'.
-                "tcp://127.0.0.1;*" - ALL topics are received, including '_metrics'.
-
-        sources_balance:
-            Source(s) are load balanced (previously split across multiple identical pipelines) so join them again here
-            into one stream. This filter will act as if the multiple upstream `sources` are one single filter running
-            faster than it could if it were only one element. Must be paired with `outputs_balance` upstreamn.
-
-        sources_timeout:
-            If specified then this is the maximum number of milliseconds to wait for any input from `sources`, on
-            timeout otherwise call process() regardless with an empty `frames` object. EXPERIMENTAL!
-
-        sources_low_latency:
-            Set low latency mode for sources, also lowers throughput a bit. Normally a filter will preemptively request
-            the next frame as soon as it has received the current one. This allows that the next frame may be ready in
-            the pipeline when this filter comes back to request it, but in the case of sources which provikde data at
-            the moment of the request (like video), this will increase the amount of time that has passed between frame
-            generation and when you get it (higher latency). Global env var default ZMQ_LOW_LATENCY.
-
-        outputs:
-            Where other filters will connect to get their data, e.g. "tcp://127.0.0.1", "tcp://*:5552", "ipc://name".
-            NOT the destination filters themselves! Repeat, this is a bind point where this filter will listen for
-            connections, not where it should connect to send data. This field is also commonly overloaded by specific
-            output filters like video or messaging queue outputs.
-
-        outputs_balance:
-            Balance sending frames across all outputs. Not normal operation, meant for a load balancing topology. Must
-            be paired with `sources_balance` downstream.
-
-        outputs_timeout:
-            If specified then this is the maximum number of milliseconds to wait for to output `frames`, on timeout
-            otherwise call process drop those `frames` and proceed as if they had been sent. EXPERIMENTAL!
-
-        outputs_required:
-            Comma separated string of filter ids required to be connected before sending anything. This is a list of the
-            `id` fields from the configs of the required filters, NOT their addresses.
-
-        outputs_jpg:
-            Whether to output images as jpg True, False makes sure NOT to output them as jpg even if returned from
-            process() as such, None uses env var default which is normally to pass them on as they are returned from
-            process(). Global env var default ZMQ_LOW_LATENCY. Gloval env var default OUTPUTS_JPG.
-
-        exit_after:
-            Exit after this amount of time in seconds or as a formatted string '[[[days[d]:]hrs:]mins:]secs[.subsecs]'.
-            If the `exit_after` string starts with '@' then this sets an actual clock date/time to exit at (in local
-            time or UTC depending on LOG_UTC). Can pass either time (date will be today), date (time will be midnight)
-            or both. Date order is year/month/day and the separator character is '/' or '-'. If both date and time are
-            passed then they are separated by either space ' ' or 'T'. Default is no exit datetime scheduled.
-
-        environment:
-            Optional and informational only, 'Production', 'Staging', 'Dev', whatever...
-
-        log_path:
-            Set to False to disable logs and metrics, None for default location and otherwise will be path for logs and
-            metrics. Gloval env var default LOG_PATH.
-
-        metrics_interval:
-            Number of seconds between averaged metrics samples written to log files. Gloval env var default
-            METRICS_INTERVAL.
-
-        mq_log:
-            Log outgoing messages, can be 'all', 'image', 'data', 'none', 'pretty', 'metrics', True (same as 'all') or
-            False (same as 'none'). A value None actually means use global env var default, not 'none' which means no
-            log at all. Global env var default MQ_LOG.
-
-        mq_msgid_sync:
-            Default True means synchronize message IDs between sources and outputs (normal mode of operation). This
-            is provided in case of advanced use with circular filter topologies. If you don't know what this means then
-            don't touch this. Global env var default MQ_MSGID_SYNC. EXPERIMENTAL!
-
-    Environment variables:
-        LOG_LEVEL:
-            'critical', 'error', 'warning', 'info' or 'debug'.
-
-        LOG_FORMAT:
-            Log show format override, direct parameter to basicConfig(format=?), overrides LOG_PID and LOG_THID.
-
-        LOG_PID:
-            Force show or hide process ID.
-
-        LOG_THID:
-            Force show or hide thread ID.
-
-        LOG_UTC:
-            If 'true'ish all logging will be in UTC instead of local time. This only affects showing time in the logs as
-            timezone information is stored so real time is never lost regardless of mode.
-
-        LOOP_EXC:
-            If 'false'ish ignore exceptions in the main loop and keep going, otherwise exit with an error (default).
-
-        PROP_EXIT:
-            Exit propagate policy to other filters, can be 'all', 'error', 'clean', or 'none'. Default 'clean'.
-
-        OBEY_EXIT:
-            Which propagated exits to obey, can be 'all', 'error', 'clean', or 'none'. Default 'all'.
-
-        STOP_EXIT:
-            Multi-filter Runner exit policy, can be 'all', 'error', 'clean', or 'none'. Default 'error'.
-
-        AUTO_DOWNLOAD:
-            Automatically download "jfrog://..." resources in configs and replace names with cached "file://..." URIs.
-            Default True.
-
-    From logging.py:
-        LOG_PATH:
-            Path for logs, set to 'false' to disable. Default 'false'.
-
-        LOGS_FILE_SIZE:
-            Maximum individual logs file size in bytes. Default 5_000_000.
-
-        LOGS_TOTAL_SIZE:
-            Maximum total size of all logs files in bytes. Default 100_000_000.
-
-        METRICS_FILE_SIZE:
-            Maximum individual log file size in bytes. Default 5_000_000.
-
-        METRICS_TOTAL_SIZE:
-            Maximum total size of all metrics files in bytes. Default 100_000_000.
-
-        METRICS_INTERVAL:
-            Number of seconds between metrics samples written to metrics file (base metrics averaged in this time).
-
-    From mq.py:
-        OUTPUTS_JPG:
-            If 'true'ish then encode output images to network as jpg, 'false'ish only send decoded, 'null' send as is as
-            was passed from process().
-
-        OUTPUTS_METRICS:
-            If true then send metrics as '_metrics' on all zeromq outputs. If false then don't send. If string then is
-            address of dedicated sender for metrics (will not be sent on normal senders).
-
-        OUTPUTS_METRICS_PUSH:
-            If 'true'ish then will always send metrics on dedicated metrics output regardless of if something is
-            officially connected or not. Default true to support doubly ephemeral '??' listeners which are most likely
-            the only things connected. Does not affect metrics on normal output channels.
-
-        MQ_LOG:
-            Default outputs logging if not explicitly specified. Default 'none'.
-
-        MQ_MSGID_SYNC:
-            Whether to sync expected message IDs between outgoing and incoming zeromq message queues. Advanced thing,
-            don't touch unless u know what u doing.
-
-    From metrics.py:
-        GPU_METRICS:
-            Set to 'false'ish to turn off GPU metrics.
-
-        GPU_METRICS_INTERVAL:
-            Default number of seconds between poll of GPU metrics (using nvidia-smi tool).
-
-        CPU_METRICS_INTERVAL:
-            Default number of seconds between poll of CPU and memory metrics.
-
-    From dlcache.py:
-        JFROG_API_KEY:
-            The JFrog API key, will be deprecated by evil JFrog people at end of September 2024, use JFROG_TOKEN
-            instead.
-
-        JFROG_TOKEN:
-            The JFrog access token to the World Bank master server.
-
-        DLCACHE_PATH:
-            Path to root of cache where to download 'jfrog://' items to. Default 'cache'.
-
-    From zeromq.py (don't mess with these except DEBUG_ZEROMQ, ZMQ_CONN_TIMEOUT, ZMQ_LOW_LATENCY and ZMQ_WARN_*):
-        DEBUG_ZEROMQ:
-            If 'true'ish and logging is set to 'debug' then will log each message sent and received (not the full
-            contents, just basic info).
-
-        ZMQ_RECONNECT_IVL:
-            Reconnect wait in milliseconds.
-
-        ZMQ_RECONNECT_IVL_MAX:
-            Reconnect exponential backoff max value in milliseconds, 0 for no backoff (default).
-
-        ZMQ_EXPLICIT_LINGER:
-            Because sometimes zmq.LINGER just doesn't do it. Milliseconds to wait after last send before allowing socket
-            close to make sure important messages (exit) get out. Because really, sometimes it just drops the last
-            messages even with LINGER set high.
-
-        ZMQ_POLL_TIMEOUT:
-            Length to wait in milliseconds each poll for a message to come in in milliseconds. Requests for more frames
-            are sent at this interval as well.
-
-        ZMQ_CONN_TIMEOUT:
-            Length of time in milliseconds without receiving anything from a downstream connection in order to consider
-            that client timed out and no longer require a request from it to allow publish of frames.
-
-        ZMQ_CONN_HANDSHAKE:
-            Since we are using two separate sockets for communication it is possible that the requestor socket connects
-            before the subscriber socket and causes messages to be sent which are missed. This is not usually a problem
-            during normal operation but may be during testing or in special circumstances. For this reason handshake
-            exists so that a sender does not recognize a receiver until that receiver has indicated in its request
-            packets that it has received at least one message from the sender. Set this to False to turn this behavior
-            off if for some reason it is causing a problem or if you want the absolute fastest connections without
-            regard for possibly lost initial packets. Set on upstream side, default True.
-
-        ZMQ_PUSH_HWM:
-            For emergencies.
-
-        ZMQ_PUB_HWM:
-            For emergencies.
-
-        ZMQ_LOW_LATENCY:
-            If 'true'ish then favor lower latency over higher throughput. Will only help in some cases with the right
-            properties. Really on things immediately downstream of VideoIn.
-
-        ZMQ_WARN_NEWER:
-            Warn on newer messages than expected.
-
-        ZMQ_WARN_OLDER:
-            Warn on older messages than expected.
+    
+    Subclasses can declare metrics by setting the metric_specs class attribute:
+    
+        class MyFilter(Filter):
+            metric_specs = [
+                MetricSpec(
+                    name="frames_processed",
+                    instrument="counter", 
+                    value_fn=lambda d: 1
+                ),
+                MetricSpec(
+                    name="detections_per_frame",
+                    instrument="histogram",
+                    value_fn=lambda d: len(d.get("detections", [])),
+                    boundaries=[0, 1, 2, 5, 10]
+                )
+            ]
     """
 
     config:  FilterConfig
@@ -439,6 +229,7 @@ class Filter:
     metrics: dict[str, JSONType]  # the last metrics that were sent out, including user metrics
 
     FILTER_TYPE = 'User'
+    metric_specs: List[MetricSpec] = []  # subclasses override this to declare metrics
 
     @property
     def metrics(self) -> dict[str, JSONType]:
@@ -656,32 +447,24 @@ class Filter:
 
     def set_open_lineage():
         try:
-            
-            return FilterLineage.OpenFilterLineage()
-            
+            return OpenFilterLineage()
         except Exception as e:
             print(e)
     
-    emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
+    emitter: OpenFilterLineage = set_open_lineage()
 
-    def process_frames_metadata(self,frames, emitter):
-        keys = list(frames.keys())
+    def process_frames_metadata(self, frames, emitter):
+        """Record metrics for processed frames using the telemetry registry.
         
-        accumulated_data = {}
-        for key in keys:
-            frame = frames[key]
+        This method records safe metrics based on MetricSpec declarations
+        and does NOT forward raw PII data to OpenLineage.
+        """
+        if not hasattr(self, '_telemetry') or self._telemetry is None:
+            return
             
-            # Get the data attribute directly (this contains the actual frame data)
+        for frame in frames.values():
             if hasattr(frame, 'data') and isinstance(frame.data, dict):
-                frame_data = frame.data
-                
-                # Add the data with the correct structure
-                for data_key, data_value in frame_data.items():
-                    accumulated_data[data_key] = data_value
-            else:
-                logging.warning(f"[{self.filter_name}] Frame '{key}' has no data attribute or data is not a dict")
-    
-        emitter.update_heartbeat_lineage(facets=accumulated_data)
+                self._telemetry.record(frame.data)
         
     def get_normalized_setup_metrics(self,prefix: str = "dim_") -> dict[str, Any]:
         
@@ -786,7 +569,20 @@ class Filter:
 
         if self.telemetry_enabled:
             try:
-                self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
+                self.otel = OpenTelemetryClient(
+                    service_name="openfilter", 
+                    instance_id=self.pipeline_id,
+                    setup_metrics=self.setup_metrics,
+                    lineage_emitter=self.emitter
+                )
+                
+                # Initialize telemetry registry if metric specs are declared
+                if hasattr(self, 'metric_specs') and self.metric_specs:
+                    meter = self.otel.meter
+                    self._telemetry = TelemetryRegistry(meter, self.metric_specs)
+                else:
+                    self._telemetry = None
+                    
                 self.start_metrics_updater_thread()
             except Exception as e:
                 logger.error("Failed to init Open Telemetry client: {e}")
