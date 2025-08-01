@@ -102,7 +102,7 @@ def get_http_client(url: str = None, endpoint: str = None, verify: bool = False,
         return OpenLineageClient(transport=HttpTransport(http_config))
     
     except Exception as e:
-        logging.error(f"[OpenFilterLineage] Failed to get client: {e}")
+        logging.warning(f"[OpenFilterLineage] Failed to get client: {e}")
 
 
 class OpenFilterLineage:
@@ -133,7 +133,14 @@ class OpenFilterLineage:
         self.filter_model = os.getenv(filter_name.upper() + "_MODEL_NAME") if filter_name else None
 
     def _emit_event(self, event_type, run=None, facets=None):
-        """Emit an OpenLineage event."""
+        """Emit an OpenLineage event. 
+            Creates and emits an OpenLineage event with run ID, job name, facets and producer.
+            Args:
+                event_type: Type of event to emit
+                run: Run object
+                facets: Facets to include in the event
+        """
+        
         try:
             if not os.getenv("OPENLINEAGE_DISABLED", "false").lower() in ("true", "1"):
                 

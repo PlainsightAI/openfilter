@@ -2,6 +2,21 @@
 
 This document describes the new observability system in OpenFilter that provides safe, aggregated metrics without PII leakage.
 
+```shell
+
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Filter with   │    │  OpenTelemetry   │    │   OpenLineage   │
+│   MetricSpecs   │───▶│     Client       │───▶│     Bridge      │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│ TelemetryRegistry│    │   MeterProvider   │    │  OTelLineage    │
+│   (Records)     │    │   (Aggregates)   │    │   Exporter      │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+
+```
+
 ## Overview
 
 The observability system is built around three key principles:
