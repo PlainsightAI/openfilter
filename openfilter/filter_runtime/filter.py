@@ -457,9 +457,15 @@ class Filter:
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must hava an ID for sanity
         
-        pipeline_id = config.get("pipeline_id")
-        self.device_id_name = config.get("device_name")
+        pipeline_id = config.get("pipeline_id") or os.environ.get("PIPELINE_ID")
+        self.device_id_name = config.get("device_name") or os.environ.get("DEVICE_NAME")
         self.pipeline_id = pipeline_id  # to store as an attribute
+        
+        # Add pipeline identification to config for OpenLineage start event
+        if pipeline_id:
+            config["pipeline_id"] = pipeline_id
+        if self.device_id_name:
+            config["device_name"] = self.device_id_name
        
 
         FilterContext.init()
@@ -692,6 +698,36 @@ class Filter:
             for k, v in metrics.items()
         }
     
+    def get_version_info_for_lineage(self) -> dict[str, Any]:
+        """Get comprehensive version information for OpenLineage events."""
+        version_info = {}
+        
+        # Get context data
+        context_data = FilterContext.as_dict()
+        if context_data:
+            # Add basic version fields
+            if context_data.get('filter_version'):
+                version_info['filter_version'] = context_data.get('filter_version')
+            if context_data.get('model_version'):
+                version_info['model_version'] = context_data.get('model_version')
+            if context_data.get('git_sha'):
+                version_info['git_sha'] = context_data.get('git_sha')
+            
+            # Handle models data
+            models_data = context_data.get('models')
+            if models_data:
+                version_info['models'] = models_data
+        
+        # Add OpenFilter framework version if available
+        try:
+            openfilter_version = FilterContext._read_file('/app/VERSION')
+            if openfilter_version:
+                version_info['openfilter_version'] = openfilter_version.strip()
+        except Exception:
+            pass
+        
+        return version_info
+    
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
        
@@ -746,7 +782,18 @@ class Filter:
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
         
-        self.emitter.emit_start(facets=dict(config))
+        # Prepare facets with config and version information
+        facets = dict(config)
+
+        # Filter out sensitive/internal configuration fields
+        sensitive_fields = {'model_path'}
+        facets = {k: v for k, v in facets.items() if k not in sensitive_fields}
+        
+        # Add comprehensive version information
+        version_info = self.get_version_info_for_lineage()
+        facets.update(version_info)
+        
+        self.emitter.emit_start(facets=facets)
         self.emitter.start_lineage_heart_beat()
         
         def on_exit_msg(reason: str):
