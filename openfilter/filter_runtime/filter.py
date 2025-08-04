@@ -170,47 +170,27 @@ class FilterContext:
 
     @classmethod
     def get_filter_version(cls) -> str | None:
-        """Get the filter version for OpenLineage events.
-        
-        Returns:
-            The filter version string from VERSION file, or None if not available.
-        """
+        """Get the filter version for OpenLineage events."""
         return cls._data.get('filter_version')
 
     @classmethod
     def get_bundle_version(cls) -> str | None:
-        """Get the model version for OpenLineage events.
-        
-        Returns:
-            The model version string from VERSION.MODEL file, or None if not available.
-        """
+        """Get the bundle version for OpenLineage events from VERSION.MODEL file."""
         return cls._data.get('bundle_version')
 
     @classmethod
     def get_git_sha(cls) -> str | None:
-        """Get the git SHA for OpenLineage events.
-        
-        Returns:
-            The git SHA string from GITHUB_SHA file, or None if not available.
-        """
+        """Get the git SHA for OpenLineage events."""
         return cls._data.get('git_sha')
 
     @classmethod
     def get_models(cls) -> dict | None:
-        """Get the models data for OpenLineage events.
-        
-        Returns:
-            Dictionary of model information from models.toml, or None if not available.
-        """
+        """Get the models data for OpenLineage events."""
         return cls._data.get('models')
 
     @classmethod
     def get_openfilter_version(cls) -> str | None:
-        """Get the OpenFilter framework version for OpenLineage events.
-        
-        Returns:
-            The OpenFilter framework version string from the installed package, or None if not available.
-        """
+        """Get the OpenFilter framework version for OpenLineage events."""
         try:
             import importlib.metadata
             version = importlib.metadata.version('openfilter')
