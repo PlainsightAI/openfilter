@@ -121,14 +121,12 @@ class FilterContext:
         - version: The version string for the model
         - path: The path to the model file (if present), or 'No path' if not specified
 
-    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), FilterContext.log(), and specific getter methods for OpenLineage events.
+    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), FilterContext.log(), and specific getter methods.
 
     Example usage:
         FilterContext.init()  # Initializes context if not already done
         version = FilterContext.get('filter_version')
         FilterContext.log()   # Logs all context info
-        
-        # For OpenLineage events:
         filter_version = FilterContext.get_filter_version()
         openfilter_version = FilterContext.get_openfilter_version()
     """
@@ -142,7 +140,7 @@ class FilterContext:
 
         cls._data = {
             "filter_version": cls._read_file("VERSION"),
-            "bundle_version": cls._read_file("VERSION.MODEL"),
+            "resource_bundle_version": cls._read_file("VERSION.MODEL"),
             "git_sha": cls._read_file("GITHUB_SHA"),
             "models": cls._read_models_toml(),
             "openfilter_version": cls.get_openfilter_version()
@@ -170,27 +168,27 @@ class FilterContext:
 
     @classmethod
     def get_filter_version(cls) -> str | None:
-        """Get the filter version for OpenLineage events."""
+        """Get the filter version."""
         return cls._data.get('filter_version')
 
     @classmethod
-    def get_bundle_version(cls) -> str | None:
-        """Get the bundle version for OpenLineage events from VERSION.MODEL file."""
-        return cls._data.get('bundle_version')
+    def get_resource_bundle_version(cls) -> str | None:
+        """Get the resource bundle version from VERSION.MODEL file."""
+        return cls._data.get('resource_bundle_version')
 
     @classmethod
     def get_git_sha(cls) -> str | None:
-        """Get the git SHA for OpenLineage events."""
+        """Get the git SHA."""
         return cls._data.get('git_sha')
 
     @classmethod
-    def get_models(cls) -> dict | None:
-        """Get the models data for OpenLineage events."""
+    def get_model_info(cls) -> dict | None:
+        """Get the models data."""
         return cls._data.get('models')
 
     @classmethod
     def get_openfilter_version(cls) -> str | None:
-        """Get the OpenFilter framework version for OpenLineage events."""
+        """Get the OpenFilter framework version."""
         try:
             import importlib.metadata
             version = importlib.metadata.version('openfilter')
@@ -797,12 +795,12 @@ class Filter:
         # Add comprehensive version information from FilterContext
         if FilterContext.get_filter_version():
             facets['filter_version'] = FilterContext.get_filter_version()
-        if FilterContext.get_bundle_version():
-            facets['bundle_version'] = FilterContext.get_bundle_version()
+        if FilterContext.get_resource_bundle_version():
+            facets['resource_bundle_version'] = FilterContext.get_resource_bundle_version()
         if FilterContext.get_git_sha():
             facets['git_sha'] = FilterContext.get_git_sha()
-        if FilterContext.get_models():
-            facets['models'] = FilterContext.get_models()
+        if FilterContext.get_model_info():
+            facets['models'] = FilterContext.get_model_info()
         if FilterContext.get_openfilter_version():
             facets['openfilter_version'] = FilterContext.get_openfilter_version()
         

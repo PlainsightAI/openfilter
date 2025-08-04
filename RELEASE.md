@@ -7,9 +7,9 @@ OpenFilter Library release notes
 
 ### Modified
 - `Start` events now emit filter context with the regular info.
-- renamed `model_version` to `bundle_version` for clarity as it the version for the full bundle rather than any one model.
+- renamed `model_version` to `resource_bundle_version` for clarity as it the version for the full bundle rather than any one model.
 - modified FilterContext to emit `openfilter_version` as well.
-- added getters for FilterContext: `FilterContext.get_filter_version()`, `FilterContext.get_bundle_version()`, `FilterContext.get_openfilter_version()`, `FilterContext.get_git_sha()` and `FilterContext.get_models()`.
+- added getters for FilterContext: `FilterContext.get_filter_version()`, `FilterContext.get_resource_bundle_version`, `FilterContext.get_openfilter_version()`, `FilterContext.get_git_sha()` and `FilterContext.get_model_info()`.
 
 ## v0.1.9 - 2025-07-30
 
