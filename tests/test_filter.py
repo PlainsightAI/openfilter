@@ -727,9 +727,10 @@ class TestFilter(unittest.TestCase):
         # Verify that data is populated
         self.assertIsInstance(FilterContext._data, dict)
         self.assertIn('filter_version', FilterContext._data)
-        self.assertIn('model_version', FilterContext._data)
         self.assertIn('git_sha', FilterContext._data)
         self.assertIn('models', FilterContext._data)
+        self.assertIn('bundle_version', FilterContext._data)
+        self.assertIn('openfilter_version', FilterContext._data)
         
         # Test that subsequent calls don't reinitialize
         original_data = FilterContext._data.copy()
@@ -743,9 +744,10 @@ class TestFilter(unittest.TestCase):
         
         # Test getting existing keys
         self.assertIsInstance(FilterContext.get('filter_version'), (str, type(None)))
-        self.assertIsInstance(FilterContext.get('model_version'), (str, type(None)))
+        self.assertIsInstance(FilterContext.get('bundle_version'), (str, type(None)))
         self.assertIsInstance(FilterContext.get('git_sha'), (str, type(None)))
         self.assertIsInstance(FilterContext.get('models'), dict)
+        self.assertIsInstance(FilterContext.get('openfilter_version'), (str, type(None)))
         
         # Test getting non-existent key
         self.assertIsNone(FilterContext.get('non_existent_key'))
@@ -759,9 +761,10 @@ class TestFilter(unittest.TestCase):
         
         self.assertIsInstance(context_dict, dict)
         self.assertIn('filter_version', context_dict)
-        self.assertIn('model_version', context_dict)
+        self.assertIn('bundle_version', context_dict)
         self.assertIn('git_sha', context_dict)
         self.assertIn('models', context_dict)
+        self.assertIn('openfilter_version', context_dict)
         
         # Verify it's a copy, not a reference
         self.assertIsNot(context_dict, FilterContext._data)
@@ -909,9 +912,10 @@ invalid_field = "value"
         
         # Verify structure
         self.assertIsInstance(context_data['filter_version'], (str, type(None)))
-        self.assertIsInstance(context_data['model_version'], (str, type(None)))
+        self.assertIsInstance(context_data['bundle_version'], (str, type(None)))
         self.assertIsInstance(context_data['git_sha'], (str, type(None)))
         self.assertIsInstance(context_data['models'], dict)
+        self.assertIsInstance(context_data['openfilter_version'], (str, type(None)))
         
         # If VERSION file exists, test that it's read correctly
         version_file = Path("VERSION")
@@ -923,7 +927,7 @@ invalid_field = "value"
         model_version_file = Path("VERSION.MODEL")
         if model_version_file.exists():
             expected_model_version = model_version_file.read_text().strip()
-            self.assertEqual(context_data['model_version'], expected_model_version)
+            self.assertEqual(context_data['bundle_version'], expected_model_version)
         
         # If GITHUB_SHA file exists, test that it's read correctly
         github_sha_file = Path("GITHUB_SHA")
@@ -964,9 +968,10 @@ invalid_field = "value"
         
         self.assertIsInstance(context_data, dict)
         self.assertIn('filter_version', context_data)
-        self.assertIn('model_version', context_data)
+        self.assertIn('bundle_version', context_data)
         self.assertIn('git_sha', context_data)
         self.assertIn('models', context_data)
+        self.assertIn('openfilter_version', context_data)
 
 
 if __name__ == '__main__':

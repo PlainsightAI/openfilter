@@ -144,7 +144,8 @@ class FilterContext:
             "filter_version": cls._read_file("VERSION"),
             "bundle_version": cls._read_file("VERSION.MODEL"),
             "git_sha": cls._read_file("GITHUB_SHA"),
-            "models": cls._read_models_toml()
+            "models": cls._read_models_toml(),
+            "openfilter_version": cls.get_openfilter_version()
         }
 
     @classmethod
