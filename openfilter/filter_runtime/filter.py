@@ -121,12 +121,16 @@ class FilterContext:
         - version: The version string for the model
         - path: The path to the model file (if present), or 'No path' if not specified
 
-    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), and FilterContext.log().
+    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), FilterContext.log(), and specific getter methods for OpenLineage events.
 
     Example usage:
         FilterContext.init()  # Initializes context if not already done
         version = FilterContext.get('filter_version')
         FilterContext.log()   # Logs all context info
+        
+        # For OpenLineage events:
+        filter_version = FilterContext.get_filter_version()
+        openfilter_version = FilterContext.get_openfilter_version()
     """
 
     _data = {}
@@ -138,7 +142,7 @@ class FilterContext:
 
         cls._data = {
             "filter_version": cls._read_file("VERSION"),
-            "model_version": cls._read_file("VERSION.MODEL"),
+            "bundle_version": cls._read_file("VERSION.MODEL"),
             "git_sha": cls._read_file("GITHUB_SHA"),
             "models": cls._read_models_toml()
         }
@@ -162,6 +166,56 @@ class FilterContext:
                 logger.info(f"  Total models: {len(value)}")
             else:
                 logger.info(f"{key.replace('_', ' ').title()}: {value}")
+
+    @classmethod
+    def get_filter_version(cls) -> str | None:
+        """Get the filter version for OpenLineage events.
+        
+        Returns:
+            The filter version string from VERSION file, or None if not available.
+        """
+        return cls._data.get('filter_version')
+
+    @classmethod
+    def get_bundle_version(cls) -> str | None:
+        """Get the model version for OpenLineage events.
+        
+        Returns:
+            The model version string from VERSION.MODEL file, or None if not available.
+        """
+        return cls._data.get('bundle_version')
+
+    @classmethod
+    def get_git_sha(cls) -> str | None:
+        """Get the git SHA for OpenLineage events.
+        
+        Returns:
+            The git SHA string from GITHUB_SHA file, or None if not available.
+        """
+        return cls._data.get('git_sha')
+
+    @classmethod
+    def get_models(cls) -> dict | None:
+        """Get the models data for OpenLineage events.
+        
+        Returns:
+            Dictionary of model information from models.toml, or None if not available.
+        """
+        return cls._data.get('models')
+
+    @classmethod
+    def get_openfilter_version(cls) -> str | None:
+        """Get the OpenFilter framework version for OpenLineage events.
+        
+        Returns:
+            The OpenFilter framework version string from the installed package, or None if not available.
+        """
+        try:
+            import importlib.metadata
+            version = importlib.metadata.version('openfilter')
+            return version
+        except Exception:
+            return None
 
     @staticmethod
     def _read_file(filename):
@@ -697,37 +751,7 @@ class Filter:
             (k[len(prefix):] if k.startswith(prefix) else k): v
             for k, v in metrics.items()
         }
-    
-    def get_version_info_for_lineage(self) -> dict[str, Any]:
-        """Get comprehensive version information for OpenLineage events."""
-        version_info = {}
-        
-        # Get context data
-        context_data = FilterContext.as_dict()
-        if context_data:
-            # Add basic version fields
-            if context_data.get('filter_version'):
-                version_info['filter_version'] = context_data.get('filter_version')
-            if context_data.get('model_version'):
-                version_info['model_version'] = context_data.get('model_version')
-            if context_data.get('git_sha'):
-                version_info['git_sha'] = context_data.get('git_sha')
-            
-            # Handle models data
-            models_data = context_data.get('models')
-            if models_data:
-                version_info['models'] = models_data
-        
-        # Add OpenFilter framework version if available
-        try:
-            openfilter_version = FilterContext._read_file('/app/VERSION')
-            if openfilter_version:
-                version_info['openfilter_version'] = openfilter_version.strip()
-        except Exception:
-            pass
-        
-        return version_info
-    
+
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
        
@@ -789,9 +813,17 @@ class Filter:
         sensitive_fields = {'model_path'}
         facets = {k: v for k, v in facets.items() if k not in sensitive_fields}
         
-        # Add comprehensive version information
-        version_info = self.get_version_info_for_lineage()
-        facets.update(version_info)
+        # Add comprehensive version information from FilterContext
+        if FilterContext.get_filter_version():
+            facets['filter_version'] = FilterContext.get_filter_version()
+        if FilterContext.get_bundle_version():
+            facets['bundle_version'] = FilterContext.get_bundle_version()
+        if FilterContext.get_git_sha():
+            facets['git_sha'] = FilterContext.get_git_sha()
+        if FilterContext.get_models():
+            facets['models'] = FilterContext.get_models()
+        if FilterContext.get_openfilter_version():
+            facets['openfilter_version'] = FilterContext.get_openfilter_version()
         
         self.emitter.emit_start(facets=facets)
         self.emitter.start_lineage_heart_beat()
