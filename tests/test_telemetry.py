@@ -69,7 +69,7 @@ class TestTelemetryRegistry(unittest.TestCase):
         # Verify instruments were created
         self.mock_meter.create_counter.assert_called_once_with("test_counter")
         self.mock_meter.create_histogram.assert_called_once_with(
-            "test_histogram", boundaries=[0, 1, 2, 5]
+            "test_histogram", explicit_bucket_boundaries_advisory=[0, 1, 2, 5]
         )
         
         # Verify instruments were assigned
