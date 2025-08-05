@@ -149,3 +149,50 @@ Oleander will receive heartbeat events with facets like:
 - **Reusable**: Same declaration mechanism works for all filters
 - **Safe**: Zero PII risk through allowlist and numeric-only export
 - **Flexible**: Easy to add new metrics without code changes 
+
+
+
+```shell
+User sets OF_EXPORT_RAW_DATA=true
+           ↓
+Filter.__init__() reads env var → stores as self._export_raw_data
+           ↓
+Bridge.__init__() reads env var → stores as self._export_raw_data
+           ↓
+Frame processing → process_frames_metadata()
+           ↓
+if self._export_raw_data: copy frame.data → emitter._last_frame_data
+           ↓
+OpenTelemetry aggregation → Bridge.export()
+           ↓
+if self._export_raw_data: add raw_subject_data to facet
+           ↓
+OpenLineage heartbeat → Oleander receives raw data
+
+```
+
+
+```json
+{
+  "frames_processed": 150,
+  "frames_with_detections": 89,
+  "detections_per_frame_histogram": {...},
+  "raw_subject_data": {
+    "main": {
+      "detections": [
+        {
+          "id": 0,
+          "class": "person",
+          "confidence": 0.85,
+          "bbox": [0.1, 0.2, 0.3, 0.4]
+        }
+      ],
+      "num_detections": 1,
+      "avg_confidence": 0.85,
+      "processing_time": 23.4,
+      "size_ratio": 0.15,
+      "timestamp": 1234567890.123
+    }
+  }
+}
+```

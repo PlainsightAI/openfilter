@@ -1,12 +1,16 @@
+import json
 import logging
 import multiprocessing as mp
 import os
 import re
 import sys
 import threading
+import time
+from datetime import datetime
 from multiprocessing import synchronize
-from time import time
 from typing import Any, Callable, Literal, List
+
+import numpy as np
 
 from .dlcache import is_cached_file, dlcache
 from .frame import Frame
@@ -490,7 +494,14 @@ class Filter:
              logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {enabled_otel_env}. Defaulting to False.")
              self.telemetry_enabled = False
         
+        # Check if raw subject data export is enabled
+        self._export_raw_data = os.getenv("OF_EXPORT_RAW_DATA", "false").lower() in ("true", "1", "yes")
+        if self._export_raw_data:
+            logger.info("[Filter] Raw subject data export is ENABLED")
+        else:
+            logger.info("[Filter] Raw subject data export is DISABLED (set OF_EXPORT_RAW_DATA=true to enable)")
     
+
         try:
             try:
                 self.config = config = self.normalize_config(config)
@@ -693,6 +704,48 @@ class Filter:
         if not hasattr(self, '_telemetry') or self._telemetry is None:
             return
             
+        # Store raw frame data for potential export (only if OF_EXPORT_RAW_DATA is enabled)
+        if self._export_raw_data and hasattr(self, 'emitter'):
+            # Collect raw frame data for export
+            raw_frame_data = {}
+            timestamp = time.time()
+            
+            # Get frame counter for this batch
+            if not hasattr(self, '_frame_counter'):
+                self._frame_counter = 0
+            
+            for frame_id, frame in frames.items():
+                if hasattr(frame, 'data') and isinstance(frame.data, dict):
+                    # Create unique key for each frame to prevent overwriting
+                    unique_key = f"{frame_id}_{self._frame_counter}"
+                    frame_data_copy = frame.data.copy()
+                    frame_data_copy['_timestamp'] = timestamp
+                    frame_data_copy['_frame_id'] = frame_id
+                    frame_data_copy['_unique_key'] = unique_key
+                    frame_data_copy['_frame_number'] = self._frame_counter
+                    raw_frame_data[unique_key] = frame_data_copy
+                    self._frame_counter += 1
+            
+            # Accumulate data over the heartbeat interval instead of overwriting
+            if raw_frame_data:
+                if not hasattr(self.emitter, '_last_frame_data'):
+                    self.emitter._last_frame_data = {}
+                
+                # Add all frames to accumulated data
+                self.emitter._last_frame_data.update(raw_frame_data)
+                
+                # Log accumulation progress
+                # logger.info(f"[Raw Data] Accumulated {len(raw_frame_data)} new frames, total: {len(self.emitter._last_frame_data)} frames")
+                
+                # Limit the number of stored frames to prevent memory issues
+                # Keep only the last 100 frames or so
+                if len(self.emitter._last_frame_data) > 100:
+                    # Remove oldest frames (simple approach: keep last 100)
+                    keys_to_remove = list(self.emitter._last_frame_data.keys())[:-100]
+                    for key in keys_to_remove:
+                        del self.emitter._last_frame_data[key]
+                    # logger.info(f"[Raw Data] Trimmed to last 100 frames, removed {len(keys_to_remove)} old frames")
+        
         for frame in frames.values():
             if hasattr(frame, 'data') and isinstance(frame.data, dict):
                 self._telemetry.record(frame.data)

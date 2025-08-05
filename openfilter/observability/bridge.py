@@ -7,6 +7,7 @@ into safe JSON fragments for OpenLineage heartbeat facets.
 
 import logging
 import fnmatch
+import os
 from typing import Optional, Set
 from opentelemetry.sdk.metrics.export import MetricExporter, MetricsData, MetricExportResult
 
@@ -29,6 +30,13 @@ class OTelLineageExporter(MetricExporter):
         super().__init__(preferred_temporality={})
         self._lineage = lineage
         self._allow = allowlist
+        
+        # Check if raw subject data export is enabled
+        self._export_raw_data = os.getenv("OF_EXPORT_RAW_DATA", "false").lower() in ("true", "1", "yes")
+        if self._export_raw_data:
+            logger.info("[OpenLineage Export] Raw subject data export is ENABLED")
+        else:
+            logger.info("[OpenLineage Export] Raw subject data export is DISABLED (set OF_EXPORT_RAW_DATA=true to enable)")
         
         if allowlist:
             logger.info(f"[OpenLineage Export] Allowlist configured: {list(allowlist)}")
@@ -72,9 +80,23 @@ class OTelLineageExporter(MetricExporter):
                                 
                             # Handle Histogram metrics
                             elif hasattr(point, 'bucket_counts') and hasattr(point, 'explicit_bounds'):
+                                # Fix: bucket_counts has one more element than explicit_bounds
+                                # The extra element is for values that exceed the last boundary
+                                bucket_counts = list(point.bucket_counts) if hasattr(point, 'bucket_counts') else []
+                                explicit_bounds = list(point.explicit_bounds) if hasattr(point, 'explicit_bounds') else []
+                                
+                                # Ensure we have the right number of counts (should be len(bounds) + 1)
+                                if len(bucket_counts) != len(explicit_bounds) + 1:
+                                    logger.warning(f"[OpenLineage Export] Histogram {name} has mismatched counts/bounds: {len(bucket_counts)} counts vs {len(explicit_bounds)} bounds")
+                                    # Truncate or pad to match
+                                    if len(bucket_counts) > len(explicit_bounds) + 1:
+                                        bucket_counts = bucket_counts[:len(explicit_bounds) + 1]
+                                    else:
+                                        bucket_counts.extend([0] * (len(explicit_bounds) + 1 - len(bucket_counts)))
+                                
                                 facet[f"{name}_histogram"] = {
-                                    "buckets": list(point.explicit_bounds) if hasattr(point, 'explicit_bounds') else [],
-                                    "counts": list(point.bucket_counts) if hasattr(point, 'bucket_counts') else [],
+                                    "buckets": explicit_bounds,
+                                    "counts": bucket_counts,
                                     "count": int(point.count) if hasattr(point, 'count') else 0,
                                     "sum": float(point.sum) if hasattr(point, 'sum') else 0.0,
                                 }
@@ -84,6 +106,15 @@ class OTelLineageExporter(MetricExporter):
                             elif hasattr(point, 'value'):
                                 facet[name] = float(point.value)
                                 logger.info(f"[OpenLineage Export] Added gauge: {name} = {float(point.value)}")
+            
+            # Add raw subject data if enabled
+            if self._export_raw_data and hasattr(self._lineage, '_last_frame_data'):
+                raw_data = getattr(self._lineage, '_last_frame_data', {})
+                if raw_data:
+                    facet["raw_subject_data"] = raw_data
+                    logger.info(f"[OpenLineage Export] Added raw subject data: {len(raw_data)} entries")
+                    # Clear the accumulated data after sending to prevent memory buildup
+                    self._lineage._last_frame_data = {}
             
             if facet:
                 logger.info(f"[OpenLineage Export] Sending metrics: {list(facet.keys())}")
