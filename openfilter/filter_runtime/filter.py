@@ -115,7 +115,7 @@ class FilterContext:
 
     - filter_version: The version of the filter runtime, read from the file 'VERSION'.
     - resource_bundle_version: The version of the resource bundle, read from the file 'RESOURCE_BUNDLE_VERSION'.
-    - version_sha: The GitHub commit SHA, read from the file 'VERSION_SHA'. This should be set at build time by CI/CD or manually.
+    - version_sha: The Git commit SHA, read from the file 'VERSION_SHA'. This should be set at build time by CI/CD or manually.
     - models: A dictionary of models loaded from 'models.toml'. Each entry contains:
         - model name (key)
         - version: The version string for the model
