@@ -114,8 +114,8 @@ class FilterContext:
     The FilterContext class provides static access to build and model metadata for the filter runtime. It is initialized once per process and stores the following information:
 
     - filter_version: The version of the filter runtime, read from the file 'VERSION'.
-    - model_version: The version of the model, read from the file 'VERSION.MODEL'.
-    - git_sha: The GitHub commit SHA, read from the file 'GITHUB_SHA'. This should be set at build time by CI/CD or manually.
+    - resource_bundle_version: The version of the resource bundle, read from the file 'RESOURCE_BUNDLE_VERSION'.
+    - version_sha: The GitHub commit SHA, read from the file 'VERSION_SHA'. This should be set at build time by CI/CD or manually.
     - models: A dictionary of models loaded from 'models.toml'. Each entry contains:
         - model name (key)
         - version: The version string for the model
@@ -140,8 +140,8 @@ class FilterContext:
 
         cls._data = {
             "filter_version": cls._read_file("VERSION"),
-            "resource_bundle_version": cls._read_file("VERSION.MODEL"),
-            "git_sha": cls._read_file("GITHUB_SHA"),
+            "resource_bundle_version": cls._read_file("RESOURCE_BUNDLE_VERSION"),
+            "version_sha": cls._read_file("VERSION_SHA"),
             "models": cls._read_models_toml(),
             "openfilter_version": cls.get_openfilter_version()
         }
@@ -173,13 +173,13 @@ class FilterContext:
 
     @classmethod
     def get_resource_bundle_version(cls) -> str | None:
-        """Get the resource bundle version from VERSION.MODEL file."""
+        """Get the resource bundle version from RESOURCE_BUNDLE_VERSION file."""
         return cls._data.get('resource_bundle_version')
 
     @classmethod
-    def get_git_sha(cls) -> str | None:
-        """Get the git SHA."""
-        return cls._data.get('git_sha')
+    def get_version_sha(cls) -> str | None:
+        """Get the version SHA."""
+        return cls._data.get('version_sha')
 
     @classmethod
     def get_model_info(cls) -> dict | None:
@@ -797,8 +797,8 @@ class Filter:
             facets['filter_version'] = FilterContext.get_filter_version()
         if FilterContext.get_resource_bundle_version():
             facets['resource_bundle_version'] = FilterContext.get_resource_bundle_version()
-        if FilterContext.get_git_sha():
-            facets['git_sha'] = FilterContext.get_git_sha()
+        if FilterContext.get_version_sha():
+            facets['version_sha'] = FilterContext.get_version_sha()
         if FilterContext.get_model_info():
             facets['models'] = FilterContext.get_model_info()
         if FilterContext.get_openfilter_version():

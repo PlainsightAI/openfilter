@@ -727,7 +727,7 @@ class TestFilter(unittest.TestCase):
         # Verify that data is populated
         self.assertIsInstance(FilterContext._data, dict)
         self.assertIn('filter_version', FilterContext._data)
-        self.assertIn('git_sha', FilterContext._data)
+        self.assertIn('version_sha', FilterContext._data)
         self.assertIn('models', FilterContext._data)
         self.assertIn('resource_bundle_version', FilterContext._data)
         self.assertIn('openfilter_version', FilterContext._data)
@@ -745,7 +745,7 @@ class TestFilter(unittest.TestCase):
         # Test getting existing keys
         self.assertIsInstance(FilterContext.get('filter_version'), (str, type(None)))
         self.assertIsInstance(FilterContext.get('resource_bundle_version'), (str, type(None)))
-        self.assertIsInstance(FilterContext.get('git_sha'), (str, type(None)))
+        self.assertIsInstance(FilterContext.get('version_sha'), (str, type(None)))
         self.assertIsInstance(FilterContext.get('models'), dict)
         self.assertIsInstance(FilterContext.get('openfilter_version'), (str, type(None)))
         
@@ -762,7 +762,7 @@ class TestFilter(unittest.TestCase):
         self.assertIsInstance(context_dict, dict)
         self.assertIn('filter_version', context_dict)
         self.assertIn('resource_bundle_version', context_dict)
-        self.assertIn('git_sha', context_dict)
+        self.assertIn('version_sha', context_dict)
         self.assertIn('models', context_dict)
         self.assertIn('openfilter_version', context_dict)
         
@@ -913,7 +913,7 @@ invalid_field = "value"
         # Verify structure
         self.assertIsInstance(context_data['filter_version'], (str, type(None)))
         self.assertIsInstance(context_data['resource_bundle_version'], (str, type(None)))
-        self.assertIsInstance(context_data['git_sha'], (str, type(None)))
+        self.assertIsInstance(context_data['version_sha'], (str, type(None)))
         self.assertIsInstance(context_data['models'], dict)
         self.assertIsInstance(context_data['openfilter_version'], (str, type(None)))
         
@@ -923,17 +923,17 @@ invalid_field = "value"
             expected_version = version_file.read_text().strip()
             self.assertEqual(context_data['filter_version'], expected_version)
         
-        # If VERSION.MODEL file exists, test that it's read correctly
-        model_version_file = Path("VERSION.MODEL")
-        if model_version_file.exists():
-            expected_model_version = model_version_file.read_text().strip()
-            self.assertEqual(context_data['resource_bundle_version'], expected_model_version)
+        # If RESOURCE_BUNDLE_VERSION file exists, test that it's read correctly
+        resource_bundle_version_file = Path("RESOURCE_BUNDLE_VERSION")
+        if resource_bundle_version_file.exists():
+            expected_resource_bundle_version = resource_bundle_version_file.read_text().strip()
+            self.assertEqual(context_data['resource_bundle_version'], expected_resource_bundle_version)
         
-        # If GITHUB_SHA file exists, test that it's read correctly
-        github_sha_file = Path("GITHUB_SHA")
-        if github_sha_file.exists():
-            expected_sha = github_sha_file.read_text().strip()
-            self.assertEqual(context_data['git_sha'], expected_sha)
+        # If VERSION_SHA file exists, test that it's read correctly
+        version_sha_file = Path("VERSION_SHA")
+        if version_sha_file.exists():
+            expected_sha = version_sha_file.read_text().strip()
+            self.assertEqual(context_data['version_sha'], expected_sha)
 
 
     def test_filter_context_error_handling(self):
@@ -969,7 +969,7 @@ invalid_field = "value"
         self.assertIsInstance(context_data, dict)
         self.assertIn('filter_version', context_data)
         self.assertIn('resource_bundle_version', context_data)
-        self.assertIn('git_sha', context_data)
+        self.assertIn('version_sha', context_data)
         self.assertIn('models', context_data)
         self.assertIn('openfilter_version', context_data)
 
