@@ -71,6 +71,11 @@ STOP_EXIT        = (os.getenv('STOP_EXIT') or 'error').lower()
 AUTO_DOWNLOAD    = bool(json_getval((os.getenv('AUTO_DOWNLOAD') or 'true').lower()))
 ENVIRONMENT      = os.getenv('ENVIRONMENT')
 
+# Telemetry environment variables
+TELEMETRY_EXPORTER_ENABLED = os.getenv('TELEMETRY_EXPORTER_ENABLED')
+OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+OPENLINEAGE_EXPORT_RAW_DATA = os.getenv('OPENLINEAGE_EXPORT_RAW_DATA', 'false').lower() in ('true', '1', 'yes')
+
 PROP_EXIT_FLAGS  = {'all': 3, 'clean': 1, 'error': 2, 'none': 0}
 POLL_TIMEOUT_SEC = POLL_TIMEOUT_MS / 1000
 
@@ -486,20 +491,19 @@ class Filter:
         FilterContext.init()
 
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
-        enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
         self._metrics_updater_thread = None
         try:
-             self.telemetry_enabled: bool = bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
+             self.telemetry_enabled: bool = bool(strtobool(TELEMETRY_EXPORTER_ENABLED)) if TELEMETRY_EXPORTER_ENABLED is not None else False
         except ValueError:
-             logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {enabled_otel_env}. Defaulting to False.")
+             logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {TELEMETRY_EXPORTER_ENABLED}. Defaulting to False.")
              self.telemetry_enabled = False
         
         # Check if raw subject data export is enabled
-        self._export_raw_data = os.getenv("OF_EXPORT_RAW_DATA", "false").lower() in ("true", "1", "yes")
+        self._export_raw_data = OPENLINEAGE_EXPORT_RAW_DATA
         if self._export_raw_data:
             logger.info("[Filter] Raw subject data export is ENABLED")
         else:
-            logger.info("[Filter] Raw subject data export is DISABLED (set OF_EXPORT_RAW_DATA=true to enable)")
+            logger.info("[Filter] Raw subject data export is DISABLED (set OPENLINEAGE_EXPORT_RAW_DATA=true to enable)")
     
 
         try:
@@ -540,26 +544,16 @@ class Filter:
 
         if not self.stop_evt.is_set():  # because we don't want to potentially log multiple exits
             self.stop_evt.set()
-            self.emitter.stop_lineage_heart_beat()
+            if hasattr(self, 'emitter') and self.emitter is not None:
+                self.emitter.stop_lineage_heart_beat()
             self.stop_metrics_updater_thread()
-            self.emitter.emit_stop()
+            if hasattr(self, 'emitter') and self.emitter is not None:
+                self.emitter.emit_stop()
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
-    """
-    def start_metrics_updater_thread(self):
-        interval = self.otel.export_interval_millis / 1000  
-        
-        def loop():
-            while not self.stop_evt.is_set():
-                try:
-                    self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
-                except Exception as e:
-                    logger.error(f"[metrics_updater] error when trying to update metrics: {e}")
-                self.stop_evt.wait(interval)  
-
-        threading.Thread(target=loop, daemon=True).start()
-    """
+    
+    
     def start_metrics_updater_thread(self):
         interval = self.otel.export_interval_millis / 1000  
 
@@ -688,10 +682,16 @@ class Filter:
     # - FOR VERY SPECIAL SUBCLASS --------------------------------------------------------------------------------------
 
     def set_open_lineage():
+        # Only initialize OpenLineage if environment variables are set
+        if not OPENLINEAGE_URL:
+            logger.info("[OpenLineage] No OPENLINEAGE_URL set, skipping OpenLineage initialization")
+            return None
+        
         try:
             return OpenFilterLineage()
         except Exception as e:
             logger.error(f"\033[91mError setting OpenLineage: {e}\033[0m")
+            return None
     
     emitter: OpenFilterLineage = set_open_lineage()
 
@@ -704,8 +704,8 @@ class Filter:
         if not hasattr(self, '_telemetry') or self._telemetry is None:
             return
             
-        # Store raw frame data for potential export (only if OF_EXPORT_RAW_DATA is enabled)
-        if self._export_raw_data and hasattr(self, 'emitter'):
+        # Store raw frame data for potential export (only if OPENLINEAGE_EXPORT_RAW_DATA is enabled)
+        if self._export_raw_data and hasattr(self, 'emitter') and self.emitter is not None:
             # Collect raw frame data for export
             raw_frame_data = {}
             timestamp = time.time()
@@ -734,9 +734,6 @@ class Filter:
                 # Add all frames to accumulated data
                 self.emitter._last_frame_data.update(raw_frame_data)
                 
-                # Log accumulation progress
-                # logger.info(f"[Raw Data] Accumulated {len(raw_frame_data)} new frames, total: {len(self.emitter._last_frame_data)} frames")
-                
                 # Limit the number of stored frames to prevent memory issues
                 # Keep only the last 100 frames or so
                 if len(self.emitter._last_frame_data) > 100:
@@ -744,7 +741,6 @@ class Filter:
                     keys_to_remove = list(self.emitter._last_frame_data.keys())[:-100]
                     for key in keys_to_remove:
                         del self.emitter._last_frame_data[key]
-                    # logger.info(f"[Raw Data] Trimmed to last 100 frames, removed {len(keys_to_remove)} old frames")
         
         for frame in frames.values():
             if hasattr(frame, 'data') and isinstance(frame.data, dict):
@@ -814,8 +810,9 @@ class Filter:
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
         
-        self.emitter.emit_start(facets=dict(config))
-        self.emitter.start_lineage_heart_beat()
+        if hasattr(self, 'emitter') and self.emitter is not None:
+            self.emitter.emit_start(facets=dict(config))
+            self.emitter.start_lineage_heart_beat()
         
         def on_exit_msg(reason: str):
             if reason == 'error':
@@ -909,7 +906,8 @@ class Filter:
    
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-        self.emitter.emit_stop()
+        if hasattr(self, 'emitter') and self.emitter is not None:
+            self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -1053,7 +1051,8 @@ class Filter:
                 loop_exc  = Filter.YesLoopException if (LOOP_EXC if loop_exc is None else loop_exc) else Exception
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
                 
-                cls.emitter.filter_name = filter.__class__.__name__
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.filter_name = filter.__class__.__name__
                 cls.filter_name = filter.__class__.__name__
                 filter.init(filter.config)
 
@@ -1084,24 +1083,28 @@ class Filter:
                     filter.fini()
 
             except Exception as exc:
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
                 logger.error(exc)
 
                 raise
 
             except Filter.Exit:
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
                 pass
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
         finally:
-            cls.emitter.stop_lineage_heart_beat()
-            cls.emitter.emit_stop()
+            if hasattr(filter, 'emitter') and filter.emitter is not None:
+                filter.emitter.stop_lineage_heart_beat()
+                filter.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod

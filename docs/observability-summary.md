@@ -2,7 +2,7 @@
 
 ## Overview
 
-We have successfully implemented a unified observability system for OpenFilter that provides safe, aggregated metrics without PII leakage. The system consolidates all telemetry and lineage functionality into a single, well-organized package.
+We have successfully implemented a unified observability system for OpenFilter that provides safe, aggregated metrics without PII leakage. The system consolidates all telemetry and lineage functionality into a single, well-organized package with automatic histogram bucket generation and optional raw data export.
 
 ## Final Structure
 
@@ -24,93 +24,189 @@ openfilter/
 ## Key Components
 
 ### 1. MetricSpec (`specs.py`)
-- Declarative metric definitions
-- No hard-coded metric logic in base Filter class
-- Supports counters and histograms
-- Safe value extraction functions
+- **Declarative metric definitions** - No hard-coded metric logic in base Filter class
+- **Supports counters, histograms, and gauges** - Flexible instrument types
+- **Safe value extraction functions** - Lambda functions that extract numeric values from frame.data
+- **Automatic histogram buckets** - Smart logarithmic bucket generation based on metric type
+- **Validation** - Built-in validation for instrument types and boundaries
 
 ### 2. TelemetryRegistry (`registry.py`)
-- Manages metric recording based on MetricSpec declarations
-- Creates OpenTelemetry instruments
-- Handles recording for each frame
+- **Manages metric recording** based on MetricSpec declarations
+- **Creates OpenTelemetry instruments** - Counter, Histogram, Gauge
+- **Automatic bucket generation** - Logarithmic spacing for histograms
+- **Handles recording for each frame** - Processes frame.data through value functions
 
 ### 3. OTelLineageExporter (`bridge.py`)
-- Converts OpenTelemetry metrics to OpenLineage facets
-- Enforces allowlist for safe metric export
-- No PII leaves the process
+- **Converts OpenTelemetry metrics to OpenLineage facets** - Bridge between systems
+- **Enforces allowlist for safe metric export** - Prevents PII leakage
+- **Optional raw data export** - Controlled by OPENLINEAGE_EXPORT_RAW_DATA
+- **No PII leaves the process** - Only numeric, aggregated values
 
 ### 4. OpenTelemetryClient (`client.py`)
-- Unified OpenTelemetry client
-- Supports lineage bridge integration
-- Configurable exporters
+- **Unified OpenTelemetry client** - Single point of configuration
+- **Supports lineage bridge integration** - Connects to OpenLineage
+- **Configurable exporters** - Console, GCM, OTLP, etc.
+- **Periodic metric export** - Configurable intervals
 
 ### 5. OpenFilterLineage (`lineage.py`)
-- OpenLineage client for event emission
-- Heartbeat functionality
-- Safe facet creation
+- **OpenLineage client for event emission** - START, RUNNING, COMPLETE events
+- **Heartbeat functionality** - Configurable intervals
+- **Safe facet creation** - Validates and structures metadata
+- **Conditional initialization** - Only starts when OPENLINEAGE_URL is set
 
 ## Usage Example
+
+### Basic Filter with Metrics
 
 ```python
 from openfilter.filter_runtime.filter import Filter
 from openfilter.observability import MetricSpec
+import time
 
 class LicensePlateFilter(Filter):
     metric_specs = [
+        # Count frames processed
         MetricSpec(
             name="frames_processed",
             instrument="counter",
             value_fn=lambda d: 1
         ),
+        
+        # Count frames with detections
         MetricSpec(
             name="frames_with_plate",
             instrument="counter",
             value_fn=lambda d: 1 if d.get("plates") else 0
         ),
+        
+        # Distribution of detections per frame (auto-generated buckets)
         MetricSpec(
             name="plates_per_frame",
             instrument="histogram",
             value_fn=lambda d: len(d.get("plates", [])),
-            boundaries=[0, 1, 2, 5]
+            num_buckets=8  # Auto-generate 8 buckets
+        ),
+        
+        # Processing time distribution
+        MetricSpec(
+            name="processing_time_ms",
+            instrument="histogram",
+            value_fn=lambda d: d.get("processing_time", 0),
+            num_buckets=10  # Auto-generate 10 buckets
         )
     ]
     
     def process(self, frames):
-        # Process frames and add results to frame.data
+        start_time = time.time()
+        
+        for frame_id, frame in frames.items():
+            # Process frame and add results to frame.data
+            frame.data["plates"] = self._detect_plates(frame)
+            frame.data["processing_time"] = (time.time() - start_time) * 1000
+        
         return frames
+```
+
+### Advanced Filter with Custom Boundaries
+
+```python
+class AdvancedFilter(Filter):
+    metric_specs = [
+        # Custom histogram boundaries
+        MetricSpec(
+            name="confidence_scores",
+            instrument="histogram",
+            value_fn=lambda d: d.get("confidence", 0.0),
+            boundaries=[0.0, 0.5, 0.7, 0.8, 0.9, 1.0]  # Custom buckets
+        ),
+        
+        # Gauge for current memory usage
+        MetricSpec(
+            name="memory_usage_mb",
+            instrument="gauge",
+            value_fn=lambda d: d.get("memory_usage", 0)
+        )
+    ]
 ```
 
 ## Configuration
 
 ### Environment Variables
+
+#### Core Observability
 ```bash
+# Enable telemetry system
 export TELEMETRY_EXPORTER_ENABLED=true
-export OF_SAFE_METRICS="frames_processed,frames_with_plate,plates_per_frame_histogram"
+
+# Safe metrics allowlist (comma-separated)
+export OF_SAFE_METRICS="frames_processed,frames_with_plate,plates_per_frame_histogram,processing_time_ms_histogram"
+
+# Or use YAML file
+export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
+```
+
+#### OpenLineage Integration
+```bash
+# OpenLineage server configuration
+export OPENLINEAGE_URL="https://oleander.dev"
+export OPENLINEAGE_API_KEY="your_api_key"
+export OPENLINEAGE_ENDPOINT="/api/v1/lineage"
+export OPENLINEAGE_PRODUCER="https://github.com/PlainsightAI/openfilter"
+
+# Heartbeat interval (seconds)
+export OPENLINEAGE__HEART__BEAT__INTERVAL=10
+
+# Optional: Export raw subject data (disabled by default)
+export OPENLINEAGE_EXPORT_RAW_DATA=false
+```
+
+#### OpenTelemetry Export
+```bash
+# Export type: console, gcm, otlp_http, otlp_grpc
+export TELEMETRY_EXPORTER_TYPE=console
+
+# Export interval (milliseconds)
+export EXPORT_INTERVAL=3000
+
+# For Google Cloud Monitoring
+export PROJECT_ID="your-gcp-project"
+
+# For OTLP exporters
+export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT="http://localhost:4318"
+export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
 ```
 
 ### YAML Configuration
+
 ```yaml
+# safe_metrics.yaml
 safe_metrics:
   - frames_*
   - plates_per_frame_histogram
-  - ocr_confidence
+  - processing_time_ms_histogram
+  - confidence_scores_histogram
+  - memory_usage_mb_gauge
 ```
 
 ## Security Features
 
 1. **Allowlist Enforcement**: Only approved metrics are exported
 2. **No PII**: Only numeric, aggregated values leave the process
-3. **Runtime Validation**: Bridge validates all metric names
+3. **Runtime Validation**: Bridge validates all metric names before export
 4. **Lock-down Mode**: Empty allowlist exports nothing
+5. **Optional Raw Data**: Raw subject data export controlled by environment variable
+6. **Conditional OpenLineage**: Only initializes when URL is provided
 
 ## Benefits Achieved
 
 1. **No Hard-Coding**: Base class never names metrics
-2. **Reusable**: Same declaration mechanism for all filters
+2. **Reusable**: Same declaration mechanism works for all filters
 3. **Standards Compliance**: Uses OpenTelemetry for aggregation
 4. **Single Source of Truth**: One pipeline for all metrics
 5. **Zero PII Risk**: Everything is numeric and allowlisted
 6. **Clean Architecture**: All observability in one package
+7. **Automatic Buckets**: Smart histogram bucket generation
+8. **Backward Compatibility**: Existing filters work without changes
 
 ## Migration Path
 
@@ -120,30 +216,54 @@ safe_metrics:
 4. ✅ Updated imports and dependencies
 5. ✅ Created documentation and migration guide
 6. ✅ Created tests for the new system
-
-## Next Steps
-
-1. **Testing**: Run comprehensive tests with real filters
-2. **Deployment**: Test in production environment
-3. **Documentation**: Update user guides and examples
-4. **Cleanup**: Remove old telemetry packages after migration
-5. **Monitoring**: Verify metrics appear in Oleander correctly
+7. ✅ Added automatic histogram bucket generation
+8. ✅ Added optional raw data export
+9. ✅ Made OpenLineage conditional
 
 ## Example Output
 
-Oleander will receive heartbeat events with facets like:
+### OpenLineage Heartbeat Facets
 
 ```json
 {
   "frames_processed": 150,
   "frames_with_plate": 27,
   "plates_per_frame_histogram": {
-    "buckets": [0, 1, 2, 5],
-    "counts": [118, 22, 8, 2],
+    "buckets": [0.1, 0.5, 1.0, 2.0, 5.0],
+    "counts": [118, 22, 8, 2, 0],
     "count": 150,
     "sum": 36
+  },
+  "processing_time_ms_histogram": {
+    "buckets": [1.0, 5.0, 10.0, 25.0, 50.0],
+    "counts": [45, 67, 28, 8, 2],
+    "count": 150,
+    "sum": 2345
   }
 }
 ```
 
-This implementation successfully addresses all the requirements from the design document while providing a clean, maintainable, and secure observability system. 
+### With Raw Data Export (OPENLINEAGE_EXPORT_RAW_DATA=true)
+
+```json
+{
+  "frames_processed": 150,
+  "frames_with_plate": 27,
+  "raw_subject_data": {
+    "frame_001_0": {
+      "plates": [
+        {
+          "text": "ABC123",
+          "confidence": 0.95,
+          "bbox": [100, 200, 300, 250]
+        }
+      ],
+      "processing_time": 23.4,
+      "_timestamp": 1234567890.123,
+      "_frame_id": "frame_001",
+      "_unique_key": "frame_001_0",
+      "_frame_number": 0
+    }
+  }
+}
+```

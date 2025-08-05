@@ -544,7 +544,7 @@ export OPENLINEAGE_PRODUCER="https://my-company.com/openlineage"
 export OPENLINEAGE__HEART__BEAT__INTERVAL=10
 export OPENLINEAGE_URL="http://localhost:5000"
 export OPENLINEAGE_API_KEY="your_api_key"
-export OPENLINEAGE_ENDPOINT="/api/v1/lineage"
+export OPENLINEAGE_ENDPOINT=/api/v1/lineage
 export OPENLINEAGE_VERIFY_CLIENT_URL=false
 export WEBVIS_MODEL_NAME="my-model-v1"
 ```
@@ -997,4 +997,270 @@ Prerequisites:
 * When specifying `!` options in some source or output or other thing, the format `!option=value` will set the option to `value`, just `!option` will set it to `True` and just `!no-option` will set it to `False`.
 
 * For quick information about a specific filter, do `openfilter info VideoIn` for example.
+
+# OpenFilter Observability System
+
+OpenFilter includes a comprehensive observability system that provides safe, aggregated metrics without PII leakage. The system uses OpenTelemetry for metric aggregation and OpenLineage for export to monitoring systems like Oleander.
+
+## Quick Start
+
+### 1. Enable Observability
+```bash
+export TELEMETRY_EXPORTER_ENABLED=true
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence_histogram"
+```
+
+### 2. Configure OpenLineage (Optional)
+```bash
+export OPENLINEAGE_URL="https://oleander.dev"
+export OPENLINEAGE_API_KEY="your_api_key"
+export OPENLINEAGE__HEART__BEAT__INTERVAL=10
+```
+
+### 3. Add Metrics to Your Filter
+```python
+from openfilter.filter_runtime.filter import Filter
+from openfilter.observability import MetricSpec
+
+class MyFilter(Filter):
+    metric_specs = [
+        MetricSpec(
+            name="frames_processed",
+            instrument="counter",
+            value_fn=lambda d: 1
+        ),
+        MetricSpec(
+            name="frames_with_detections",
+            instrument="counter",
+            value_fn=lambda d: 1 if d.get("detections") else 0
+        ),
+        MetricSpec(
+            name="detection_confidence",
+            instrument="histogram",
+            value_fn=lambda d: d.get("confidence", 0.0),
+            num_buckets=8  # Auto-generate 8 buckets
+        )
+    ]
+    
+    def process(self, frames):
+        for frame_id, frame in frames.items():
+            # Process frame and add results to frame.data
+            frame.data["detections"] = self._detect_objects(frame)
+            frame.data["confidence"] = self._get_confidence(frame)
+        return frames
+```
+
+## Key Features
+
+### **Security First**
+- **Allowlist enforcement** - Only approved metrics leave the process
+- **Optional raw data** - Controlled export for debugging (`OPENLINEAGE_EXPORT_RAW_DATA`)
+
+### **Smart Automation**
+- **Automatic histogram buckets** - Logarithmic spacing based on metric type
+- **Conditional initialization** - OpenLineage only starts when configured
+- **Backward compatibility** - Existing filters work without changes
+
+### **Metrics Types**
+- **Counters** - Running totals (frames processed, detections found)
+- **Histograms** - Distributions (confidence scores, processing times)
+- **Gauges** - Current values (memory usage, temperature)
+
+## Metric Types
+
+### Counters
+```python
+MetricSpec(
+    name="frames_processed",
+    instrument="counter",
+    value_fn=lambda d: 1  # Count every frame
+)
+```
+
+### Histograms (Auto-generated buckets)
+```python
+MetricSpec(
+    name="detection_confidence",
+    instrument="histogram",
+    value_fn=lambda d: d.get("confidence", 0.0),
+    num_buckets=8  # Auto-generate 8 buckets (0.1, 0.3, 0.5, 0.7, 0.9)
+)
+```
+
+### Histograms (Custom buckets)
+```python
+MetricSpec(
+    name="processing_time_ms",
+    instrument="histogram",
+    value_fn=lambda d: d.get("processing_time", 0),
+    boundaries=[1.0, 5.0, 10.0, 25.0, 50.0, 100.0]  # Custom buckets
+)
+```
+
+### Gauges
+```python
+MetricSpec(
+    name="memory_usage_mb",
+    instrument="gauge",
+    value_fn=lambda d: d.get("memory_usage", 0)
+)
+```
+
+## Configuration Options
+
+### Core Environment Variables
+```bash
+# Enable observability system
+export TELEMETRY_EXPORTER_ENABLED=true
+
+# Safe metrics allowlist (comma-separated)
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence_histogram"
+
+# Or use YAML file for complex patterns
+export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
+```
+
+### OpenLineage Integration
+```bash
+# Server configuration
+export OPENLINEAGE_URL="https://oleander.dev"
+export OPENLINEAGE_API_KEY="your_api_key"
+export OPENLINEAGE_ENDPOINT="/api/v1/lineage"
+export OPENLINEAGE_PRODUCER="https://github.com/PlainsightAI/openfilter"
+
+# Heartbeat interval (seconds)
+export OPENLINEAGE__HEART__BEAT__INTERVAL=10
+
+# Optional: Export raw subject data (disabled by default)
+export OPENLINEAGE_EXPORT_RAW_DATA=false
+```
+
+### OpenTelemetry Export
+```bash
+# Export type: console, gcm, otlp_http, otlp_grpc
+export TELEMETRY_EXPORTER_TYPE=console
+
+# Export interval (milliseconds)
+export EXPORT_INTERVAL=3000
+
+# For Google Cloud Monitoring
+export PROJECT_ID="your-gcp-project"
+
+# For OTLP exporters
+export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT="http://localhost:4318"
+export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
+```
+
+## Example Output
+
+### OpenLineage Heartbeat Facets
+```json
+{
+  "frames_processed": 150,
+  "frames_with_detections": 89,
+  "detection_confidence_histogram": {
+    "buckets": [0.1, 0.3, 0.5, 0.7, 0.9],
+    "counts": [12, 23, 34, 45, 36],
+    "count": 150,
+    "sum": 67.5
+  },
+  "processing_time_ms_histogram": {
+    "buckets": [1.0, 5.0, 10.0, 25.0, 50.0],
+    "counts": [45, 67, 28, 8, 2],
+    "count": 150,
+    "sum": 2345
+  }
+}
+```
+
+### With Raw Data Export
+```json
+{
+  "frames_processed": 150,
+  "frames_with_detections": 89,
+  "raw_subject_data": {
+    "frame_001_0": {
+      "detections": [
+        {
+          "class": "person",
+          "confidence": 0.85,
+          "bbox": [100, 200, 300, 400]
+        }
+      ],
+      "confidence": 0.85,
+      "processing_time": 23.4,
+      "_timestamp": 1234567890.123,
+      "_frame_id": "frame_001",
+      "_unique_key": "frame_001_0",
+      "_frame_number": 0
+    }
+  }
+}
+```
+
+## Advanced Usage
+
+### Complex Value Extraction
+```python
+# Nested object access
+value_fn=lambda d: d.get("results", {}).get("confidence", 0.0)
+
+# Array operations
+value_fn=lambda d: len(d.get("detections", []))
+
+# Conditional logic
+value_fn=lambda d: 1 if d.get("detections") else 0
+
+# Computed values
+value_fn=lambda d: d.get("processing_time", 0) * 1000  # Convert to ms
+```
+
+### YAML Allowlist Configuration
+```yaml
+# safe_metrics.yaml
+safe_metrics:
+  - frames_*
+  - *_histogram
+  - *_counter
+  - detection_confidence
+  - processing_time_ms
+  - memory_usage_mb
+```
+
+### Debug Logging
+```bash
+export FILTER_DEBUG=true
+export OPENLINEAGE_EXPORT_RAW_DATA=true
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **No metrics appearing**
+   - Check `TELEMETRY_EXPORTER_ENABLED=true`
+   - Verify `OF_SAFE_METRICS` includes your metric names
+   - Ensure `OPENLINEAGE_URL` is set correctly
+
+2. **Histogram bucket mismatch**
+   - Verify `len(counts) = len(boundaries) + 1`
+   - Use `num_buckets` for auto-generation or `boundaries` for custom
+
+3. **Raw data not appearing**
+   - Set `OPENLINEAGE_EXPORT_RAW_DATA=true`
+   - Check that frames have data in `frame.data`
+
+4. **OpenLineage not starting**
+   - Ensure `OPENLINEAGE_URL` is set
+   - Check API key and endpoint configuration
+
+### Expected Timeline
+With default settings (`OPENLINEAGE__HEART__BEAT__INTERVAL=10`):
+- **0-10 seconds**: Empty or minimal payloads (system warming up)
+- **10-20 seconds**: Some metrics start appearing
+- **20+ seconds**: Full metric payloads with meaningful data
+
+This is normal behavior and ensures that metrics are properly aggregated before being sent to Oleander.
+
+For detailed documentation, see [Observability Guide](./observability.md).
 

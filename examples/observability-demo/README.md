@@ -15,7 +15,7 @@ This demo showcases OpenFilter's comprehensive observability system with automat
 - **Fixed Bucket Count**: Proper handling of bucket counts vs boundaries
 
 ### **Raw Data Export** (Optional)
-- **Environment Variable**: `OF_EXPORT_RAW_DATA=true` to enable
+- **Environment Variable**: `OPENLINEAGE_EXPORT_RAW_DATA=true` to enable
 - **Frame Data**: Raw subject data included in OpenLineage heartbeats
 - **Security**: Disabled by default to prevent PII exposure
 
@@ -80,7 +80,7 @@ python app.py --input 'file://sample_video.mp4!loop' --fps 10
 
 ### **With Raw Data Export** (Advanced)
 ```bash
-OF_EXPORT_RAW_DATA=true \
+OPENLINEAGE_EXPORT_RAW_DATA=true \
 python app.py --input 'file://sample_video.mp4!loop' --fps 10
 ```
 
@@ -108,7 +108,7 @@ python app.py --input 'file://sample_video.mp4!loop' --fps 10
 | `TELEMETRY_EXPORTER_ENABLED` | Enable telemetry | `false` |
 | `TELEMETRY_EXPORTER_TYPE` | Exporter type | `silent` |
 | `OF_SAFE_METRICS` | Allowed metrics | `frames_processed,frames_with_detections,...` |
-| `OF_EXPORT_RAW_DATA` | Export raw frame data | `false` |
+| `OPENLINEAGE_EXPORT_RAW_DATA` | Export raw frame data | `false` |
 | `OPENLINEAGE_URL` | Oleander instance URL | None |
 | `OPENLINEAGE_API_KEY` | Oleander API key | None |
 
@@ -179,7 +179,7 @@ Look for these log messages:
    - Check logs for warnings about bucket count mismatches
 
 3. **Raw Data Not Exporting**:
-   - Ensure `OF_EXPORT_RAW_DATA=true`
+   - Ensure `OPENLINEAGE_EXPORT_RAW_DATA=true`
    - Check logs for raw data export messages
 
 ### **Log Messages**
@@ -216,7 +216,7 @@ MetricSpec(
 ### **Raw Data Export**
 ```bash
 # Enable raw data export
-export OF_EXPORT_RAW_DATA=true
+export OPENLINEAGE_EXPORT_RAW_DATA=true
 
 # Run pipeline
 python app.py --input 'file://sample_video.mp4!loop' --fps 10

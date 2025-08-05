@@ -32,11 +32,11 @@ class OTelLineageExporter(MetricExporter):
         self._allow = allowlist
         
         # Check if raw subject data export is enabled
-        self._export_raw_data = os.getenv("OF_EXPORT_RAW_DATA", "false").lower() in ("true", "1", "yes")
+        self._export_raw_data = os.getenv("OPENLINEAGE_EXPORT_RAW_DATA", "false").lower() in ("true", "1", "yes")
         if self._export_raw_data:
             logger.info("[OpenLineage Export] Raw subject data export is ENABLED")
         else:
-            logger.info("[OpenLineage Export] Raw subject data export is DISABLED (set OF_EXPORT_RAW_DATA=true to enable)")
+            logger.info("[OpenLineage Export] Raw subject data export is DISABLED (set OPENLINEAGE_EXPORT_RAW_DATA=true to enable)")
         
         if allowlist:
             logger.info(f"[OpenLineage Export] Allowlist configured: {list(allowlist)}")
