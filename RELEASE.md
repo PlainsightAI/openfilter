@@ -3,6 +3,29 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.2.0 - 2025-08-05
+
+### Added
+- **Observability System**: Comprehensive telemetry and monitoring capabilities
+  - `MetricSpec` class for defining custom metrics with flexible value functions
+  - `TelemetryRegistry` for managing OpenTelemetry instruments and recording metrics
+  - Support for counters, histograms, and other OpenTelemetry instrument types
+  - Configurable metric allowlist via `OF_SAFE_METRICS` environment variable
+  - Automatic metric recording from frame data with customizable value extraction
+
+### Fixed
+- **Telemetry Tests**: Updated test expectations to match current OpenTelemetry API
+  - Fixed histogram parameter name from `boundaries` to `explicit_bucket_boundaries_advisory`
+  - All telemetry tests now pass successfully (8/8 tests passing)
+
+### Technical Details
+- **Metric Specification**: Flexible metric definition with instrument type, name, and value extraction functions
+- **Registry Management**: Centralized telemetry instrument creation and metric recording
+- **Configuration**: Environment-based metric allowlist for security and performance control
+- **Testing**: Comprehensive test coverage for metric specs, registry operations, and configuration handling
+
+
+
 ## v0.1.9 - 2025-07-30
 
 ### Modified
