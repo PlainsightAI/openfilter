@@ -115,6 +115,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Write Git SHA to VERSION_SHA
+        run: echo "${{ github.sha }}" > VERSION_SHA
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
