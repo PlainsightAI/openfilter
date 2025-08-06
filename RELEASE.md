@@ -3,6 +3,9 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Modified
+- For consistency in lineage events, need to emit openfilter_version with v.
+
 ## v0.1.10 - 2025-08-05
 
 ### Modified

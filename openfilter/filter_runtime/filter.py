@@ -192,7 +192,7 @@ class FilterContext:
         try:
             import importlib.metadata
             version = importlib.metadata.version('openfilter')
-            return version
+            return f"v{version}"
         except Exception:
             return None
 
