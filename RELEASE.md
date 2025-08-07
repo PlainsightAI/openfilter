@@ -5,6 +5,9 @@ OpenFilter Library release notes
 
 ### Modified
 - For consistency across all versions, need to emit openfilter_version with v.
+- Modified VERSION file for examples.
+- Updated pyproject of all examples.
+- Updated the `producer` and `schemaURL` for lineage.
 
 ## v0.1.10 - 2025-08-05
 
