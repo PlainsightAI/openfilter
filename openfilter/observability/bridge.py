@@ -82,8 +82,9 @@ class OTelLineageExporter(MetricExporter):
                             elif hasattr(point, 'bucket_counts') and hasattr(point, 'explicit_bounds'):
                                 # Fix: bucket_counts has one more element than explicit_bounds
                                 # The extra element is for values that exceed the last boundary
-                                bucket_counts = list(point.bucket_counts) if hasattr(point, 'bucket_counts') else []
-                                explicit_bounds = list(point.explicit_bounds) if hasattr(point, 'explicit_bounds') else []
+                                # Convert to proper numeric types
+                                bucket_counts = [int(count) for count in point.bucket_counts] if hasattr(point, 'bucket_counts') else []
+                                explicit_bounds = [float(bound) for bound in point.explicit_bounds] if hasattr(point, 'explicit_bounds') else []
                                 
                                 # Ensure we have the right number of counts (should be len(bounds) + 1)
                                 if len(bucket_counts) != len(explicit_bounds) + 1:
@@ -95,8 +96,8 @@ class OTelLineageExporter(MetricExporter):
                                         bucket_counts.extend([0] * (len(explicit_bounds) + 1 - len(bucket_counts)))
                                 
                                 facet[f"{name}_histogram"] = {
-                                    "buckets": explicit_bounds,
-                                    "counts": bucket_counts,
+                                    "buckets": explicit_bounds,  # Now guaranteed to be floats
+                                    "counts": bucket_counts,     # Now guaranteed to be ints
                                     "count": int(point.count) if hasattr(point, 'count') else 0,
                                     "sum": float(point.sum) if hasattr(point, 'sum') else 0.0,
                                 }

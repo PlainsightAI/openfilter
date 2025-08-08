@@ -26,11 +26,11 @@ graph TB
 
 ## Core Principles
 
-1. **No PII in metrics** - Only numeric, aggregated data leaves the process
+1. **No PII in metrics** - Only numeric data leaves the process through the allowlist
 2. **Declarative metrics** - Filters declare what they want to measure, not how
-3. **Open standards** - Uses OpenTelemetry for aggregation and OpenLineage for export
+3. **Open standards** - Uses OpenTelemetry for collection and OpenLineage for export
 4. **Automatic optimization** - Smart histogram bucket generation based on metric type
-5. **Optional raw data** - Controlled export of raw subject data for debugging
+5. **Allowlist security** - Only explicitly approved metrics are exported
 6. **Conditional initialization** - OpenLineage only starts when configured
 
 ## High-Level Flow
@@ -66,12 +66,12 @@ def process_frames_metadata(self, frames):
         self._accumulate_raw_data(frames)
 ```
 
-### 3. OpenTelemetry Aggregation
+### 3. OpenTelemetry Processing
 ```python
-# OpenTelemetry SDK automatically aggregates metrics
-# - Counters: Running totals
-# - Histograms: Distribution with buckets
-# - Gauges: Current values
+# OpenTelemetry SDK handles metric collection and export
+# - Counters: Running totals (monotonic values)
+# - Histograms: Value distributions with bucket boundaries
+# - Gauges: Current/latest values (non-monotonic)
 ```
 
 ### 4. Bridge Export
@@ -79,11 +79,17 @@ def process_frames_metadata(self, frames):
 class OTelLineageExporter(MetricExporter):
     def export(self, metrics_data, **kwargs):
         # Convert OpenTelemetry metrics to OpenLineage facets
-        facets = self._convert_metrics_to_facets(metrics_data)
-        
-        # Add raw data if enabled
-        if self._export_raw_data:
-            facets["raw_subject_data"] = self._get_raw_data()
+        facets = {}
+        for metric in metrics_data:
+            if self._is_allowed(metric.name):  # Check allowlist
+                # Convert histograms with numeric buckets/counts
+                if metric.type == "histogram":
+                    facets[f"{metric.name}_histogram"] = {
+                        "buckets": [float(b) for b in metric.buckets],
+                        "counts": [int(c) for c in metric.counts],
+                        "count": metric.count,
+                        "sum": metric.sum
+                    }
         
         # Send to OpenLineage
         self._lineage.update_heartbeat(facets)
@@ -243,6 +249,54 @@ def export(self, metrics_data, **kwargs):
     return self._lineage.update_heartbeat(facets)
 ```
 
+## Safe Metrics Allowlist System
+
+### Purpose
+The allowlist system controls exactly which metrics are exported to OpenLineage, providing security and reducing data volume. Only explicitly approved metrics leave the process.
+
+### How It Works
+1. **Metric Declaration**: Filters declare metrics via `MetricSpec` (e.g., `detection_confidence`)
+2. **Allowlist Check**: During export, each metric name is checked against allowlist patterns
+3. **Wildcard Support**: Patterns like `customprocessor_*` and `*_fps` are supported
+4. **Histogram Naming**: For histograms, use base names (bridge adds `_histogram` suffix automatically)
+5. **Export Control**: Only matching metrics are included in OpenLineage facets
+
+### Examples
+
+#### Basic Allowlist
+```yaml
+# safe_metrics.yaml
+safe_metrics:
+  - frames_processed           # Counter
+  - frames_with_detections     # Counter  
+  - detection_confidence       # Histogram (becomes detection_confidence_histogram)
+  - processing_time_ms         # Histogram (becomes processing_time_ms_histogram)
+```
+
+#### Wildcard Patterns
+```yaml
+safe_metrics:
+  - customprocessor_*          # All metrics starting with customprocessor_
+  - "*_fps"                    # All metrics ending with _fps
+  - "*_histogram"              # All histogram metrics
+  - "detection_*"              # All detection-related metrics
+```
+
+#### All-in-One Configuration
+```yaml
+# OpenLineage Configuration
+openlineage:
+  url: "https://oleander.dev"
+  api_key: "your_api_key"
+  heartbeat_interval: 10
+
+# Safe Metrics
+safe_metrics:
+  - frames_processed
+  - detection_confidence
+  - customprocessor_*
+```
+
 ## Configuration Options
 
 ### Environment Variables
@@ -252,10 +306,10 @@ def export(self, metrics_data, **kwargs):
 # Enable/disable telemetry system
 export TELEMETRY_EXPORTER_ENABLED=true
 
-# Safe metrics allowlist (comma-separated)
-export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence_histogram"
+# Safe metrics allowlist - only these metrics are exported to OpenLineage
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence"
 
-# Or use YAML file for complex allowlists
+# Or use YAML file for complex patterns (recommended)
 export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
 ```
 
@@ -276,16 +330,52 @@ export OPENLINEAGE_EXPORT_RAW_DATA=false
 
 #### OpenTelemetry Export
 ```bash
-# Export type and interval
-export TELEMETRY_EXPORTER_TYPE=console  # console, gcm, otlp_http, otlp_grpc
+# Export type: console, gcm, otlp_http, otlp_grpc, prometheus
+export TELEMETRY_EXPORTER_TYPE=console
 export EXPORT_INTERVAL=3000  # milliseconds
+
+# For OTLP exporters (send to observability platforms)
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"  # gRPC endpoint
+export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT="http://localhost:4318"  # HTTP endpoint
 
 # For Google Cloud Monitoring
 export PROJECT_ID="your-gcp-project"
 
-# For OTLP exporters
-export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT="http://localhost:4318"
-export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
+# For Prometheus
+export PROMETHEUS_PORT=8888
+```
+
+## OTLP Integration
+
+### Supported Platforms
+OTLP (OpenTelemetry Protocol) allows sending metrics to various observability platforms:
+
+- **Jaeger** - Distributed tracing
+- **Grafana/Prometheus** - Metrics and dashboards  
+- **Datadog** - Application monitoring
+- **New Relic** - Full-stack observability
+- **Honeycomb** - Observability for modern applications
+- **Any OTEL Collector** - Gateway to multiple backends
+
+### OTLP Configuration Examples
+
+#### Jaeger (HTTP)
+```bash
+export TELEMETRY_EXPORTER_TYPE=otlp_http
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT="http://jaeger:14268/api/traces"
+```
+
+#### Grafana Cloud (gRPC)
+```bash
+export TELEMETRY_EXPORTER_TYPE=otlp_grpc
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT="https://otlp-gateway.grafana.net:443"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic <base64-encoded-token>"
+```
+
+#### Local OTEL Collector
+```bash
+export TELEMETRY_EXPORTER_TYPE=otlp_grpc
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
 ```
 
 ### YAML Configuration

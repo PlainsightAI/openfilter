@@ -84,7 +84,26 @@ OPENLINEAGE_EXPORT_RAW_DATA=true \
 python app.py --input 'file://sample_video.mp4!loop' --fps 10
 ```
 
-## 📈 **Metrics Collected**
+### **With YAML Allowlist** (Security Testing)
+```bash
+# Test full allowlist
+OF_SAFE_METRICS_FILE=safe_metrics.yaml \
+python app.py --input 'file://sample_video.mp4!loop' --fps 10
+
+# Test restrictive allowlist (only counters)
+OF_SAFE_METRICS_FILE=safe_metrics_restrictive.yaml \
+python app.py --input 'file://sample_video.mp4!loop' --fps 10
+```
+
+### **With All-in-One YAML Config** (OpenLineage + Allowlist)
+```bash
+# Single YAML file with both OpenLineage config and allowlist
+TELEMETRY_EXPORTER_ENABLED=true \
+OF_SAFE_METRICS_FILE=safe_metrics_with_config.yaml \
+python app.py --input 'file://sample_video.mp4!loop' --fps 10
+```
+
+## **Metrics Collected**
 
 ### **System Metrics** (Raw to OpenTelemetry)
 - CPU usage, memory consumption
@@ -107,10 +126,60 @@ python app.py --input 'file://sample_video.mp4!loop' --fps 10
 |----------|-------------|---------|
 | `TELEMETRY_EXPORTER_ENABLED` | Enable telemetry | `false` |
 | `TELEMETRY_EXPORTER_TYPE` | Exporter type | `silent` |
-| `OF_SAFE_METRICS` | Allowed metrics | `frames_processed,frames_with_detections,...` |
+| `OF_SAFE_METRICS` | Comma-separated allowed metrics | `frames_processed,frames_with_detections,...` |
+| `OF_SAFE_METRICS_FILE` | YAML file with allowed metrics | None |
 | `OPENLINEAGE_EXPORT_RAW_DATA` | Export raw frame data | `false` |
 | `OPENLINEAGE_URL` | Oleander instance URL | None |
 | `OPENLINEAGE_API_KEY` | Oleander API key | None |
+
+**Note**: `OF_SAFE_METRICS_FILE` takes precedence over `OF_SAFE_METRICS` if both are set.
+
+### **Allowlist Configuration**
+
+#### **Environment Variable** (Simple)
+```bash
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,*_histogram"
+```
+
+#### **YAML File** (Recommended)
+```bash
+export OF_SAFE_METRICS_FILE="safe_metrics.yaml"
+```
+
+**Example YAML file** (`safe_metrics.yaml`):
+```yaml
+safe_metrics:
+  - frames_processed
+  - frames_with_detections
+  - detections_per_frame     # Base name, bridge adds _histogram
+  - detection_confidence     # Base name, bridge adds _histogram
+  - customprocessor_*        # Wildcard support
+  - "*_fps"                  # Pattern matching
+```
+
+**All-in-One Configuration** (`safe_metrics_with_config.yaml`):
+```yaml
+# OpenLineage Configuration
+openlineage:
+  url: "https://oleander.dev"
+  api_key: "your_api_key_here"
+  heartbeat_interval: 10
+
+# Safe Metrics Allowlist
+safe_metrics:
+  - frames_processed
+  - frames_with_detections
+  - detections_per_frame
+  - detection_confidence
+  - customprocessor_*
+```
+
+**Restrictive Example** (`safe_metrics_restrictive.yaml`):
+```yaml
+safe_metrics:
+  - frames_processed        # Only basic counters
+  - frames_with_detections  # No histograms or system metrics
+```
 
 ### **Histogram Configuration**
 

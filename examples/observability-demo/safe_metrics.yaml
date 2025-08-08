@@ -1,0 +1,51 @@
+# OpenFilter Safe Metrics Allowlist
+# This file defines which metrics are allowed to be exported to OpenLineage
+# Only metrics listed here will be included in heartbeat facets
+
+# OpenLineage Configuration (optional)
+# openlineage:
+#   url: "https://oleander.dev"
+#   api_key: "your_api_key_here"
+#   heartbeat_interval: 10
+
+safe_metrics:
+  # Frame processing metrics
+  - frames_processed
+  - frames_with_detections
+  
+  # Detection histograms (base names - bridge will add _histogram suffix)
+  - detections_per_frame
+  - detection_confidence
+  - processing_time_ms
+  
+  # Object analysis metrics
+  - object_size_ratio
+  
+  # System metrics (wildcards supported)
+  - customprocessor_*
+  - customvisualizer_*
+  
+  # Additional metrics for testing
+  - "*_fps"
+  - "*_cpu"
+  - "*_mem"
+
+# Alternative configuration examples:
+# 
+# Minimal allowlist (only basic counters):
+# safe_metrics:
+#   - frames_processed
+#   - frames_with_detections
+#
+# Wildcard examples:
+# safe_metrics:
+#   - frames_*          # All frame-related metrics
+#   - "*_histogram"     # All histogram metrics
+#   - "detection_*"     # All detection metrics
+#
+# Security-focused (no histograms):
+# safe_metrics:
+#   - frames_processed
+#   - frames_with_detections
+#   - customprocessor_fps
+#   - customprocessor_cpu

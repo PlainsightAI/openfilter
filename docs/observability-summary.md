@@ -38,14 +38,15 @@ openfilter/
 
 ### 3. OTelLineageExporter (`bridge.py`)
 - **Converts OpenTelemetry metrics to OpenLineage facets** - Bridge between systems
-- **Enforces allowlist for safe metric export** - Prevents PII leakage
+- **Enforces allowlist for safe metric export** - Only specified metrics are exported
+- **Histogram data as numeric values** - Buckets and counts sent as floats/integers, not strings
 - **Optional raw data export** - Controlled by OPENLINEAGE_EXPORT_RAW_DATA
-- **No PII leaves the process** - Only numeric, aggregated values
+- **Security-first design** - Only allowlisted metrics leave the process
 
 ### 4. OpenTelemetryClient (`client.py`)
 - **Unified OpenTelemetry client** - Single point of configuration
 - **Supports lineage bridge integration** - Connects to OpenLineage
-- **Configurable exporters** - Console, GCM, OTLP, etc.
+- **Multiple export formats** - Console, GCM, OTLP (HTTP/gRPC), Prometheus
 - **Periodic metric export** - Configurable intervals
 
 ### 5. OpenFilterLineage (`lineage.py`)
@@ -138,10 +139,10 @@ class AdvancedFilter(Filter):
 # Enable telemetry system
 export TELEMETRY_EXPORTER_ENABLED=true
 
-# Safe metrics allowlist (comma-separated)
-export OF_SAFE_METRICS="frames_processed,frames_with_plate,plates_per_frame_histogram,processing_time_ms_histogram"
+# Safe metrics allowlist (comma-separated) - only these metrics are exported
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence"
 
-# Or use YAML file
+# Or use YAML file (recommended for complex patterns)
 export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
 ```
 
@@ -162,8 +163,11 @@ export OPENLINEAGE_EXPORT_RAW_DATA=false
 
 #### OpenTelemetry Export
 ```bash
-# Export type: console, gcm, otlp_http, otlp_grpc
+# Export type: console, gcm, otlp_http, otlp_grpc, prometheus
 export TELEMETRY_EXPORTER_TYPE=console
+
+# For OTLP exporters (send to collectors like Jaeger, Grafana, etc.)
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 
 # Export interval (milliseconds)
 export EXPORT_INTERVAL=3000

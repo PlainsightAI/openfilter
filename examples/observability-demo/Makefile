@@ -42,7 +42,23 @@ run-full: ## Run demo with full observability stack
 	TELEMETRY_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 	OPENLINEAGE_URL=https://oleander.dev \
 	OPENLINEAGE_API_KEY=test_key \
-	OF_SAFE_METRICS=frames_processed,frames_with_detections,detections_per_frame_histogram,detection_confidence_histogram \
+	OF_SAFE_METRICS_FILE=safe_metrics.yaml \
+	python app.py --input file://sample_video.mp4!loop --fps 10
+
+run-yaml-allowlist: ## Run demo with YAML allowlist
+	@echo "📋 Running demo with YAML allowlist..."
+	TELEMETRY_EXPORTER_ENABLED=true \
+	OPENLINEAGE_URL=https://oleander.dev \
+	OPENLINEAGE_API_KEY=test_key \
+	OF_SAFE_METRICS_FILE=safe_metrics.yaml \
+	python app.py --input file://sample_video.mp4!loop --fps 10
+
+run-restrictive: ## Run demo with restrictive allowlist (testing security)
+	@echo "🔒 Running demo with restrictive allowlist..."
+	TELEMETRY_EXPORTER_ENABLED=true \
+	OPENLINEAGE_URL=https://oleander.dev \
+	OPENLINEAGE_API_KEY=test_key \
+	OF_SAFE_METRICS_FILE=safe_metrics_restrictive.yaml \
 	python app.py --input file://sample_video.mp4!loop --fps 10
 
 clean: ## Clean up generated files
@@ -55,7 +71,9 @@ demo: setup test ## Setup and test the demo
 	@echo "🎉 Demo is ready to run!"
 	@echo ""
 	@echo "Try these commands:"
-	@echo "  make run              # Basic demo"
-	@echo "  make run-telemetry    # With OpenTelemetry"
-	@echo "  make run-openlineage  # With OpenLineage"
-	@echo "  make run-full         # Full observability stack" 
+	@echo "  make run                 # Basic demo"
+	@echo "  make run-telemetry       # With OpenTelemetry"
+	@echo "  make run-openlineage     # With OpenLineage"
+	@echo "  make run-yaml-allowlist  # With YAML allowlist"
+	@echo "  make run-restrictive     # With restrictive allowlist"
+	@echo "  make run-full            # Full observability stack" 

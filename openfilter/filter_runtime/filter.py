@@ -73,7 +73,24 @@ ENVIRONMENT      = os.getenv('ENVIRONMENT')
 
 # Telemetry environment variables
 TELEMETRY_EXPORTER_ENABLED = os.getenv('TELEMETRY_EXPORTER_ENABLED')
-OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+
+# Try to read OpenLineage config from YAML file first, then environment
+try:
+    from openfilter.observability.config import read_openlineage_config
+    _ol_config = read_openlineage_config()
+    if _ol_config:
+        OPENLINEAGE_URL = _ol_config.get("url") or os.getenv('OPENLINEAGE_URL')
+        OPENLINEAGE_API_KEY = _ol_config.get("api_key") or os.getenv('OPENLINEAGE_API_KEY')
+        OPENLINEAGE_HEARTBEAT_INTERVAL = str(_ol_config.get("heartbeat_interval", 10))
+    else:
+        OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+        OPENLINEAGE_API_KEY = os.getenv('OPENLINEAGE_API_KEY')
+        OPENLINEAGE_HEARTBEAT_INTERVAL = os.getenv('OPENLINEAGE__HEART__BEAT__INTERVAL', '10')
+except ImportError:
+    OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+    OPENLINEAGE_API_KEY = os.getenv('OPENLINEAGE_API_KEY')
+    OPENLINEAGE_HEARTBEAT_INTERVAL = os.getenv('OPENLINEAGE__HEART__BEAT__INTERVAL', '10')
+
 OPENLINEAGE_EXPORT_RAW_DATA = os.getenv('OPENLINEAGE_EXPORT_RAW_DATA', 'false').lower() in ('true', '1', 'yes')
 
 PROP_EXIT_FLAGS  = {'all': 3, 'clean': 1, 'error': 2, 'none': 0}

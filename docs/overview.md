@@ -1113,10 +1113,10 @@ MetricSpec(
 # Enable observability system
 export TELEMETRY_EXPORTER_ENABLED=true
 
-# Safe metrics allowlist (comma-separated)
-export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence_histogram"
+# Safe metrics allowlist - only these metrics are exported
+export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence"
 
-# Or use YAML file for complex patterns
+# Or use YAML file (recommended for wildcards and complex patterns)
 export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
 ```
 
@@ -1137,16 +1137,20 @@ export OPENLINEAGE_EXPORT_RAW_DATA=false
 
 ### OpenTelemetry Export
 ```bash
-# Export type: console, gcm, otlp_http, otlp_grpc
+# Export type: console, gcm, otlp_http, otlp_grpc, prometheus
 export TELEMETRY_EXPORTER_TYPE=console
 
 # Export interval (milliseconds)
 export EXPORT_INTERVAL=3000
 
+# For OTLP exporters (Jaeger, Grafana, Datadog, etc.)
+export TELEMETRY_EXPORTER_OTLP_ENDPOINT="http://localhost:4317"
+
 # For Google Cloud Monitoring
 export PROJECT_ID="your-gcp-project"
 
-# For OTLP exporters
+# For OTLP headers (authentication)
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"
 export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT="http://localhost:4318"
 export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
 ```
@@ -1159,19 +1163,21 @@ export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
   "frames_processed": 150,
   "frames_with_detections": 89,
   "detection_confidence_histogram": {
-    "buckets": [0.1, 0.3, 0.5, 0.7, 0.9],
-    "counts": [12, 23, 34, 45, 36],
+    "buckets": [0.1, 0.3, 0.5, 0.7, 0.9],          // Numeric values (floats)
+    "counts": [12, 23, 34, 45, 36],                 // Numeric values (integers)
     "count": 150,
     "sum": 67.5
   },
   "processing_time_ms_histogram": {
-    "buckets": [1.0, 5.0, 10.0, 25.0, 50.0],
-    "counts": [45, 67, 28, 8, 2],
+    "buckets": [1.0, 5.0, 10.0, 25.0, 50.0],       // Auto-generated boundaries
+    "counts": [45, 67, 28, 8, 2],                   // Distribution counts
     "count": 150,
     "sum": 2345
   }
 }
 ```
+
+**Note**: Histogram buckets and counts are sent as numeric values (floats/integers), not strings, for better compatibility with analysis tools.
 
 ### With Raw Data Export
 ```json

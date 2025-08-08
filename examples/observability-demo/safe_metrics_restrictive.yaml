@@ -1,0 +1,25 @@
+# Restrictive Safe Metrics Allowlist
+# This file demonstrates a minimal allowlist for testing security controls
+# Only basic frame counters are allowed - no histograms or system metrics
+
+safe_metrics:
+  # Only basic counters allowed
+  - frames_processed
+  - frames_with_detections
+  
+  # No histograms allowed (commented out to test blocking)
+  # - detections_per_frame_histogram
+  # - detection_confidence_histogram
+  # - processing_time_ms_histogram
+  # - object_size_ratio_histogram
+  
+  # No system metrics allowed (commented out to test blocking)
+  # - customprocessor_fps
+  # - customprocessor_cpu
+  # - customprocessor_mem
+  # - customvisualizer_fps
+  
+  # Test that these specific metrics are blocked:
+  # - Any histogram ending in "_histogram"
+  # - Any system metric with filter prefixes
+  # - Any wildcard patterns
