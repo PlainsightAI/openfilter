@@ -23,7 +23,7 @@ def normalize_facet_keys(data: dict) -> dict:
         k = k.replace("-", "_").replace(" ", "_")  
         normalized[k] = v
     return normalized
-def flatten_dict(d: dict, parent_key='', sep='__'):
+def flatten_dict(d: dict, parent_key='', sep='_'):
     items = {}
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -50,8 +50,8 @@ def create_openfilter_facet_with_fields(data: dict,filter_name:str) -> BaseFacet
             fields.append((k, type(v), field(default=v)))
 
     fields += [
-        ("_producer", str, field(default="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage")),
-        ("schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/lineage/schema/OpenFilterConfigRunFacet.json")),
+        ("_producer", str, field(default="https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage")),
+        ("schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/blob/main/openfilter/lineage/schema/OpenFilterConfigRunFacet.json")),
         ("type", str, field(default=filter_name))
     ]
     
@@ -93,7 +93,7 @@ def get_http_client(url: str=None, endpoint: str = None, verify: bool = False, a
 
 
 class OpenFilterLineage:
-    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage", interval=10, facets={}, filter_name: str = None, job=None):
+    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage", interval=10, facets={}, filter_name: str = None, job=None):
         self.client = client or get_http_client()
         self.run_id = self.get_run_id()
         self.facets = facets

@@ -25,6 +25,21 @@ OpenFilter Library release notes
 - **Testing**: Comprehensive test coverage for metric specs, registry operations, and configuration handling
 
 
+=======
+### Modified
+- For consistency across all versions, need to emit openfilter_version with v.
+- Modified VERSION file for examples.
+- Updated pyproject of all examples.
+- Updated the `producer` and `schemaURL` for lineage.
+
+## v0.1.10 - 2025-08-05
+
+### Modified
+- Lineage `Start` events now emit filter context with the regular info.
+- renamed `model_version` to `resource_bundle_version` for clarity as it the version for the full bundle rather than any one model.
+- modified FilterContext to emit `openfilter_version` as well.
+- added getters for FilterContext: `FilterContext.get_filter_version()`, `FilterContext.get_resource_bundle_version`, `FilterContext.get_openfilter_version()`, `FilterContext.get_version_sha()` and `FilterContext.get_model_info()`.
+- modified `git_sha` to `version_sha`
 
 ## v0.1.9 - 2025-07-30
 

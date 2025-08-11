@@ -140,19 +140,21 @@ class FilterContext:
     The FilterContext class provides static access to build and model metadata for the filter runtime. It is initialized once per process and stores the following information:
 
     - filter_version: The version of the filter runtime, read from the file 'VERSION'.
-    - model_version: The version of the model, read from the file 'VERSION.MODEL'.
-    - git_sha: The GitHub commit SHA, read from the file 'GITHUB_SHA'. This should be set at build time by CI/CD or manually.
+    - resource_bundle_version: The version of the resource bundle, read from the file 'RESOURCE_BUNDLE_VERSION'.
+    - version_sha: The Git commit SHA, read from the file 'VERSION_SHA'. This should be set at build time by CI/CD or manually.
     - models: A dictionary of models loaded from 'models.toml'. Each entry contains:
         - model name (key)
         - version: The version string for the model
         - path: The path to the model file (if present), or 'No path' if not specified
 
-    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), and FilterContext.log().
+    This context is intended to provide runtime and build information for logging, debugging, and traceability. It is accessed via classmethods such as FilterContext.get(key), FilterContext.as_dict(), FilterContext.log(), and specific getter methods.
 
     Example usage:
         FilterContext.init()  # Initializes context if not already done
         version = FilterContext.get('filter_version')
         FilterContext.log()   # Logs all context info
+        filter_version = FilterContext.get_filter_version()
+        openfilter_version = FilterContext.get_openfilter_version()
     """
 
     _data = {}
@@ -164,9 +166,10 @@ class FilterContext:
 
         cls._data = {
             "filter_version": cls._read_file("VERSION"),
-            "model_version": cls._read_file("VERSION.MODEL"),
-            "git_sha": cls._read_file("GITHUB_SHA"),
-            "models": cls._read_models_toml()
+            "resource_bundle_version": cls._read_file("RESOURCE_BUNDLE_VERSION"),
+            "version_sha": cls._read_file("VERSION_SHA"),
+            "models": cls._read_models_toml(),
+            "openfilter_version": cls.get_openfilter_version()
         }
 
     @classmethod
@@ -188,6 +191,36 @@ class FilterContext:
                 logger.info(f"  Total models: {len(value)}")
             else:
                 logger.info(f"{key.replace('_', ' ').title()}: {value}")
+
+    @classmethod
+    def get_filter_version(cls) -> str | None:
+        """Get the filter version."""
+        return cls._data.get('filter_version')
+
+    @classmethod
+    def get_resource_bundle_version(cls) -> str | None:
+        """Get the resource bundle version from RESOURCE_BUNDLE_VERSION file."""
+        return cls._data.get('resource_bundle_version')
+
+    @classmethod
+    def get_version_sha(cls) -> str | None:
+        """Get the version SHA."""
+        return cls._data.get('version_sha')
+
+    @classmethod
+    def get_model_info(cls) -> dict | None:
+        """Get the models data."""
+        return cls._data.get('models')
+
+    @classmethod
+    def get_openfilter_version(cls) -> str | None:
+        """Get the OpenFilter framework version."""
+        try:
+            import importlib.metadata
+            version = importlib.metadata.version('openfilter')
+            return f"v{version}"
+        except Exception:
+            return None
 
     @staticmethod
     def _read_file(filename):
@@ -501,9 +534,15 @@ class Filter:
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must have an ID for sanity
         
-        pipeline_id = config.get("pipeline_id")
-        self.device_id_name = config.get("device_name")
+        pipeline_id = config.get("pipeline_id") or os.environ.get("PIPELINE_ID")
+        self.device_id_name = config.get("device_name") or os.environ.get("DEVICE_NAME")
         self.pipeline_id = pipeline_id  # to store as an attribute
+        
+        # Add pipeline identification to config for OpenLineage start event
+        if pipeline_id:
+            config["pipeline_id"] = pipeline_id
+        if self.device_id_name:
+            config["device_name"] = self.device_id_name
        
         FilterContext.init()
 
@@ -771,7 +810,7 @@ class Filter:
             (k[len(prefix):] if k.startswith(prefix) else k): v
             for k, v in metrics.items()
         }
-    
+
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
        
@@ -830,6 +869,28 @@ class Filter:
         if hasattr(self, 'emitter') and self.emitter is not None:
             self.emitter.emit_start(facets=dict(config))
             self.emitter.start_lineage_heart_beat()
+        # Prepare facets with config and version information
+        facets = dict(config)
+
+        # Filter out sensitive/internal configuration fields
+        sensitive_fields = {'model_path'}
+        facets = {k: v for k, v in facets.items() if k not in sensitive_fields}
+        
+        # Add comprehensive version information from FilterContext
+        if FilterContext.get_filter_version():
+            facets['filter_version'] = FilterContext.get_filter_version()
+        if FilterContext.get_resource_bundle_version():
+            facets['resource_bundle_version'] = FilterContext.get_resource_bundle_version()
+        if FilterContext.get_version_sha():
+            facets['version_sha'] = FilterContext.get_version_sha()
+        if FilterContext.get_model_info():
+            facets['models'] = FilterContext.get_model_info()
+        if FilterContext.get_openfilter_version():
+            facets['openfilter_version'] = FilterContext.get_openfilter_version()
+        
+        self.emitter.emit_start(facets=facets)
+        self.emitter.start_lineage_heart_beat()
+        
         
         def on_exit_msg(reason: str):
             if reason == 'error':
