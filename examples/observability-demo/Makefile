@@ -32,7 +32,7 @@ run-openlineage: ## Run demo with OpenLineage enabled
 	TELEMETRY_EXPORTER_ENABLED=true \
 	OPENLINEAGE_URL=https://oleander.dev \
 	OPENLINEAGE_API_KEY=test_key \
-	OF_SAFE_METRICS=frames_processed,frames_with_detections,detections_per_frame_histogram,detection_confidence_histogram \
+	OF_SAFE_METRICS=frames_processed,frames_with_detections,detections_per_frame,detection_confidence \
 	python app.py --input file://sample_video.mp4!loop --fps 10
 
 run-full: ## Run demo with full observability stack

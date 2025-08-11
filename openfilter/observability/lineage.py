@@ -51,7 +51,13 @@ def create_openfilter_facet_with_fields(data: dict, filter_name: str) -> BaseFac
     data = flatten_dict(data)
     for k, v in data.items():
         if isinstance(v, (tuple, list)):
-            data[k] = [str(x) for x in v]
+            # Preserve numeric types for histogram data
+            if k.endswith('_buckets') or k.endswith('_counts'):
+                # Keep numbers as numbers for histogram buckets and counts
+                data[k] = [float(x) if isinstance(x, (int, float)) else str(x) for x in v]
+            else:
+                # Convert other lists to strings (for backward compatibility)
+                data[k] = [str(x) for x in v]
         elif v is None:
             data[k] = ""
 
