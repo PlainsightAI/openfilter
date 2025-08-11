@@ -888,8 +888,9 @@ class Filter:
         if FilterContext.get_openfilter_version():
             facets['openfilter_version'] = FilterContext.get_openfilter_version()
         
-        self.emitter.emit_start(facets=facets)
-        self.emitter.start_lineage_heart_beat()
+        if hasattr(self, 'emitter') and self.emitter is not None:
+            self.emitter.emit_start(facets=facets)
+            self.emitter.start_lineage_heart_beat()
         
         
         def on_exit_msg(reason: str):
