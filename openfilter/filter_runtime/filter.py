@@ -866,9 +866,6 @@ class Filter:
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
         
-        if hasattr(self, 'emitter') and self.emitter is not None:
-            self.emitter.emit_start(facets=dict(config))
-            self.emitter.start_lineage_heart_beat()
         # Prepare facets with config and version information
         facets = dict(config)
 

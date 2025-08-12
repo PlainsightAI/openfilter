@@ -3,7 +3,7 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.2.0 - 2025-08-05
+## v0.1.11 - 2025-08-05
 
 ### Added
 - **Observability System**: Comprehensive telemetry and monitoring capabilities

@@ -606,7 +606,7 @@ OPENLINEAGE_URL=http://localhost:5000
 OPENLINEAGE_API_KEY=                     # Optional: leave empty if not required
 OPENLINEAGE_VERIFY_CLIENT_URL=false
 OPENLINEAGE_ENDPOINT=/api/v1/lineage
-OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage
+OPENLINEAGE_PRODUCER=https://github.com/PlainsightAI/openfilter/tree/main/openfilter/observability
 OPENLINEAGE__HEART__BEAT__INTERVAL=10
 
 ```
@@ -642,12 +642,12 @@ You’ll be able to:
     "namespace": "Openfilter"
   },
   "outputs": [],
-  "producer": "https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage",
+  "producer": "https://github.com/PlainsightAI/openfilter/tree/main/openfilter/observability",
   "run": {
     "facets": {
       "openfilter": {
-        "_producer": "https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/lineage",
-        "_schemaURL": "https://github.com/PlainsightAI/openfilter/lineage/schema/OpenFilterConfigRunFacet.json",
+        "_producer": "https://github.com/PlainsightAI/openfilter/tree/main/openfilter/observability",
+        "_schemaURL": "https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage/schema/OpenFilterConfigRunFacet.json",
         "_type": "FilterCrop",
         "frame__data__meta__id": "34",
         "frame__data__meta__license_plate_detection": [

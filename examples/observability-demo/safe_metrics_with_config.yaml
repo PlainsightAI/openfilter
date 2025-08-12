@@ -3,9 +3,9 @@
 
 # OpenLineage Configuration
 openlineage:
-  url: "https://oleander.dev"
-  api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdhbml6YXRpb25JZCI6IjMyMjhmYTA4LTRjNDUtNDRjMi1hNTk4LWQ2YTIyZDk3MmI0NiIsImlhdCI6MTc0MzgwNTgyNn0.GBhz5qyY8Ffep8_GJE1meeibS04vk8ADwVGzAGdoP-0"
-  heartbeat_interval: 5  # seconds
+  url: "<your-url-here>"          # ex.: "https://oleander.dev"
+  api_key: "<your-api-key-here>"
+  heartbeat_interval: 5           # seconds
 
 # Safe Metrics Allowlist
 # Only metrics listed here will be exported to OpenLineage

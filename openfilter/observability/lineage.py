@@ -69,8 +69,8 @@ def create_openfilter_facet_with_fields(data: dict, filter_name: str) -> BaseFac
             fields.append((k, type(v), field(default=v)))
 
     fields += [
-        ("_producer", str, field(default="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/observability")),
-        ("schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/observability/schema/OpenFilterConfigRunFacet.json")),
+        ("_producer", str, field(default="https://github.com/PlainsightAI/openfilter/tree/main/openfilter/observability")),
+        ("schemaURL", str, field(default="https://github.com/PlainsightAI/openfilter/tree/main/openfilter/lineage/schema/OpenFilterConfigRunFacet.json")),
         ("type", str, field(default=filter_name))
     ]
     
@@ -114,7 +114,7 @@ def get_http_client(url: str = None, endpoint: str = None, verify: bool = False,
 class OpenFilterLineage:
     """OpenLineage client for OpenFilter."""
     
-    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/0.1.2/openfilter/observability", interval=10, facets={}, filter_name: str = None, job=None):
+    def __init__(self, client=None, producer="https://github.com/PlainsightAI/openfilter/tree/main/openfilter/observability", interval=10, facets={}, filter_name: str = None, job=None):
         """Initialize the OpenFilterLineage client.
         
         Args:
