@@ -623,7 +623,7 @@ class Filter:
                     # via the OTelLineageExporter bridge - no need to send them directly
                             
                 except Exception as e:
-                    logger.error(f"[metrics_updater] erro ao atualizar métricas: {e}")
+                    logger.error(f"[metrics_updater] Error updating metrics: {e}")
                 self.stop_evt.wait(interval)  
 
         # Store the thread handle
