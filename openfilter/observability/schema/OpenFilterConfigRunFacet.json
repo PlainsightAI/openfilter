@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PlainsightAI/openfilter/schema/lineage/OpenFilterConfigRunFacet.json",
+  "$defs": {
+    "OpenFilterConfigRunFacet": {
+      "allOf": [
+        {
+          "$ref": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunFacet"
+        },
+        {
+          "type": "object",
+          "required": ["_producer", "schemaURL","type"],
+          "properties": {
+            "_producer": { "type": "string", "format": "uri" },
+            "schemaURL": { "type": "string", "format": "uri" },
+            "type": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      ],
+      "type": "object"
+    }
+  },
+  "type": "object",
+  "properties": {
+    "openfilter": {
+      "$ref": "#/$defs/OpenFilterConfigRunFacet"
+    }
+  }
+}

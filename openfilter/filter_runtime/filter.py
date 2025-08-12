@@ -1,12 +1,16 @@
+import json
 import logging
 import multiprocessing as mp
 import os
 import re
 import sys
 import threading
+import time
+from datetime import datetime
 from multiprocessing import synchronize
-from time import time
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, List
+
+import numpy as np
 
 from .dlcache import is_cached_file, dlcache
 from .frame import Frame
@@ -23,8 +27,8 @@ except ImportError:
     import tomli as tomllib # python <3.11 uses tomli instead of tomllib
 
 from uuid import uuid4
-from openfilter.lineage import openlineage_client as FilterLineage
-from openfilter.filter_runtime.open_telemetry.open_telemetry_client import OpenTelemetryClient 
+from openfilter.observability import OpenFilterLineage, TelemetryRegistry, MetricSpec
+from openfilter.observability.client import OpenTelemetryClient
 from openfilter.filter_runtime.utils import strtobool
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
@@ -66,6 +70,28 @@ OBEY_EXIT        = (os.getenv('OBEY_EXIT') or 'all').lower()
 STOP_EXIT        = (os.getenv('STOP_EXIT') or 'error').lower()
 AUTO_DOWNLOAD    = bool(json_getval((os.getenv('AUTO_DOWNLOAD') or 'true').lower()))
 ENVIRONMENT      = os.getenv('ENVIRONMENT')
+
+# Telemetry environment variables
+TELEMETRY_EXPORTER_ENABLED = os.getenv('TELEMETRY_EXPORTER_ENABLED')
+
+# Try to read OpenLineage config from YAML file first, then environment
+try:
+    from openfilter.observability.config import read_openlineage_config
+    _ol_config = read_openlineage_config()
+    if _ol_config:
+        OPENLINEAGE_URL = _ol_config.get("url") or os.getenv('OPENLINEAGE_URL')
+        OPENLINEAGE_API_KEY = _ol_config.get("api_key") or os.getenv('OPENLINEAGE_API_KEY')
+        OPENLINEAGE_HEARTBEAT_INTERVAL = str(_ol_config.get("heartbeat_interval", 10))
+    else:
+        OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+        OPENLINEAGE_API_KEY = os.getenv('OPENLINEAGE_API_KEY')
+        OPENLINEAGE_HEARTBEAT_INTERVAL = os.getenv('OPENLINEAGE__HEART__BEAT__INTERVAL', '10')
+except ImportError:
+    OPENLINEAGE_URL = os.getenv('OPENLINEAGE_URL')
+    OPENLINEAGE_API_KEY = os.getenv('OPENLINEAGE_API_KEY')
+    OPENLINEAGE_HEARTBEAT_INTERVAL = os.getenv('OPENLINEAGE__HEART__BEAT__INTERVAL', '10')
+
+OPENLINEAGE_EXPORT_RAW_DATA = os.getenv('OPENLINEAGE_EXPORT_RAW_DATA', 'false').lower() in ('true', '1', 'yes')
 
 PROP_EXIT_FLAGS  = {'all': 3, 'clean': 1, 'error': 2, 'none': 0}
 POLL_TIMEOUT_SEC = POLL_TIMEOUT_MS / 1000
@@ -237,7 +263,7 @@ class FilterContext:
 class Filter:
     """Filter base class. All filters derive from this and can override any of these config options but in practice
     mostly override `sources` and `outputs` to specify other sources or outputs than the filter pipeline.
-
+    
     config:
         id:
             Unique string identifier for this filter. If this is not provided then it will be randomly generated.
@@ -464,6 +490,23 @@ class Filter:
 
         ZMQ_WARN_OLDER:
             Warn on older messages than expected.
+    
+    Subclasses can declare metrics by setting the metric_specs class attribute:
+    
+        class MyFilter(Filter):
+            metric_specs = [
+                MetricSpec(
+                    name="frames_processed",
+                    instrument="counter", 
+                    value_fn=lambda d: 1
+                ),
+                MetricSpec(
+                    name="detections_per_frame",
+                    instrument="histogram",
+                    value_fn=lambda d: len(d.get("detections", [])),
+                    boundaries=[0, 1, 2, 5, 10]
+                )
+            ]
     """
 
     config:  FilterConfig
@@ -472,6 +515,7 @@ class Filter:
     metrics: dict[str, JSONType]  # the last metrics that were sent out, including user metrics
 
     FILTER_TYPE = 'User'
+    metric_specs: List[MetricSpec] = []  # subclasses override this to declare metrics
 
     @property
     def metrics(self) -> dict[str, JSONType]:
@@ -488,7 +532,7 @@ class Filter:
         obey_exit: str | None = None,
     ):
         if not (config := simpledeepcopy(config)).get('id'):
-            config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must hava an ID for sanity
+            config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must have an ID for sanity
         
         pipeline_id = config.get("pipeline_id") or os.environ.get("PIPELINE_ID")
         self.device_id_name = config.get("device_name") or os.environ.get("DEVICE_NAME")
@@ -500,19 +544,24 @@ class Filter:
         if self.device_id_name:
             config["device_name"] = self.device_id_name
        
-
         FilterContext.init()
 
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
-        enabled_otel_env = os.getenv("TELEMETRY_EXPORTER_ENABLED")
         self._metrics_updater_thread = None
         try:
-             self.telemetry_enabled: bool = bool(strtobool(enabled_otel_env)) if enabled_otel_env is not None else False
+             self.telemetry_enabled: bool = bool(strtobool(TELEMETRY_EXPORTER_ENABLED)) if TELEMETRY_EXPORTER_ENABLED is not None else False
         except ValueError:
-             logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {enabled_otel_env}. Defaulting to False.")
+             logger.warning(f"Invalid TELEMETRY_EXPORTER_ENABLED value: {TELEMETRY_EXPORTER_ENABLED}. Defaulting to False.")
              self.telemetry_enabled = False
         
+        # Check if raw subject data export is enabled
+        self._export_raw_data = OPENLINEAGE_EXPORT_RAW_DATA
+        if self._export_raw_data:
+            logger.info("[Filter] Raw subject data export is ENABLED")
+        else:
+            logger.info("[Filter] Raw subject data export is DISABLED (set OPENLINEAGE_EXPORT_RAW_DATA=true to enable)")
     
+
         try:
             try:
                 self.config = config = self.normalize_config(config)
@@ -551,35 +600,30 @@ class Filter:
 
         if not self.stop_evt.is_set():  # because we don't want to potentially log multiple exits
             self.stop_evt.set()
-            self.emitter.stop_lineage_heart_beat()
+            if hasattr(self, 'emitter') and self.emitter is not None:
+                self.emitter.stop_lineage_heart_beat()
             self.stop_metrics_updater_thread()
-            self.emitter.emit_stop()
+            if hasattr(self, 'emitter') and self.emitter is not None:
+                self.emitter.emit_stop()
             logger.info(f'{reason}, exiting...' if reason else 'exiting...')
 
         raise exc or Filter.Exit
-    """
-    def start_metrics_updater_thread(self):
-        interval = self.otel.export_interval_millis / 1000  
-        
-        def loop():
-            while not self.stop_evt.is_set():
-                try:
-                    self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
-                except Exception as e:
-                    logger.error(f"[metrics_updater] error when trying to update metrics: {e}")
-                self.stop_evt.wait(interval)  
-
-        threading.Thread(target=loop, daemon=True).start()
-    """
+    
+    
     def start_metrics_updater_thread(self):
         interval = self.otel.export_interval_millis / 1000  
 
         def loop():
             while not self.stop_evt.is_set():
                 try:
+                    # Send system metrics to OpenTelemetry (raw, not aggregated)
                     self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
+                    
+                    # System metrics are automatically aggregated by OTel SDK and sent to OpenLineage
+                    # via the OTelLineageExporter bridge - no need to send them directly
+                            
                 except Exception as e:
-                    logger.error(f"[metrics_updater] erro ao atualizar métricas: {e}")
+                    logger.error(f"[metrics_updater] Error updating metrics: {e}")
                 self.stop_evt.wait(interval)  
 
         # Store the thread handle
@@ -694,33 +738,69 @@ class Filter:
     # - FOR VERY SPECIAL SUBCLASS --------------------------------------------------------------------------------------
 
     def set_open_lineage():
-        try:
-            
-            return FilterLineage.OpenFilterLineage()
-            
-        except Exception as e:
-            print(e)
-    
-    emitter:FilterLineage.OpenFilterLineage = set_open_lineage()
-
-    def process_frames_metadata(self,frames, emitter):
-        keys = list(frames.keys())
+        # Only initialize OpenLineage if environment variables are set
+        if not OPENLINEAGE_URL:
+            logger.info("[OpenLineage] No OPENLINEAGE_URL set, skipping OpenLineage initialization")
+            return None
         
-        accumulated_data = {}
-        for key in keys:
-            frame = frames[key]
-            
-            # Get the data attribute directly (this contains the actual frame data)
-            if hasattr(frame, 'data') and isinstance(frame.data, dict):
-                frame_data = frame.data
-                
-                # Add the data with the correct structure
-                for data_key, data_value in frame_data.items():
-                    accumulated_data[data_key] = data_value
-            else:
-                logging.warning(f"[{self.filter_name}] Frame '{key}' has no data attribute or data is not a dict")
+        try:
+            return OpenFilterLineage()
+        except Exception as e:
+            logger.error(f"\033[91mError setting OpenLineage: {e}\033[0m")
+            return None
     
-        emitter.update_heartbeat_lineage(facets=accumulated_data)
+    emitter: OpenFilterLineage = set_open_lineage()
+
+    def process_frames_metadata(self, frames, emitter):
+        """Record metrics for processed frames using the telemetry registry.
+        
+        This method records safe metrics based on MetricSpec declarations
+        and does NOT forward raw PII data to OpenLineage.
+        """
+        if not hasattr(self, '_telemetry') or self._telemetry is None:
+            return
+            
+        # Store raw frame data for potential export (only if OPENLINEAGE_EXPORT_RAW_DATA is enabled)
+        if self._export_raw_data and hasattr(self, 'emitter') and self.emitter is not None:
+            # Collect raw frame data for export
+            raw_frame_data = {}
+            timestamp = time.time()
+            
+            # Get frame counter for this batch
+            if not hasattr(self, '_frame_counter'):
+                self._frame_counter = 0
+            
+            for frame_id, frame in frames.items():
+                if hasattr(frame, 'data') and isinstance(frame.data, dict):
+                    # Create unique key for each frame to prevent overwriting
+                    unique_key = f"{frame_id}_{self._frame_counter}"
+                    frame_data_copy = frame.data.copy()
+                    frame_data_copy['_timestamp'] = timestamp
+                    frame_data_copy['_frame_id'] = frame_id
+                    frame_data_copy['_unique_key'] = unique_key
+                    frame_data_copy['_frame_number'] = self._frame_counter
+                    raw_frame_data[unique_key] = frame_data_copy
+                    self._frame_counter += 1
+            
+            # Accumulate data over the heartbeat interval instead of overwriting
+            if raw_frame_data:
+                if not hasattr(self.emitter, '_last_frame_data'):
+                    self.emitter._last_frame_data = {}
+                
+                # Add all frames to accumulated data
+                self.emitter._last_frame_data.update(raw_frame_data)
+                
+                # Limit the number of stored frames to prevent memory issues
+                # Keep only the last 100 frames or so
+                if len(self.emitter._last_frame_data) > 100:
+                    # Remove oldest frames (simple approach: keep last 100)
+                    keys_to_remove = list(self.emitter._last_frame_data.keys())[:-100]
+                    for key in keys_to_remove:
+                        del self.emitter._last_frame_data[key]
+        
+        for frame in frames.values():
+            if hasattr(frame, 'data') and isinstance(frame.data, dict):
+                self._telemetry.record(frame.data)
         
     def get_normalized_setup_metrics(self,prefix: str = "dim_") -> dict[str, Any]:
         
@@ -743,6 +823,7 @@ class Filter:
         # Now emit heartbeat with the processed frames that include this filter's results
         if processed_frames and not callable(processed_frames):
             final_frames = {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
+            
             proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(final_frames, self.emitter))
             proces_frames_data.start()
 
@@ -780,7 +861,7 @@ class Filter:
   
 
     # - FOR SPECIAL SUBCLASS -------------------------------------------------------------------------------------------
-
+    
     
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
@@ -804,8 +885,10 @@ class Filter:
         if FilterContext.get_openfilter_version():
             facets['openfilter_version'] = FilterContext.get_openfilter_version()
         
-        self.emitter.emit_start(facets=facets)
-        self.emitter.start_lineage_heart_beat()
+        if hasattr(self, 'emitter') and self.emitter is not None:
+            self.emitter.emit_start(facets=facets)
+            self.emitter.start_lineage_heart_beat()
+        
         
         def on_exit_msg(reason: str):
             if reason == 'error':
@@ -844,10 +927,23 @@ class Filter:
 
         if self.telemetry_enabled:
             try:
-                self.otel = OpenTelemetryClient(service_name="openfilter", instance_id=self.pipeline_id,setup_metrics=self.setup_metrics)
-                self.start_metrics_updater_thread()
+                self.otel = OpenTelemetryClient(
+                    service_name="openfilter", 
+                    instance_id=self.pipeline_id,
+                    setup_metrics=self.setup_metrics,
+                    lineage_emitter=self.emitter
+                )
+                
+                # Initialize telemetry registry if metric specs are declared
+                if hasattr(self, 'metric_specs') and self.metric_specs:
+                    # Use business meter for business metrics (goes only to OpenLineage)
+                    meter = getattr(self.otel, 'business_meter', self.otel.meter)
+                    self._telemetry = TelemetryRegistry(meter, self.metric_specs)
+                else:
+                    self._telemetry = None
+                    
             except Exception as e:
-                logger.error("Failed to init Open Telemetry client: {e}")
+                logger.warning("Failed to init Open Telemetry client: {e}")
 
         if (exit_after := config.exit_after) is None:
             self.exit_after_t = None
@@ -879,10 +975,15 @@ class Filter:
             mq_log        = config.mq_log,
             mq_msgid_sync = config.mq_msgid_sync,
         )
+        
+        # Start metrics upddater thread after MQ is initialized
+        if self.telemetry_enabled and hasattr(self, 'otel'):
+            self.start_metrics_updater_thread()
    
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-        self.emitter.emit_stop()
+        if hasattr(self, 'emitter') and self.emitter is not None:
+            self.emitter.emit_stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------
@@ -1026,7 +1127,8 @@ class Filter:
                 loop_exc  = Filter.YesLoopException if (LOOP_EXC if loop_exc is None else loop_exc) else Exception
                 prop_exit = PROP_EXIT_FLAGS[PROP_EXIT if prop_exit is None else prop_exit]
                 
-                cls.emitter.filter_name = filter.__class__.__name__
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.filter_name = filter.__class__.__name__
                 cls.filter_name = filter.__class__.__name__
                 filter.init(filter.config)
 
@@ -1057,24 +1159,28 @@ class Filter:
                     filter.fini()
 
             except Exception as exc:
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
                 logger.error(exc)
 
                 raise
 
             except Filter.Exit:
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
                 pass
 
             finally:
                 filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-                cls.emitter.stop_lineage_heart_beat()
-                cls.emitter.emit_stop()
+                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                    filter.emitter.stop_lineage_heart_beat()
+                    filter.emitter.emit_stop()
         finally:
-            cls.emitter.stop_lineage_heart_beat()
-            cls.emitter.emit_stop()
+            if hasattr(filter, 'emitter') and filter.emitter is not None:
+                filter.emitter.stop_lineage_heart_beat()
+                filter.emitter.emit_stop()
             stop_evt.set()
 
     @staticmethod

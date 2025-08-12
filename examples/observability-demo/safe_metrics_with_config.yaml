@@ -1,0 +1,39 @@
+# OpenFilter Comprehensive Configuration
+# This file contains both safe metrics allowlist and OpenLineage configuration
+
+# OpenLineage Configuration
+openlineage:
+  url: "<your-url-here>"          # ex.: "https://oleander.dev"
+  api_key: "<your-api-key-here>"
+  heartbeat_interval: 5           # seconds
+
+# Safe Metrics Allowlist
+# Only metrics listed here will be exported to OpenLineage
+safe_metrics:
+  # Frame processing metrics
+  - frames_processed
+  - frames_with_detections
+  
+  # Detection histograms (base names - bridge will add _histogram suffix)
+  - detections_per_frame
+  - detection_confidence
+  - processing_time_ms
+  
+  # Object analysis metrics
+  - object_size_ratio
+  
+  # System metrics (wildcards supported)
+  - customprocessor_*
+  - customvisualizer_*
+  
+  # Additional metrics for testing
+  - "*_fps"
+  - "*_cpu"
+  - "*_mem"
+
+# Alternative minimal configuration for production:
+# safe_metrics:
+#   - frames_processed
+#   - frames_with_detections
+#   - customprocessor_fps
+#   - customprocessor_cpu
