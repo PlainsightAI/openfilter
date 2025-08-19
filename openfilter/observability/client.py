@@ -26,7 +26,7 @@ from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
 from distutils.util import strtobool
 from .bridge import OTelLineageExporter
-from .config import read_allowlist
+from .config import read_allowlist, read_otel_config
 
 # Simple exporter factory for basic exporters
 def build_exporter(exporter_type: str, **config):
@@ -50,7 +50,21 @@ def build_exporter(exporter_type: str, **config):
     elif exporter_type == "otlp":
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
         endpoint = config.get("endpoint", "http://localhost:4317")
-        return OTLPMetricExporter(endpoint=endpoint)
+        headers = config.get("headers")
+        
+        # Parse headers if provided as string
+        if headers and isinstance(headers, str):
+            header_dict = {}
+            for header in headers.split(","):
+                if "=" in header:
+                    key, value = header.split("=", 1)
+                    header_dict[key.strip()] = value.strip()
+            headers = header_dict
+        
+        if headers:
+            return OTLPMetricExporter(endpoint=endpoint, headers=headers)
+        else:
+            return OTLPMetricExporter(endpoint=endpoint)
     else:
         from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
         return ConsoleMetricExporter()
@@ -112,6 +126,23 @@ class OpenTelemetryClient:
 
         if self.enabled:
             try:
+                # Try to read OTEL config from YAML/env
+                otel_config = read_otel_config()
+                if otel_config and otel_config.get("endpoint"):
+                    # Only use OTLP if endpoint is set AND exporter_type isn't explicitly set to something else
+                    explicit_type = os.getenv("TELEMETRY_EXPORTER_TYPE")
+                    if not explicit_type or explicit_type == "otlp":
+                        exporter_type = "otlp"
+                        exporter_config.update({
+                            "endpoint": otel_config.get("endpoint"),
+                            "headers": otel_config.get("headers"),
+                            "protocol": otel_config.get("protocol", "grpc")
+                        })
+                        self.export_interval_millis = otel_config.get("export_interval", 30) * 1000
+                        logging.info(f"Using OTEL config: endpoint={otel_config.get('endpoint')}, protocol={otel_config.get('protocol')}")
+                    else:
+                        logging.info(f"OTEL endpoint found but TELEMETRY_EXPORTER_TYPE='{explicit_type}' - using {explicit_type} exporter")
+
                 resource = Resource.create(
                     {
                         SERVICE_NAME: service_name,

@@ -1,0 +1,61 @@
+# OTEL-Only Safe Metrics Configuration
+# This file defines which metrics are safe to export to OTEL collectors
+# without containing PII (Personally Identifiable Information)
+
+# =============================================================================
+# OpenTelemetry Configuration (NEW)
+# =============================================================================
+opentelemetry:
+  # OTEL Collector endpoint
+  endpoint: "https://your-otel-collector.com:4317"
+  
+  # Authentication headers (if required)
+  headers: "authorization=Bearer YOUR_TOKEN"
+  
+  # Protocol: grpc or http/protobuf
+  protocol: "grpc"
+  
+  # Export interval in seconds
+  export_interval: 30
+  
+  # Enable OTEL export
+  enabled: true
+
+# =============================================================================
+# Safe Metrics Allowlist
+# =============================================================================
+safe_metrics:
+  # Business metrics from custom processors
+  - "detections_per_frame"
+  - "confidence_score"  
+  - "processing_time"
+  - "object_size_ratio"
+  
+  # System metrics (automatically collected)
+  - "fps"
+  - "cpu"
+  - "memory"
+  - "latency_in"
+  - "latency_out"
+  
+  # Histogram metrics (base names without _histogram suffix)
+  - "detection_confidence"
+  - "processing_latency"
+  - "frame_processing_time"
+  
+  # Wildcard patterns for dynamic metrics
+  - "CustomProcessor_*"
+  - "CustomVisualizer_*" 
+  - "*_count"
+  - "*_total"
+  - "*_avg"
+  - "*_histogram"
+
+# =============================================================================
+# Notes
+# =============================================================================
+# 1. Use base metric names for histograms (without _histogram suffix)
+# 2. Wildcard patterns (*) match any characters
+# 3. System metrics (fps, cpu, memory) are always available if allowlisted
+# 4. Custom MetricSpec metrics must be explicitly listed or match patterns
+# 5. This configuration is for OTEL-only export (no OpenLineage)
