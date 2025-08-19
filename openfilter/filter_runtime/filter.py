@@ -936,9 +936,10 @@ class Filter:
                 
                 # Initialize telemetry registry if metric specs are declared
                 if hasattr(self, 'metric_specs') and self.metric_specs:
-                    # Use business meter for business metrics (goes only to OpenLineage)
-                    meter = getattr(self.otel, 'business_meter', self.otel.meter)
-                    self._telemetry = TelemetryRegistry(meter, self.metric_specs)
+                    # Use business meter for OpenLineage, main meter for OTEL
+                    business_meter = getattr(self.otel, 'business_meter', self.otel.meter)
+                    otel_meter = getattr(self.otel, 'meter', self.otel.meter)
+                    self._telemetry = TelemetryRegistry(business_meter, self.metric_specs, otel_meter)
                 else:
                     self._telemetry = None
                     

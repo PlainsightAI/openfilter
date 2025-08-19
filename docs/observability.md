@@ -35,7 +35,32 @@ graph TB
 
 ## High-Level Flow
 
+### OTEL-Only Mode
+
+OpenFilter now supports **OTEL-only mode** for cloud deployments where you want to send metrics directly to OTEL collectors without OpenLineage:
+
+```mermaid
+graph LR
+    A[Filter with MetricSpecs] --> B[TelemetryRegistry]
+    B --> C[OpenTelemetry SDK]
+    C --> D[OTLP Exporter]
+    D --> E[Cloud OTEL Collector]
+    E --> F[GCP/AWS/Azure Monitoring]
+    
+    style A fill:#e1f5fe
+    style D fill:#fff3e0
+    style E fill:#f3e5f5
+```
+
+**Key Features:**
+- **Direct cloud integration** - Connect to GCP, AWS, Azure OTEL endpoints
+- **Raw vs aggregated export** - Control processing via `export_mode`
+- **Target selection** - Send to OTEL, OpenLineage, or both via `target`
+- **Safe metrics** - Same allowlist security as OpenLineage mode
+
 ### 1. Filter Declaration
+
+**Standard Mode (OpenLineage):**
 ```python
 class MyFilter(Filter):
     metric_specs = [
@@ -49,6 +74,28 @@ class MyFilter(Filter):
             instrument="histogram",
             value_fn=lambda d: d.get("confidence", 0.0),
             num_buckets=8  # Auto-generate 8 buckets
+        )
+    ]
+```
+
+**OTEL-Only Mode:**
+```python
+class MyFilter(Filter):
+    metric_specs = [
+        MetricSpec(
+            name="frames_processed",
+            instrument="counter",
+            value_fn=lambda d: 1,
+            export_mode="raw",      # Send raw values directly
+            target="otel"           # Only to OTEL collectors
+        ),
+        MetricSpec(
+            name="detection_confidence",
+            instrument="histogram",
+            value_fn=lambda d: d.get("confidence", 0.0),
+            export_mode="aggregated", # Let OTel SDK aggregate
+            target="otel",           # Only to OTEL collectors
+            num_buckets=10
         )
     ]
 ```
@@ -109,7 +156,22 @@ class MetricSpec:
     value_fn: Callable[[dict], Union[int, float, None]]  # Value extraction
     boundaries: Optional[List[Union[int, float]]] = None  # Custom histogram buckets
     num_buckets: int = 10                       # Auto-generated buckets
+    export_mode: str = "aggregated"             # 'raw', 'aggregated', 'both'
+    target: str = "both"                        # 'otel', 'openlineage', 'both'
     _otel_inst: Optional[Instrument] = None     # Internal OpenTelemetry instrument
+```
+
+#### New Fields (v0.2.0+)
+
+**`export_mode`**: Controls how metrics are processed before export:
+- `"raw"`: Send raw values directly to destination
+- `"aggregated"`: Let OpenTelemetry SDK aggregate values first (default)
+- `"both"`: Send both raw and aggregated values
+
+**`target`**: Controls where metrics are sent:
+- `"otel"`: Only to OpenTelemetry collectors (OTLP endpoints)
+- `"openlineage"`: Only to OpenLineage systems (Oleander/Marquez)
+- `"both"`: To both destinations (default)
 ```
 
 #### Value Extraction Functions
@@ -298,6 +360,66 @@ safe_metrics:
 ```
 
 ## Configuration Options
+
+### OTEL-Only Configuration
+
+For cloud deployments using OTEL collectors only:
+
+#### Environment Variables
+```bash
+# Enable telemetry export
+export TELEMETRY_EXPORTER_ENABLED=true
+export TELEMETRY_EXPORTER_TYPE=otlp
+
+# Cloud OTEL Collector
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://your-cloud-otel.com:4317
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer YOUR_TOKEN"
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+
+# Export settings
+export OTEL_EXPORT_INTERVAL=30
+
+# Safe metrics allowlist
+export OF_SAFE_METRICS_FILE=safe_metrics_otel.yaml
+```
+
+#### YAML Configuration
+```yaml
+# safe_metrics_otel.yaml
+opentelemetry:
+  endpoint: "https://your-cloud-otel.com:4317"
+  headers: "authorization=Bearer YOUR_TOKEN"
+  protocol: "grpc"
+  export_interval: 30
+  enabled: true
+
+safe_metrics:
+  - "detections_per_frame"
+  - "processing_time"
+  - "fps"
+  - "cpu"
+  - "memory"
+```
+
+#### Cloud Provider Examples
+
+**Google Cloud Platform:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://your-project.googleapis.com:4317
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer $(gcloud auth print-access-token)"
+```
+
+**AWS X-Ray:**
+```bash 
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://your-region.awsxray.amazonaws.com:4317
+export OTEL_EXPORTER_OTLP_HEADERS="x-aws-access-key-id=KEY,x-aws-secret-access-key=SECRET"
+```
+
+**Azure Monitor:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://your-workspace.azure.com:4317
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=YOUR_API_KEY"
+```
 
 ### Environment Variables
 
@@ -520,6 +642,36 @@ class OCRProcessor(Filter):
         )
     ]
 ```
+
+## Usage Modes Summary
+
+### 1. OpenLineage Only (Original)
+- **Purpose**: Data lineage and metadata tracking
+- **Configuration**: Set `OPENLINEAGE_URL` and `OPENLINEAGE_API_KEY`
+- **MetricSpec**: Use default `target="both"` (treated as OpenLineage only)
+- **Output**: Aggregated metrics in OpenLineage events
+- **Use Case**: Data governance, pipeline monitoring
+
+### 2. OTEL Only (New)
+- **Purpose**: Cloud monitoring and alerting  
+- **Configuration**: Set `OTEL_EXPORTER_OTLP_ENDPOINT` and disable OpenLineage
+- **MetricSpec**: Use `target="otel"` and `export_mode="raw|aggregated|both"`
+- **Output**: Metrics sent directly to cloud OTEL collectors
+- **Use Case**: Production monitoring, alerting, cloud dashboards
+
+### 3. Hybrid Mode  
+- **Purpose**: Full observability stack
+- **Configuration**: Set both OpenLineage and OTEL endpoints
+- **MetricSpec**: Use `target="both"` with appropriate `export_mode`
+- **Output**: Raw/aggregated to OTEL + aggregated to OpenLineage
+- **Use Case**: Complete observability with lineage and monitoring
+
+### 4. System Metrics Only
+- **Purpose**: Basic infrastructure monitoring
+- **Configuration**: Enable telemetry, no MetricSpecs needed
+- **MetricSpec**: Not required (uses allowlist for system metrics)
+- **Output**: FPS, CPU, memory metrics to configured destinations
+- **Use Case**: Infrastructure monitoring without custom business metrics
 
 ## Expected Timeline
 

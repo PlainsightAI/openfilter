@@ -16,58 +16,75 @@ from openfilter.observability import MetricSpec
 class CustomProcessorConfig(FilterConfig):
     """Configuration for the custom processor filter."""
     mq_log: str | bool | None = None
+    detection_threshold: float = 0.5
+    export_mode: str = "aggregated"  # 'raw', 'aggregated', 'both'
+    target: str = "both"  # 'otel', 'openlineage', 'both'
 
 
 class CustomProcessor(Filter):
     """Custom processor that simulates object detection and adds metrics."""
     
-    # Declare metrics using MetricSpec
-    metric_specs = [
-        # Counters
-        MetricSpec(
-            name="frames_processed",
-            instrument="counter",
-            value_fn=lambda d: 1
-        ),
-        MetricSpec(
-            name="frames_with_detections", 
-            instrument="counter",
-            value_fn=lambda d: 1 if d.get("detections") else 0
-        ),
-        
-        # Histograms with auto-generated buckets
-        MetricSpec(
-            name="detections_per_frame",
-            instrument="histogram",
-            value_fn=lambda d: len(d.get("detections", [])),
-            num_buckets=8  # Auto-generate 8 buckets for 0-50 detections
-        ),
-        MetricSpec(
-            name="detection_confidence",
-            instrument="histogram", 
-            value_fn=lambda d: d.get("avg_confidence", 0.0),
-            num_buckets=8  # Auto-generate 8 buckets for 0.0-1.0 confidence
-        ),
-        MetricSpec(
-            name="processing_time_ms",
-            instrument="histogram",
-            value_fn=lambda d: d.get("processing_time", 0.0),
-            num_buckets=12  # Auto-generate 12 buckets for 0-100ms
-        ),
-        
-        # Custom boundaries for specific metrics
-        MetricSpec(
-            name="object_size_ratio",
-            instrument="histogram",
-            value_fn=lambda d: d.get("size_ratio", 0.0),
-            boundaries=[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]  # Custom boundaries
-        )
-    ]
-    
-    def setup(self, config):
-        """Setup the filter."""
+    def setup(self, config: CustomProcessorConfig):
+        """Setup the filter with dynamic MetricSpec based on configuration."""
         self.config = config
+        
+        # Create dynamic metric specs based on config
+        self.metric_specs = [
+            # Counters
+            MetricSpec(
+                name="frames_processed",
+                instrument="counter",
+                value_fn=lambda d: 1,
+                export_mode=config.export_mode,
+                target=config.target
+            ),
+            MetricSpec(
+                name="frames_with_detections", 
+                instrument="counter",
+                value_fn=lambda d: 1 if d.get("detections") else 0,
+                export_mode=config.export_mode,
+                target=config.target
+            ),
+            
+            # Histograms with auto-generated buckets
+            MetricSpec(
+                name="detections_per_frame",
+                instrument="histogram",
+                value_fn=lambda d: len(d.get("detections", [])),
+                num_buckets=8,  # Auto-generate 8 buckets for 0-50 detections
+                export_mode=config.export_mode,
+                target=config.target
+            ),
+            MetricSpec(
+                name="detection_confidence",
+                instrument="histogram", 
+                value_fn=lambda d: d.get("avg_confidence", 0.0),
+                num_buckets=8,  # Auto-generate 8 buckets for 0.0-1.0 confidence
+                export_mode=config.export_mode,
+                target=config.target
+            ),
+            MetricSpec(
+                name="processing_time_ms",
+                instrument="histogram",
+                value_fn=lambda d: d.get("processing_time", 0.0),
+                num_buckets=12,  # Auto-generate 12 buckets for 0-100ms
+                export_mode=config.export_mode,
+                target=config.target
+            ),
+            
+            # Custom boundaries for specific metrics
+            MetricSpec(
+                name="object_size_ratio",
+                instrument="histogram",
+                value_fn=lambda d: d.get("size_ratio", 0.0),
+                boundaries=[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0],  # Custom boundaries
+                export_mode=config.export_mode,
+                target=config.target
+            )
+        ]
+        
         print(f"[CustomProcessor] Setup complete with config: {config}")
+        print(f"[CustomProcessor] Created {len(self.metric_specs)} MetricSpecs with target='{config.target}', export_mode='{config.export_mode}'")
     
     def process(self, frames: Dict[str, Frame]) -> Dict[str, Frame]:
         """Process frames and add detection data."""
