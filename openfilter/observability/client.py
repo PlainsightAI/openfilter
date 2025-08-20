@@ -48,9 +48,9 @@ def build_exporter(exporter_type: str, **config):
         return SilentMetricExporter()
     
     elif exporter_type == "otlp":
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
         endpoint = config.get("endpoint", "http://localhost:4317")
         headers = config.get("headers")
+        protocol = config.get("protocol", "grpc")
         
         # Parse headers if provided as string
         if headers and isinstance(headers, str):
@@ -60,6 +60,12 @@ def build_exporter(exporter_type: str, **config):
                     key, value = header.split("=", 1)
                     header_dict[key.strip()] = value.strip()
             headers = header_dict
+        
+        # Choose exporter based on protocol
+        if protocol == "http/protobuf":
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+        else:  # default to grpc
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
         
         if headers:
             return OTLPMetricExporter(endpoint=endpoint, headers=headers)
@@ -156,6 +162,17 @@ class OpenTelemetryClient:
                 # Build the primary exporter for system metrics (to OpenTelemetry)
                 primary_exporter = build_exporter(exporter_type, **exporter_config)
                 
+                # Wrap primary exporter with allowlist filtering if needed
+                from openfilter.observability.bridge import AllowlistFilteredExporter
+                from openfilter.observability.config import read_allowlist
+                
+                allowlist = read_allowlist()
+                if allowlist:
+                    logging.info(f"[OTEL Export] Applying allowlist filtering to primary exporter")
+                    primary_exporter = AllowlistFilteredExporter(primary_exporter, allowlist)
+                else:
+                    logging.info(f"[OTEL Export] No allowlist configured - exporting all metrics")
+                
                 # Create metric readers list
                 metric_readers = [
                     PeriodicExportingMetricReader(
@@ -168,9 +185,8 @@ class OpenTelemetryClient:
                 if lineage_emitter:
                     try:
                         from openfilter.observability.bridge import OTelLineageExporter
-                        from openfilter.observability.config import read_allowlist
                         
-                        allowlist = read_allowlist()
+                        # Reuse the same allowlist for OpenLineage export
                         lineage_exporter = OTelLineageExporter(lineage_emitter, allowlist=allowlist)
                         
                         lineage_reader = PeriodicExportingMetricReader(

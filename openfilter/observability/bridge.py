@@ -2,7 +2,8 @@
 OpenTelemetry to OpenLineage bridge for safe metric export.
 
 This module provides the OTelLineageExporter that converts OpenTelemetry metrics
-into safe JSON fragments for OpenLineage heartbeat facets.
+into safe JSON fragments for OpenLineage heartbeat facets, and the 
+AllowlistFilteredExporter that applies allowlist filtering to any OTEL exporter.
 """
 
 import logging
@@ -175,4 +176,115 @@ class OTelLineageExporter(MetricExporter):
         Args:
             timeout: Timeout in seconds (ignored for this exporter)
         """
-        pass 
+        pass
+
+
+class AllowlistFilteredExporter(MetricExporter):
+    """A wrapper that applies allowlist filtering to any OTEL exporter."""
+    
+    def __init__(self, wrapped_exporter: MetricExporter, allowlist: Optional[Set[str]] = None):
+        """Initialize the filtered exporter.
+        
+        Args:
+            wrapped_exporter: The actual OTEL exporter to wrap (e.g., OTLPMetricExporter)
+            allowlist: Set of allowed metric names (None means allow all)
+        """
+        # Get preferred_temporality if available, otherwise use empty dict
+        preferred_temporality = getattr(wrapped_exporter, 'preferred_temporality', {})
+        super().__init__(preferred_temporality=preferred_temporality)
+        self._wrapped = wrapped_exporter
+        self._allow = allowlist
+        
+        if allowlist:
+            logger.info(f"[OTEL Export] Allowlist filtering enabled: {list(allowlist)}")
+        else:
+            logger.info(f"[OTEL Export] No allowlist filtering - allowing all metrics")
+
+    def export(self, metrics: MetricsData, timeout_millis: float = 30000) -> MetricExportResult:
+        """Export metrics after applying allowlist filtering."""
+        if not self._allow:
+            # No filtering needed
+            return self._wrapped.export(metrics, timeout_millis)
+        
+        try:
+            # Filter metrics data
+            filtered_resource_metrics = []
+            
+            for resource_metric in metrics.resource_metrics:
+                filtered_scope_metrics = []
+                
+                for scope_metric in resource_metric.scope_metrics:
+                    filtered_metrics = []
+                    
+                    for metric in scope_metric.metrics:
+                        if self._is_allowed(metric.name):
+                            filtered_metrics.append(metric)
+                            logger.debug(f"[OTEL Export] Allowed metric: {metric.name}")
+                        else:
+                            logger.debug(f"[OTEL Export] Filtered out metric: {metric.name}")
+                    
+                    if filtered_metrics:
+                        # Create new scope metric with filtered metrics
+                        from opentelemetry.sdk.metrics.export import ScopeMetrics
+                        filtered_scope_metric = ScopeMetrics(
+                            scope=scope_metric.scope,
+                            metrics=filtered_metrics,
+                            schema_url=scope_metric.schema_url
+                        )
+                        filtered_scope_metrics.append(filtered_scope_metric)
+                
+                if filtered_scope_metrics:
+                    # Create new resource metric with filtered scope metrics
+                    from opentelemetry.sdk.metrics.export import ResourceMetrics
+                    filtered_resource_metric = ResourceMetrics(
+                        resource=resource_metric.resource,
+                        scope_metrics=filtered_scope_metrics,
+                        schema_url=resource_metric.schema_url
+                    )
+                    filtered_resource_metrics.append(filtered_resource_metric)
+            
+            if filtered_resource_metrics:
+                # Create new metrics data with filtered resource metrics
+                from opentelemetry.sdk.metrics.export import MetricsData
+                filtered_metrics_data = MetricsData(resource_metrics=filtered_resource_metrics)
+                
+                # Export the filtered data
+                return self._wrapped.export(filtered_metrics_data, timeout_millis)
+            else:
+                logger.debug("[OTEL Export] No metrics passed allowlist filter")
+                return MetricExportResult.SUCCESS
+                
+        except Exception as e:
+            logger.error(f"\033[91m[OTEL Export] Failed to filter metrics: {e}\033[0m")
+            return MetricExportResult.FAILURE
+
+    def _is_allowed(self, metric_name: str) -> bool:
+        """Check if a metric name is allowed by the allowlist.
+        
+        Args:
+            metric_name: Name of the metric to check
+            
+        Returns:
+            True if the metric is allowed, False otherwise
+        """
+        if not self._allow:
+            return True
+            
+        # Check exact match
+        if metric_name in self._allow:
+            return True
+            
+        # Check wildcard patterns
+        for pattern in self._allow:
+            if fnmatch.fnmatch(metric_name, pattern):
+                return True
+                
+        return False
+    
+    def force_flush(self, timeout_millis: float = 30000) -> MetricExportResult:
+        """Force flush any pending metrics."""
+        return self._wrapped.force_flush(timeout_millis)
+    
+    def shutdown(self, timeout: float = 30000) -> None:
+        """Shutdown the wrapped exporter."""
+        return self._wrapped.shutdown(timeout)

@@ -14,7 +14,7 @@ observability data.
 
 from .specs import MetricSpec
 from .registry import TelemetryRegistry
-from .bridge import OTelLineageExporter
+from .bridge import OTelLineageExporter, AllowlistFilteredExporter
 from .config import read_allowlist, read_otel_config
 from .client import OpenTelemetryClient
 from .lineage import OpenFilterLineage
@@ -23,6 +23,7 @@ __all__ = [
     'MetricSpec',
     'TelemetryRegistry', 
     'OTelLineageExporter',
+    'AllowlistFilteredExporter',
     'read_allowlist',
     'read_otel_config',
     'OpenTelemetryClient',
