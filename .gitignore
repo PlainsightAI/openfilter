@@ -140,3 +140,5 @@ telemetry/
 cache/
 Reports/
 _authors.txt
+
+.DS_Store

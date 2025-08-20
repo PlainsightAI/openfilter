@@ -59,7 +59,7 @@ def build_otel_pipeline(args):
         # Input video source (standard filter)
         (VideoIn, dict(
             id="video_in",
-            sources=f"{args.input}!resize=640x480lin!loop",
+            sources=f"{args.input}!resize=640x480lin",
             outputs="tcp://*:6000"
         )),
         

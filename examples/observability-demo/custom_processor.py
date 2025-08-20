@@ -30,6 +30,14 @@ class CustomProcessor(Filter):
         
         # Create dynamic metric specs based on config
         self.metric_specs = [
+            # Simple test counter - should always show up
+            MetricSpec(
+                name="test_counter",
+                instrument="counter", 
+                value_fn=lambda d: 1,  # Always increment by 1
+                export_mode=config.export_mode,
+                target=config.target
+            ),
             # Counters
             MetricSpec(
                 name="frames_processed",
@@ -88,6 +96,7 @@ class CustomProcessor(Filter):
     
     def process(self, frames: Dict[str, Frame]) -> Dict[str, Frame]:
         """Process frames and add detection data."""
+        # print(f"[CustomProcessor] Processing {len(frames)} frames")
         processed_frames = {}
         
         for frame_id, frame in frames.items():
@@ -124,6 +133,12 @@ class CustomProcessor(Filter):
                 "size_ratio": size_ratio,
                 "timestamp": time.time()  # Use current time instead of frame.timestamp
             })
+            
+            # Record business metrics for this frame
+            if hasattr(self, '_telemetry') and self._telemetry:
+                self._telemetry.record(frame.data)
+            # else:
+            #     print(f"[CustomProcessor] No telemetry registry available!")
             
             processed_frames[frame_id] = frame
         
