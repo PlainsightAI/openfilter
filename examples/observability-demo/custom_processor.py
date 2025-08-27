@@ -24,6 +24,13 @@ class CustomProcessorConfig(FilterConfig):
 class CustomProcessor(Filter):
     """Custom processor that simulates object detection and adds metrics."""
     
+    def __init__(self, config: CustomProcessorConfig):
+        """Initialize the processor with configuration."""
+        super().__init__(config)
+        # Initialize metric_specs with default values
+        self.metric_specs = []
+        self.config = config
+    
     def setup(self, config: CustomProcessorConfig):
         """Setup the filter with dynamic MetricSpec based on configuration."""
         self.config = config
