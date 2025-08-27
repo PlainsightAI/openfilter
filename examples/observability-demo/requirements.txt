@@ -1,0 +1,17 @@
+# OpenFilter Observability Demo Requirements
+
+# Core OpenFilter dependencies
+opencv-python>=4.5.0
+numpy>=1.20.0
+
+# OpenTelemetry dependencies (optional)
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0
+
+# OpenLineage dependencies (optional)
+openlineage-python>=0.20.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-timeout>=2.0.0 

@@ -3,13 +3,13 @@ requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = { find = { include = ["filter_hello_ocr"] } }
+packages = { find = { include = ["filter_text_generator_demo"] } }
 
 [tool.setuptools.dynamic]
 version = { file = "VERSION" }
 
 [project]
-name = "filter_hello_ocr"
+name = "filter_text_generator_demo"
 readme = "README.md"
 requires-python = ">=3.10, <3.13"
 license = "Apache-2.0"
@@ -24,8 +24,9 @@ classifiers = [
 dynamic = ["version"]
 
 dependencies = [
-  "openfilter[all]~=0.1.0",
-  "filter-optical-character-recognition~=0.1.0",
+  "openfilter[all]==0.1.5",
+  "opencv-python>=4.8.0",
+  "numpy>=1.24.0"
 ]
 
 [project.optional-dependencies]
@@ -44,4 +45,4 @@ url = "https://python.openfilter.io/simple"
 
 [[tool.uv.index]]
 name = "pypi"
-url = "https://pypi.org/simple"
+url = "https://pypi.org/simple" 

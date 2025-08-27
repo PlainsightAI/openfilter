@@ -7,10 +7,12 @@ import unittest
 from multiprocessing import Queue
 from multiprocessing.queues import Empty
 from time import sleep, time
+from pathlib import Path
+import tempfile
 
 import numpy as np
 
-from openfilter.filter_runtime import Filter, FilterConfig, Frame
+from openfilter.filter_runtime import Filter, FilterConfig, Frame, FilterContext
 from openfilter.filter_runtime.test import RunnerContext, FiltersToQueue, QueueToFilters
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.util import Util
@@ -712,6 +714,264 @@ class TestFilter(unittest.TestCase):
             self.assertFalse(qout1.get())
             self.assertFalse(qout2.get())
             self.assertEqual(runner.wait(), [0, 0, 0, 0])
+
+
+    def test_filter_context_initialization(self):
+        """Test FilterContext initialization and basic functionality."""
+        # Reset the context to ensure clean state
+        FilterContext._data = {}
+        
+        # Test initialization
+        FilterContext.init()
+        
+        # Verify that data is populated
+        self.assertIsInstance(FilterContext._data, dict)
+        self.assertIn('filter_version', FilterContext._data)
+        self.assertIn('version_sha', FilterContext._data)
+        self.assertIn('models', FilterContext._data)
+        self.assertIn('resource_bundle_version', FilterContext._data)
+        self.assertIn('openfilter_version', FilterContext._data)
+        
+        # Test that subsequent calls don't reinitialize
+        original_data = FilterContext._data.copy()
+        FilterContext.init()
+        self.assertEqual(FilterContext._data, original_data)
+
+
+    def test_filter_context_get_method(self):
+        """Test FilterContext.get() method."""
+        FilterContext.init()
+        
+        # Test getting existing keys
+        self.assertIsInstance(FilterContext.get('filter_version'), (str, type(None)))
+        self.assertIsInstance(FilterContext.get('resource_bundle_version'), (str, type(None)))
+        self.assertIsInstance(FilterContext.get('version_sha'), (str, type(None)))
+        self.assertIsInstance(FilterContext.get('models'), dict)
+        self.assertIsInstance(FilterContext.get('openfilter_version'), (str, type(None)))
+        
+        # Test getting non-existent key
+        self.assertIsNone(FilterContext.get('non_existent_key'))
+
+
+    def test_filter_context_as_dict_method(self):
+        """Test FilterContext.as_dict() method."""
+        FilterContext.init()
+        
+        context_dict = FilterContext.as_dict()
+        
+        self.assertIsInstance(context_dict, dict)
+        self.assertIn('filter_version', context_dict)
+        self.assertIn('resource_bundle_version', context_dict)
+        self.assertIn('version_sha', context_dict)
+        self.assertIn('models', context_dict)
+        self.assertIn('openfilter_version', context_dict)
+        
+        # Verify it's a copy, not a reference
+        self.assertIsNot(context_dict, FilterContext._data)
+
+
+    def test_filter_context_read_file_method(self):
+        """Test FilterContext._read_file() static method."""
+        # Test with non-existent file
+        result = FilterContext._read_file("non_existent_file.txt")
+        self.assertIsNone(result)
+        
+        # Test with existing file
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write("test content\n")
+            temp_file = f.name
+        
+        try:
+            result = FilterContext._read_file(temp_file)
+            self.assertEqual(result, "test content")
+        finally:
+            os.unlink(temp_file)
+
+
+    def test_filter_context_read_models_toml_method(self):
+        """Test FilterContext._read_models_toml() static method."""
+        # Test with non-existent models.toml
+        result = FilterContext._read_models_toml()
+        self.assertEqual(result, {})
+        
+        # Test with valid models.toml
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.toml', delete=False) as f:
+            toml_content = """
+[model1]
+version = "1.0.0"
+path = "/path/to/model1"
+
+[model2]
+version = "2.0.0"
+path = "/path/to/model2"
+
+[model3]
+version = "3.0.0"
+"""
+            f.write(toml_content.encode())
+            temp_file = f.name
+        
+        try:
+            # Temporarily rename the temp file to models.toml in current directory
+            original_models_toml = Path("models.toml")
+            if original_models_toml.exists():
+                original_models_toml.rename("models.toml.backup")
+            
+            Path(temp_file).rename("models.toml")
+            
+            try:
+                result = FilterContext._read_models_toml()
+                
+                self.assertIn('model1', result)
+                self.assertIn('model2', result)
+                self.assertIn('model3', result)
+                
+                self.assertEqual(result['model1']['version'], "1.0.0")
+                self.assertEqual(result['model1']['path'], "/path/to/model1")
+                self.assertEqual(result['model2']['version'], "2.0.0")
+                self.assertEqual(result['model2']['path'], "/path/to/model2")
+                self.assertEqual(result['model3']['version'], "3.0.0")
+                self.assertEqual(result['model3']['path'], "No path")
+                
+            finally:
+                # Restore original models.toml if it existed
+                if Path("models.toml").exists():
+                    Path("models.toml").unlink()
+                if Path("models.toml.backup").exists():
+                    Path("models.toml.backup").rename("models.toml")
+        except:
+            # Clean up temp file if rename failed
+            if Path(temp_file).exists():
+                Path(temp_file).unlink()
+            raise
+
+
+    def test_filter_context_read_models_toml_invalid_format(self):
+        """Test FilterContext._read_models_toml() with invalid TOML format."""
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.toml', delete=False) as f:
+            invalid_toml = """
+[model1]
+version = "1.0.0"
+
+[model2]
+# Missing version field
+
+[model3]
+invalid_field = "value"
+"""
+            f.write(invalid_toml.encode())
+            temp_file = f.name
+        
+        try:
+            # Temporarily rename the temp file to models.toml in current directory
+            original_models_toml = Path("models.toml")
+            if original_models_toml.exists():
+                original_models_toml.rename("models.toml.backup")
+            
+            Path(temp_file).rename("models.toml")
+            
+            try:
+                result = FilterContext._read_models_toml()
+                
+                # Should only include model1 since it has a version field
+                self.assertIn('model1', result)
+                self.assertNotIn('model2', result)
+                self.assertNotIn('model3', result)
+                
+            finally:
+                # Restore original models.toml if it existed
+                if Path("models.toml").exists():
+                    Path("models.toml").unlink()
+                if Path("models.toml.backup").exists():
+                    Path("models.toml.backup").rename("models.toml")
+        except:
+            # Clean up temp file if rename failed
+            if Path(temp_file).exists():
+                Path(temp_file).unlink()
+            raise
+
+
+    def test_filter_context_log_method(self):
+        """Test FilterContext.log() method."""
+        FilterContext.init()
+        
+        # This test mainly verifies that the log method doesn't raise exceptions
+        # The actual logging output is hard to test without mocking
+        try:
+            FilterContext.log()
+        except Exception as e:
+            self.fail(f"FilterContext.log() raised an exception: {e}")
+
+
+    def test_filter_context_with_actual_files(self):
+        """Test FilterContext with actual version files if they exist."""
+        FilterContext.init()
+        
+        # Test that we can get context data
+        context_data = FilterContext.as_dict()
+        
+        # Verify structure
+        self.assertIsInstance(context_data['filter_version'], (str, type(None)))
+        self.assertIsInstance(context_data['resource_bundle_version'], (str, type(None)))
+        self.assertIsInstance(context_data['version_sha'], (str, type(None)))
+        self.assertIsInstance(context_data['models'], dict)
+        self.assertIsInstance(context_data['openfilter_version'], (str, type(None)))
+        
+        # If VERSION file exists, test that it's read correctly
+        version_file = Path("VERSION")
+        if version_file.exists():
+            expected_version = version_file.read_text().strip()
+            self.assertEqual(context_data['filter_version'], expected_version)
+        
+        # If RESOURCE_BUNDLE_VERSION file exists, test that it's read correctly
+        resource_bundle_version_file = Path("RESOURCE_BUNDLE_VERSION")
+        if resource_bundle_version_file.exists():
+            expected_resource_bundle_version = resource_bundle_version_file.read_text().strip()
+            self.assertEqual(context_data['resource_bundle_version'], expected_resource_bundle_version)
+        
+        # If VERSION_SHA file exists, test that it's read correctly
+        version_sha_file = Path("VERSION_SHA")
+        if version_sha_file.exists():
+            expected_sha = version_sha_file.read_text().strip()
+            self.assertEqual(context_data['version_sha'], expected_sha)
+
+
+    def test_filter_context_error_handling(self):
+        """Test FilterContext error handling for file operations."""
+        # Test with a file that can't be read (directory)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = FilterContext._read_file(temp_dir)
+            self.assertIsNone(result)
+        
+        # Test with a file that has permission issues
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write("test")
+            temp_file = f.name
+        
+        try:
+            # Make file read-only for owner
+            os.chmod(temp_file, 0o000)
+            
+            # Should handle permission error gracefully
+            result = FilterContext._read_file(temp_file)
+            self.assertIsNone(result)
+            
+        finally:
+            # Restore permissions and clean up
+            os.chmod(temp_file, 0o644)
+            os.unlink(temp_file)
+
+
+    def test_filter_context_get_context_classmethod(self):
+        """Test Filter.get_context() class method."""
+        context_data = Filter.get_context()
+        
+        self.assertIsInstance(context_data, dict)
+        self.assertIn('filter_version', context_data)
+        self.assertIn('resource_bundle_version', context_data)
+        self.assertIn('version_sha', context_data)
+        self.assertIn('models', context_data)
+        self.assertIn('openfilter_version', context_data)
 
 
 if __name__ == '__main__':

@@ -24,7 +24,7 @@ def build_pipeline(args):
     analytics_output = f"file://{os.path.join(out_dir, 'analytics_view.mp4')}!fps={args.fps}"
 
     # Get and validate PORT
-    port_str = os.getenv("PORT")
+    port_str = os.getenv("PORT", 8000)
     if not port_str:
         raise ValueError("PORT environment variable is not set")
     try:

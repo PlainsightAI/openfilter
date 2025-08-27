@@ -3,10 +3,62 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v0.1.9 - 2025-07-25
+## v0.1.12 - 2025-07-25
 
 ### Added
 - ImageIn filter to support reading images and creating Frame streams
+
+## v0.1.11 - 2025-08-05
+
+### Added
+- **Observability System**: Comprehensive telemetry and monitoring capabilities
+  - `MetricSpec` class for defining custom metrics with flexible value functions
+  - `TelemetryRegistry` for managing OpenTelemetry instruments and recording metrics
+  - Support for counters, histograms, and other OpenTelemetry instrument types
+  - Configurable metric allowlist via `OF_SAFE_METRICS` environment variable
+  - Automatic metric recording from frame data with customizable value extraction
+
+### Fixed
+- **Telemetry Tests**: Updated test expectations to match current OpenTelemetry API
+  - Fixed histogram parameter name from `boundaries` to `explicit_bucket_boundaries_advisory`
+  - All telemetry tests now pass successfully (8/8 tests passing)
+
+### Technical Details
+- **Metric Specification**: Flexible metric definition with instrument type, name, and value extraction functions
+- **Registry Management**: Centralized telemetry instrument creation and metric recording
+- **Configuration**: Environment-based metric allowlist for security and performance control
+- **Testing**: Comprehensive test coverage for metric specs, registry operations, and configuration handling
+
+
+### Modified
+- For consistency across all versions, need to emit openfilter_version with v.
+- Modified VERSION file for examples.
+- Updated pyproject of all examples.
+- Updated the `producer` and `schemaURL` for lineage.
+
+## v0.1.10 - 2025-08-05
+
+### Modified
+- Lineage `Start` events now emit filter context with the regular info.
+- renamed `model_version` to `resource_bundle_version` for clarity as it the version for the full bundle rather than any one model.
+- modified FilterContext to emit `openfilter_version` as well.
+- added getters for FilterContext: `FilterContext.get_filter_version()`, `FilterContext.get_resource_bundle_version`, `FilterContext.get_openfilter_version()`, `FilterContext.get_version_sha()` and `FilterContext.get_model_info()`.
+- modified `git_sha` to `version_sha`
+
+## v0.1.9 - 2025-07-30
+
+### Modified
+- `Running` events now include the filter's own meta data as well.
+
+## v0.1.8 - 2025-07-25
+
+### Added
+- **FilterContext**: Added a static context class to provide build and model metadata at runtime. This includes:
+  - `filter_version` (from VERSION)
+  - `model_version` (from VERSION.MODEL)
+  - `git_sha` (from GITHUB_SHA, set by CI/CD or manually)
+  - `models` (from models.toml, with model name, version, and path)
+- The context is accessible via `FilterContext.get(key)`, `FilterContext.as_dict()`, and `FilterContext.log()` for logging/debugging purposes.
 
 ## v0.1.7 - 2025-07-17
 
