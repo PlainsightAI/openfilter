@@ -193,9 +193,9 @@ def _wait_for_fps(self, topic):
         self.tmaxfps[topic] = time_ns()
 ```
 
-## Queue Behavior and Empty Queue Handling
+## Queue Behavior and Dynamic Image Handling
 
-The ImageIn filter uses a sophisticated queue system to manage image processing. Understanding what happens when queues are empty is crucial for proper usage.
+The ImageIn filter uses a sophisticated queue system to manage image processing with full support for dynamic image addition. Understanding how the filter handles existing queued images when new images appear is crucial for real-world usage.
 
 ### Queue Structure
 
@@ -208,6 +208,128 @@ self.tmaxfps = {}     # topic → last frame timestamp
 ```
 
 Each topic has its own queue, tracking system, and FPS control.
+
+### Dynamic Image Addition Behavior
+
+#### How It Works When New Images Appear
+
+**Yes, the ImageIn filter fully supports dynamic image addition with existing queued images.** Here's what happens:
+
+1. **Existing Queue Preservation**: When new images are detected, they are appended to the end of the existing queue without disrupting current processing
+2. **FIFO Processing**: Images are processed First-In-First-Out, so existing images continue processing in order
+3. **Duplicate Prevention**: Only truly new images (not in the `processed` set) are added to avoid reprocessing
+4. **Seamless Integration**: No interruption to the current processing flow - new images just join the queue
+
+#### Background Polling Mechanism
+
+The filter uses a background polling thread that continuously monitors sources:
+
+```python
+def _poll_loop(self):
+    """Background thread that polls for new images."""
+    poll_interval = self.config.poll_interval or IMAGE_IN_POLL_INTERVAL
+    
+    while not self.stop_event.is_set():
+        try:
+            for source in self.config.sources:
+                topic = source.topic or 'main'
+                new_images = self._list_images(source)
+                # Add only new images that haven't been processed
+                for img_path in new_images:
+                    if img_path not in self.processed[topic]:
+                        self.queues[topic].append(img_path)  # Append to end of queue
+```
+
+**Key behaviors:**
+- **Continuous Monitoring**: Runs every `poll_interval` seconds (default: 5.0 seconds)
+- **Smart Detection**: Only adds images that haven't been processed before
+- **Queue Preservation**: New images are appended to the end, preserving processing order
+- **Non-Disruptive**: Current image processing continues uninterrupted
+
+#### Real-World Scenarios
+
+**Scenario A: Processing Batch with New Arrivals**
+```
+Initial Queue: [img1.jpg, img2.jpg, img3.jpg]
+Currently Processing: img1.jpg
+New Images Added: [img4.jpg, img5.jpg]
+Resulting Queue: [img2.jpg, img3.jpg, img4.jpg, img5.jpg]
+Processing Order: img1 → img2 → img3 → img4 → img5
+```
+
+**Scenario B: Empty Queue with New Images**
+```
+Initial Queue: [] (empty, idle)
+New Images Added: [img1.jpg, img2.jpg]
+Resulting Queue: [img1.jpg, img2.jpg]
+Processing: Resumes automatically
+```
+
+**Scenario C: Mixed Sources with Different Topics**
+```python
+# Configuration
+sources='file:///local/images;main, s3://bucket/images;cloud'
+
+# Behavior
+# - Each topic has independent queue
+# - New images in local folder → main queue
+# - New images in S3 bucket → cloud queue
+# - Processing continues for both topics independently
+```
+
+#### Configuration for Dynamic Monitoring
+
+```python
+# Optimal settings for dynamic image monitoring
+Filter.run_multi([
+    (ImageIn, dict(
+        sources='file:///watch/folder',
+        outputs='tcp://*:5550',
+        poll_interval=1.0,    # Check every 1 second for faster response
+        maxfps=2.0,          # Process 2 images per second
+        loop=False,          # Don't loop (for one-time processing)
+    )),
+])
+```
+
+#### Timing and Performance
+
+- **Detection Latency**: New images detected within `poll_interval` seconds
+- **Processing Continuity**: No gaps or delays in processing existing images
+- **Memory Efficiency**: Only file paths stored in queue, not image data
+- **Thread Safety**: Background polling with proper synchronization
+
+#### Queue State During Dynamic Operations
+
+The ImageIn filter maintains consistent behavior across all dynamic scenarios:
+
+**During Active Processing:**
+```python
+# Example queue state during dynamic addition
+Current State:
+- Queue: [img2.jpg, img3.jpg]         # Remaining images to process
+- Processing: img1.jpg                # Currently being processed
+- Processed: {img0.jpg}              # Already completed
+
+New Images Detected: [img4.jpg, img5.jpg]
+
+Updated State:
+- Queue: [img2.jpg, img3.jpg, img4.jpg, img5.jpg]  # New images appended
+- Processing: img1.jpg                              # Continues unchanged
+- Processed: {img0.jpg}                            # Unchanged
+```
+
+**Key Guarantees:**
+1. **No Lost Images**: All detected images are eventually processed
+2. **Ordered Processing**: FIFO order is maintained for predictable behavior
+3. **No Reprocessing**: `processed` set prevents duplicate processing
+4. **Continuous Operation**: No interruptions during dynamic changes
+
+**Memory Management:**
+- Queue grows dynamically as new images are found
+- `processed` set tracks completed images (prevents reprocessing)
+- Memory usage scales with number of unique images discovered
+- Looping clears `processed` set to allow reprocessing
 
 ### Empty Queue Scenarios
 
@@ -314,35 +436,77 @@ def _poll_loop(self):
 - Only unprocessed images are added (prevents duplicates)
 - Processing resumes when `get_next_frame()` is called again
 
-## Test Scenarios
+## Test Scenarios and Example Demonstrations
 
-The ImageIn filter includes comprehensive test coverage for various scenarios:
+The ImageIn filter includes comprehensive test coverage and real example scenarios that demonstrate dynamic image handling:
 
-### Scenario 1: Empty Directory Start
-**Test**: `test_empty_directory_scenario()`
+### Example Scenario 1: Empty Directory Start
+**File**: `examples/image_in/scenario1_empty_start.py`
 
-**Simulates**: Pipeline starts with an empty folder and waits for images to appear.
+**Demonstrates**: Pipeline starting with an empty folder and automatically picking up images as they appear.
 
-**What it tests:**
-- Creates empty directory
-- Pre-populates with images before starting filter
-- Tests that images are processed correctly
-- Verifies metadata and image loading
+**What it shows:**
+- Pipeline starts with completely empty directory
+- Remains idle (but alive) waiting for images
+- Background thread adds images at timed intervals (5s, 15s, 25s, etc.)
+- Filter automatically detects and processes new images
+- Shows seamless integration of new images into processing queue
 
-**Real-world use case**: Monitoring directories for new image uploads.
+**Key Configuration:**
+```python
+(ImageIn, dict(
+    sources=f'file://{test_dir}!loop!maxfps=0.5',  # 1 image every 2 seconds
+    loop=True,         # Infinite loop through images
+    poll_interval=1.0, # Check for new images every 1 second
+))
+```
 
-### Scenario 2: Excluded Images with Pattern Filtering
-**Test**: `test_excluded_images_scenario()`
+**Real-world use case**: Monitoring upload directories, batch processing folders, surveillance image feeds.
 
-**Simulates**: Pipeline starts with excluded images, remains idle, then processes matching images.
+### Example Scenario 2: Excluded Images with Dynamic Changes
+**File**: `examples/image_in/scenario2_excluded_images.py`
 
-**What it tests:**
-- Creates directory with excluded format images (.bmp, .png)
-- Adds matching JPG images
-- Tests pattern filtering (`*.jpg`)
-- Verifies only matching images are processed
+**Demonstrates**: Advanced dynamic behavior with pattern filtering and image removal/re-addition.
 
-**Real-world use case**: Mixed file type environments with selective processing.
+**What it shows:**
+- Directory pre-populated with excluded images (.bmp, .png, .tiff)
+- Pipeline ignores excluded images (pattern=`*.jpg`)
+- Matching images (.jpg) added, removed, and re-added dynamically
+- Shows add/remove timeline: add → remove → re-add → final changes
+- Demonstrates pattern filtering with dynamic file changes
+
+**Timeline Example:**
+```
+8s:  Add image 1 (matches pattern)
+12s: Add image 2 (matches pattern) 
+16s: Add image 3 (matches pattern)
+25s: Remove image 1
+28s: Remove image 2
+31s: Remove image 3
+40s: Re-add image 1
+44s: Re-add image 2
+48s: Re-add image 3
+```
+
+**Key Configuration:**
+```python
+(ImageIn, dict(
+    sources=f'file://{test_dir}!loop!pattern=*.jpg!maxfps=0.5',
+    loop=True,         # Infinite loop
+    poll_interval=1.0, # Fast detection of changes
+))
+```
+
+**Real-world use case**: Mixed file type environments, selective processing, content management systems.
+
+### Test Coverage for Dynamic Behavior
+
+**Unit Tests:**
+- `test_empty_directory_scenario()`: Empty start behavior
+- `test_excluded_images_scenario()`: Pattern filtering with dynamic changes
+- `test_dynamic_file_changes()`: File addition/removal handling
+- `test_basic_read()`: Core functionality
+- `test_pattern_filtering()`: Pattern matching behavior
 
 ### Additional Test Coverage
 
@@ -462,6 +626,39 @@ Filter.run_multi([
 ```
 
 **Behavior:** Recursively scans GCS bucket for JPEG files at 0.5 FPS.
+
+### Example 8: Dynamic Image Processing (Real-World Scenario)
+```python
+Filter.run_multi([
+    (ImageIn, dict(
+        sources='file:///upload/incoming!pattern=*.jpg!maxfps=1.0',
+        outputs='tcp://*:5550',
+        poll_interval=2.0,    # Check every 2 seconds for new uploads
+        loop=False,           # Process each image only once
+    )),
+    (Util, dict(
+        sources='tcp://localhost:5550',
+        outputs='tcp://*:5552',
+        xforms='resize 1024x768, quality 85',  # Process uploaded images
+    )),
+    (Webvis, dict(
+        sources='tcp://localhost:5552',
+    )),
+])
+```
+
+**Real-World Scenario:** This configuration handles a common use case where:
+1. **Initial State**: Pipeline starts with some images already in `/upload/incoming/`
+2. **Processing**: Begins processing existing images in queue order
+3. **Dynamic Addition**: New images uploaded by users are automatically detected
+4. **Queue Behavior**: New images join the end of the queue without disrupting current processing
+5. **Continuous Operation**: Pipeline runs indefinitely, processing both existing and new images
+
+**What Happens:**
+- Existing images: `[photo1.jpg, photo2.jpg, photo3.jpg]` start processing immediately
+- New uploads: `[photo4.jpg, photo5.jpg]` are detected and queued
+- Processing order: `photo1 → photo2 → photo3 → photo4 → photo5`
+- No images are lost or reprocessed
 
 ## Cloud Storage Setup
 
