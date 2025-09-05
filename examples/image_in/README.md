@@ -31,7 +31,7 @@ This example demonstrates the ImageIn filter, which reads images from local file
 
 ## Demo Scenarios
 
-This directory includes two demonstration scenarios that showcase real-world use cases:
+This directory includes five demonstration scenarios that showcase real-world use cases:
 
 ### 1. `scenario1_empty_start.py` - Empty Folder Start
 **Simulates:** Pipeline starts with an empty folder and waits for images to appear.
@@ -114,6 +114,105 @@ Time    | Browser Display
 55-60s  | Images 2,3 visible (1 removed again)
 60s+    | Images 2,3,4 visible (new image added)
 ```
+
+### 3. `scenario3_queue_empty.py` - Queue Empty Behavior
+**Simulates:** What happens when the pipeline processes all available images and the queue becomes empty.
+
+**What it does:**
+- Creates a folder with 3 initial images
+- Starts the pipeline and processes all images quickly
+- Queue becomes empty - demonstrates graceful idle state
+- After 15 seconds, adds 2 more images to show recovery
+- Shows that pipeline doesn't crash when queue is empty
+
+**Usage:**
+```bash
+python scenario3_queue_empty.py
+```
+
+**Expected behavior:**
+1. Pipeline starts and quickly processes 3 initial images
+2. Queue becomes empty - pipeline goes idle (doesn't crash)
+3. After 15 seconds, new images are added
+4. Pipeline automatically resumes processing new images
+
+**Timeline:**
+- **0-3s**: Process initial 3 images rapidly
+- **3-15s**: Queue empty - pipeline idle but alive
+- **15s**: Add new images → pipeline resumes processing
+- **18s**: Add final image → continues processing
+
+**Key Insight:** Pipeline remains responsive even when no images are available.
+
+### 4. `scenario4_multi_fps.py` - Multiple Topics with Different FPS
+**Simulates:** Multiple image sources with independent FPS control running simultaneously.
+
+**What it does:**
+- Creates two separate image sources with different topics
+- **Fast Stream** (green borders): 2.0 FPS - updates every 0.5 seconds
+- **Slow Stream** (red borders): 0.5 FPS - updates every 2 seconds
+- Demonstrates independent processing rates in the same pipeline
+- Shows mixed output where streams process at their own speeds
+
+**Usage:**
+```bash
+python scenario4_multi_fps.py
+```
+
+**Expected behavior:**
+1. Two streams start simultaneously
+2. Green-bordered images appear every 0.5 seconds (fast stream)
+3. Red-bordered images appear every 2 seconds (slow stream)
+4. Output shows mixed timing - not synchronized
+
+**Timeline:**
+- **Fast Stream**: Images at 0.5s, 1.0s, 1.5s, 2.0s, 2.5s, 3.0s...
+- **Slow Stream**: Images at 2.0s, 4.0s, 6.0s, 8.0s...
+- **Mixed Output**: Interleaved streams at different rates
+
+See the results in the browser http://localhost:8000/fast and http://localhost:8000/slow
+
+**Key Insight:** Each topic has independent FPS control - no global bottleneck.
+
+### 5. `scenario5_looping_demo.py` - Looping vs Non-Looping Comparison
+**Simulates:** Different looping behaviors: non-looping, finite looping, and infinite looping.
+
+**What it does:**
+- Demonstrates three phases of looping behavior
+- **Phase 1**: Non-looping (3 images processed once, then stops)
+- **Phase 2**: Finite looping (3 images processed 2 times total)
+- **Phase 3**: Infinite looping (3 images processed forever)
+- Shows different use cases for each looping mode
+
+**Usage:**
+```bash
+python scenario5_looping_demo.py
+```
+
+**Expected behavior:**
+1. **Phase 1 (0-15s)**: Process 3 images once, then pipeline goes idle
+2. **Phase 2 (15-35s)**: Process 3 images twice (6 total), then stops
+3. **Phase 3 (35s+)**: Process 3 images infinitely until Ctrl+C
+
+**Phase Timeline:**
+```
+Phase 1 (No Loop):
+0-6s     | Process images 1,2,3 once
+6-15s    | Pipeline idle (done processing)
+
+Phase 2 (Loop=2):
+15-18s   | Process images 1,2,3 (first loop)
+18-21s   | Process images 1,2,3 (second loop)
+21-35s   | Pipeline idle (done with 2 loops)
+
+Phase 3 (Infinite):
+35-38s   | Process images 1,2,3 (loop 1)
+38-41s   | Process images 1,2,3 (loop 2)
+41-44s   | Process images 1,2,3 (loop 3)
+...      | Continues forever
+```
+
+**Key Insight:** Looping control allows different processing patterns for different use cases.
 
 ## Configuration
 
@@ -352,6 +451,27 @@ Uses background threads for non-blocking operation:
 - **Dynamic content**: Handle files that are added/removed frequently
 - **Testing environments**: Simulate real-world file system changes
 
+### Scenario 3 Use Cases:
+- **Batch processing**: Handle periods with no incoming data
+- **Monitoring systems**: Graceful handling of quiet periods
+- **Production pipelines**: Robust behavior during data gaps
+- **Edge computing**: Handle intermittent data sources
+- **Testing reliability**: Verify pipeline stability during idle periods
+
+### Scenario 4 Use Cases:
+- **Multi-camera systems**: Different cameras with different frame rates
+- **Mixed data sources**: Local files + cloud storage at different speeds
+- **Priority processing**: Fast lane for urgent images, slow lane for background
+- **Bandwidth management**: Adjust rates based on network conditions
+- **Resource optimization**: Balance processing load across sources
+
+### Scenario 5 Use Cases:
+- **One-time processing**: Process dataset once and stop (no loop)
+- **Stress testing**: Repeat processing multiple times (finite loop)
+- **Continuous monitoring**: Process same images forever (infinite loop)
+- **Demo/presentation**: Loop through samples continuously
+- **Training pipelines**: Repeat datasets for model training
+
 ## Error Handling
 
 The filter handles various error conditions gracefully:
@@ -403,9 +523,20 @@ gcloud auth application-default login
 
 3. **Run scenario demos:**
    ```bash
+   # Empty start demonstration
    python scenario1_empty_start.py
-   # or
+   
+   # Pattern filtering demonstration
    python scenario2_excluded_images.py
+   
+   # Queue empty behavior demonstration
+   python scenario3_queue_empty.py
+   
+   # Multi-FPS topics demonstration
+   python scenario4_multi_fps.py
+   
+   # Looping behavior demonstration
+   python scenario5_looping_demo.py
    ```
 
 4. **Open browser:**
