@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = { find = { include = ["video_pipeline_demo"] } }
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[project]
+name = "video-pipeline-demo"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+license = "Apache-2.0"
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+dynamic = ["version"]
+
+dependencies = [
+  "openfilter[all]~=0.1.0"
+  # "filter-frame-dedup~=0.1.0",
+  # "filter-faceblur~=0.1.0",
+  # "filter-crop~=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build==1.2.1",
+  "setuptools==72.2.0",
+  "twine>=6.1.0,<7",
+  "wheel==0.44.0",
+  "pytest==8.3.4",
+  "pytest-cov==6.0.0",
+]
+
+[[tool.uv.index]]
+name = "openfilter"
+url = "https://python.openfilter.io/simple"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
