@@ -3,6 +3,11 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.12 - 2025-07-25
+
+### Added
+- ImageIn filter to support reading images and creating Frame streams
+
 ## v0.1.11 - 2025-08-05
 
 ### Added
@@ -25,7 +30,6 @@ OpenFilter Library release notes
 - **Testing**: Comprehensive test coverage for metric specs, registry operations, and configuration handling
 
 
-=======
 ### Modified
 - For consistency across all versions, need to emit openfilter_version with v.
 - Modified VERSION file for examples.
