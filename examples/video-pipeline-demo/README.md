@@ -619,6 +619,48 @@ Enable debug logging by modifying the filter configurations in `main.py`:
 "debug": True,  # Enable for FilterFrameDedup, FilterFaceblur, and FilterConnectorGCS
 ```
 
+## GCS Image Enhancement Pipeline
+
+### ImageIn Pipeline Architecture
+
+```mermaid
+graph TD
+    %% GCS Image Enhancement Pipeline
+    GCS[Google Cloud Storage<br/>gs://bucket/folder/images] --> |Image Files| II[ImageIn<br/>Port 8890]
+    
+    %% Simple Pipeline
+    II --> |Raw Images| WV1[Webvis<br/>Port 8003<br/>Simple Viewer]
+    
+    %% Enhanced Pipeline
+    II --> |Raw Images| FE[FaceEnhancer<br/>Port 8892]
+    FE --> |Enhanced Images| WV2[Webvis<br/>Port 8003<br/>Enhanced Viewer]
+    
+    %% Enhancement Features
+    FE --> |800x600 Frame| ENH1[Standardized Size]
+    FE --> |Random Names| ENH2[Name Assignment]
+    FE --> |Timestamps| ENH3[Capture Time]
+    FE --> |Visual Polish| ENH4[Borders & Backgrounds]
+    
+    %% Outputs
+    WV1 --> |Web Interface| OUT1[Simple Images<br/>http://localhost:8003]
+    WV2 --> |Web Interface| OUT2[Enhanced Images<br/>http://localhost:8003]
+    
+    %% Styling
+    classDef gcs fill:#e3f2fd
+    classDef imageIn fill:#f3e5f5
+    classDef enhancer fill:#e8f5e8
+    classDef webvis fill:#fff3e0
+    classDef feature fill:#fce4ec
+    classDef output fill:#f5f5f5
+    
+    class GCS gcs
+    class II imageIn
+    class FE enhancer
+    class WV1,WV2 webvis
+    class ENH1,ENH2,ENH3,ENH4 feature
+    class OUT1,OUT2 output
+```
+
 ### Performance Tuning
 
 - **Reduce blur strength** for better performance

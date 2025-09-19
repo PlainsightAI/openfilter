@@ -1,4 +1,4 @@
-.PHONY: install run run-rtsp run-files rtsp-start rtsp-stop rtsp-status clean help
+.PHONY: install run run-rtsp run-files run-gcs run-gcs-enhanced rtsp-start rtsp-stop rtsp-status clean help
 
 # Default target
 help:
@@ -7,6 +7,8 @@ help:
 	@echo "  run         - Run the video pipeline demo with local files"
 	@echo "  run-files   - Run the video pipeline demo with local files"
 	@echo "  run-rtsp    - Run the video pipeline demo with RTSP streams"
+	@echo "  run-gcs     - Run the GCS image viewer (ImageIn -> Webvis)"
+	@echo "  run-gcs-enhanced - Run the enhanced GCS image viewer (ImageIn -> FaceEnhancer -> Webvis)"
 	@echo "  rtsp-start  - Start RTSP streamer with videos from ./data"
 	@echo "  rtsp-stop   - Stop RTSP streamer"
 	@echo "  rtsp-status - Check RTSP streamer status"
@@ -27,6 +29,41 @@ run-files:
 # Run with RTSP streams
 run-rtsp:
 	GCS_BUCKET=protege-artifacts-development python main_rtsp.py --mode rtsp
+
+# Run GCS image viewer (ImageIn -> Webvis)
+run-gcs:
+	@echo "Usage: make run-gcs BUCKET=your-bucket FOLDER=your-folder"
+	@echo "Example: make run-gcs BUCKET=protege-artifacts-development FOLDER=video-pipeline-demo/stream2/images"
+	@if [ -z "$(BUCKET)" ] || [ -z "$(FOLDER)" ]; then \
+		echo "❌ Error: BUCKET and FOLDER are required"; \
+		echo "Usage: make run-gcs BUCKET=your-bucket FOLDER=your-folder"; \
+		echo "Example: make run-gcs BUCKET=protege-artifacts-development FOLDER=labelled-data/demo_ocr/data"; \
+		exit 1; \
+	fi
+	@echo "🖼️  Starting GCS image viewer..."
+	@echo "📁 Bucket: $(BUCKET)"
+	@echo "📂 Folder: $(FOLDER)"
+	@echo "🌐 Web interface: http://127.0.0.1:8003"
+	@echo "Press Ctrl+C to stop"
+	python main_gcs_simple.py gs://$(BUCKET)/$(FOLDER)
+
+# Run enhanced GCS image viewer (ImageIn -> FaceEnhancer -> Webvis)
+run-gcs-enhanced:
+	@echo "Usage: make run-gcs-enhanced BUCKET=your-bucket FOLDER=your-folder"
+	@echo "Example: make run-gcs-enhanced BUCKET=protege-artifacts-development FOLDER=video-pipeline-demo/stream2/images"
+	@if [ -z "$(BUCKET)" ] || [ -z "$(FOLDER)" ]; then \
+		echo "❌ Error: BUCKET and FOLDER are required"; \
+		echo "Usage: make run-gcs-enhanced BUCKET=your-bucket FOLDER=your-folder"; \
+		echo "Example: make run-gcs-enhanced BUCKET=protege-artifacts-development FOLDER=video-pipeline-demo/stream2/images"; \
+		exit 1; \
+	fi
+	@echo "🖼️  Starting enhanced GCS image viewer..."
+	@echo "📁 Bucket: $(BUCKET)"
+	@echo "📂 Folder: $(FOLDER)"
+	@echo "🌐 Web interface: http://127.0.0.1:8004"
+	@echo "✨ Features: 800x600 frames, random names, timestamps"
+	@echo "Press Ctrl+C to stop"
+	python main_gcs_enhanced.py gs://$(BUCKET)/$(FOLDER)
 
 # Start RTSP streamer with videos from ./data
 rtsp-start:
