@@ -208,7 +208,10 @@ def main():
         # VizCal - Stream 2 analysis (after face blur)
         (Vizcal, {
             "id": "vizcal_stream2",
-            "sources": "tcp://localhost:5554;stream2",
+            "sources": [
+                "tcp://localhost:5554;stream2",
+                "tcp://localhost:5556;stream3",
+            ],
             "outputs": "tcp://*:5580",
             "calculate_camera_stability": vizcal_config['calculate_camera_stability'],
             "calculate_video_properties": vizcal_config['calculate_video_properties'],
@@ -225,6 +228,7 @@ def main():
             "sources": [
                 "tcp://localhost:5560",  # All topics from FilterCrop (including face crops),
                 "tcp://localhost:5580;stream2>stream2_info",  # Stream 2 with VizCal analysis
+                "tcp://localhost:5580;stream3>stream3_info",  # Stream 3 with VizCal analysis
             ],
             "port": 8001,
         }),

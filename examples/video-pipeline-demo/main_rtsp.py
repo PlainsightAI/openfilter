@@ -112,7 +112,7 @@ def main():
     gcs_bucket = os.getenv('GCS_BUCKET')
     gcs_path = os.getenv('GCS_PATH', 'video-pipeline-demo')
     segment_duration = float(os.getenv('SEGMENT_DURATION', '0.2'))
-    image_directory = os.getenv('IMAGE_DIRECTORY', './output/sallon')
+    image_directory = os.getenv('IMAGE_DIRECTORY', './output/face_crops')
     
     # Get VizCal configuration from environment or use defaults
     vizcal_config = {
