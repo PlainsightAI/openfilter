@@ -42,6 +42,8 @@ VideoIn → FilterFrameDedup → GCS
 ## Features
 
 - **Multi-Stream Processing**: Processes three video streams simultaneously with different configurations
+- **Dual Input Modes**: Support for both local video files and RTSP streams
+- **RTSP Integration**: Seamless integration with RTSP streamer for live video processing
 - **Face Detection & Blurring**: Automatically detects and blurs faces with configurable intensities
 - **Camera Analysis**: Real-time camera stability analysis using VizCal filter
 - **Face Cropping**: Extracts cropped images from detected faces with automatic saving
@@ -49,6 +51,7 @@ VideoIn → FilterFrameDedup → GCS
 - **Cloud Storage**: Automatic upload to Google Cloud Storage with organized folder structure
 - **Real-time Visualization**: Web interface to view all processed streams
 - **Multi-Format Output**: Saves images in PNG format with compression
+- **Interactive Setup**: Easy-to-use script for getting started
 
 ## Quick Start
 
@@ -63,8 +66,15 @@ make install
 2. The video files:
 The video files should live in [./data](./data)
 
+3. Set up RTSP Streamer (optional, for RTSP mode):
+```bash
+# Prerequisites: Docker must be installed and running
+# Uses published image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+# The RTSP streamer will automatically use videos from ./data
+# No additional setup required - just run make rtsp-start
+```
 
-1. Set up Google Cloud Storage (optional):
+4. Set up Google Cloud Storage (optional):
 ```bash
 # Set GCS environment variables
 export GCS_BUCKET="your-bucket-name"
@@ -73,20 +83,67 @@ export SEGMENT_DURATION="0.2"
 export IMAGE_DIRECTORY="./output/sallon"
 ```
 
-1. Test the installation:
+5. Test the installation:
 ```bash
 python test_pipeline.py
 ```
 
 ### Running the Demo
 
+#### Option 1: Interactive Setup (Recommended)
+```bash
+# Run the interactive setup script
+./start_rtsp_demo.sh
+```
+
+#### Option 2: Command Line
+
+**With Local Video Files:**
 ```bash
 # Basic usage with default video files
 python main.py
 
-# Or specify custom video files and GCS settings
+# Or use the new RTSP-enabled script
+python main_rtsp.py --mode files
+
+# With custom video files and GCS settings
 VIDEO1_PATH=path/to/sallon.mp4 VIDEO2_PATH=path/to/kitchen.mp4 VIDEO3_PATH=path/to/reception.mp4 \
-GCS_BUCKET=your-bucket GCS_PATH=video-demo python main.py
+GCS_BUCKET=your-bucket GCS_PATH=video-demo python main_rtsp.py --mode files
+```
+
+**With RTSP Streams:**
+```bash
+# Start RTSP streamer with videos from ./data (uses published image)
+make rtsp-start
+
+# Check RTSP streamer status
+make rtsp-status
+
+# Run pipeline with RTSP streams
+python main_rtsp.py --mode rtsp
+
+# Or with custom RTSP URLs
+python main_rtsp.py --mode rtsp --rtsp-urls "rtsp://localhost:8554/stream0,rtsp://localhost:8554/stream1,rtsp://localhost:8554/stream2"
+
+# Stop RTSP streamer when done
+make rtsp-stop
+```
+
+#### Option 3: Makefile Commands
+```bash
+# Show all available commands
+make help
+
+# Run with local files
+make run-files
+
+# Run with RTSP streams (start streamer first)
+make rtsp-start
+make run-rtsp
+make rtsp-stop
+
+# Check RTSP streamer status
+make rtsp-status
 ```
 
 ### Viewing Results
@@ -328,6 +385,182 @@ This pipeline is ideal for:
 - **Real-time Processing**: Process live video streams with multiple filters
 - **A/B Testing**: Compare different processing approaches on the same video
 
+## RTSP Mode
+
+The pipeline supports both local video files and RTSP streams, allowing you to process live video feeds or pre-recorded videos through an RTSP server.
+
+### RTSP Architecture
+
+```mermaid
+graph TD
+    %% RTSP Streamer
+    RTSP[RTSP Streamer<br/>Docker Container<br/>Port 8554] --> |rtsp://localhost:8554/stream0| VI[VideoIn<br/>Port 5550]
+    RTSP --> |rtsp://localhost:8554/stream1| VI
+    RTSP --> |rtsp://localhost:8554/stream2| VI
+    
+    %% Video Processing Pipeline
+    VI --> |main,stream2,stream3| FB1[FilterFaceblur_1<br/>Port 5552]
+    VI --> |main,stream2,stream3| FB2[FilterFaceblur_2<br/>Port 5554]
+    VI --> |main,stream2,stream3| FB3[FilterFaceblur_3<br/>Port 5556]
+    VI --> |main,stream2,stream3| FD[FilterFrameDedup<br/>Port 5560]
+    
+    %% Stream 1: main topic
+    FB1 --> |main| WV1[Webvis<br/>Port 8000]
+    FB1 --> |main| GCS1[FilterConnectorGCS<br/>Stream 1]
+    
+    %% Stream 2: stream2 topic
+    FB2 --> |stream2| VC[VizCal<br/>Port 5580]
+    FB2 --> |stream2| FC[FilterCrop<br/>Port 5558]
+    VC --> |stream2| FC
+    FC --> |face_*| IO[ImageOut<br/>Face Crops]
+    FC --> |main,face_*| WV2[Webvis<br/>Port 8001]
+    VC --> |stream2| WV2
+    FB2 --> |stream2| GCS2[FilterConnectorGCS<br/>Stream 2]
+    
+    %% Stream 3: stream3 topic
+    FB3 --> |stream3| WV3[Webvis<br/>Port 8000]
+    FB3 --> |stream3| GCS3[FilterConnectorGCS<br/>Stream 3]
+    
+    %% Deduplication
+    FD --> |main| GCS4[FilterConnectorGCS<br/>Deduplicated]
+    FD --> |main| WV4[Webvis<br/>Port 8001]
+    
+    %% Outputs
+    WV1 --> OUT1[Webvis Stream1<br/>localhost:8000/stream1]
+    WV2 --> OUT2[Webvis Face Crops<br/>localhost:8001]
+    WV3 --> OUT3[Webvis Stream3<br/>localhost:8000/stream3]
+    WV4 --> OUT4[Webvis Deduplicated<br/>localhost:8001]
+    
+    IO --> OUT5[Local Files<br/>./output/face_crops/]
+    FD --> OUT6[Local Files<br/>./output/sallon/]
+    
+    GCS1 --> OUT7[GCS Stream1<br/>gs://bucket/stream1/]
+    GCS2 --> OUT8[GCS Stream2<br/>gs://bucket/stream2/]
+    GCS3 --> OUT9[GCS Stream3<br/>gs://bucket/stream3/]
+    GCS4 --> OUT10[GCS Deduplicated<br/>gs://bucket/deduped/]
+    
+    %% Styling
+    classDef rtsp fill:#ffebee
+    classDef videoIn fill:#e3f2fd
+    classDef faceblur fill:#f3e5f5
+    classDef vizcal fill:#e8f5e8
+    classDef crop fill:#fff3e0
+    classDef dedup fill:#fce4ec
+    classDef webvis fill:#e0f2f1
+    classDef gcs fill:#f1f8e9
+    classDef output fill:#f5f5f5
+    
+    class RTSP rtsp
+    class VI videoIn
+    class FB1,FB2,FB3 faceblur
+    class VC vizcal
+    class FC crop
+    class FD dedup
+    class WV1,WV2,WV3,WV4 webvis
+    class GCS1,GCS2,GCS3,GCS4 gcs
+    class OUT1,OUT2,OUT3,OUT4,OUT5,OUT6,OUT7,OUT8,OUT9,OUT10 output
+```
+
+### Running RTSP Mode
+
+#### Quick Start
+```bash
+# 1. Start RTSP streamer (uses published Docker image)
+make rtsp-start
+
+# 2. Run pipeline with RTSP streams (bucket name automatically set)
+make run-rtsp
+
+# 3. Stop when done
+make rtsp-stop
+```
+
+#### Step-by-Step Process
+
+**Step 1: Start RTSP Streamer**
+```bash
+# This will:
+# - Pull the published Docker image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+# - Mount videos from ./data directory
+# - Start RTSP server on port 8554
+# - Start web interface on port 8888
+make rtsp-start
+```
+
+**Step 2: Verify RTSP Streams**
+```bash
+# Check if RTSP streamer is running
+make rtsp-status
+
+# Test RTSP streams manually (optional)
+ffplay rtsp://localhost:8554/stream0
+ffplay rtsp://localhost:8554/stream1
+ffplay rtsp://localhost:8554/stream2
+```
+
+**Step 3: Run Pipeline**
+```bash
+# Run pipeline with RTSP streams
+# GCS_BUCKET is automatically set to protege-artifacts-development
+make run-rtsp
+```
+
+**Step 4: View Results**
+- **Main Streams**: http://localhost:8000
+- **Face Crops**: http://localhost:8001
+- **RTSP Web Interface**: http://localhost:8888
+
+**Step 5: Clean Up**
+```bash
+# Stop RTSP streamer
+make rtsp-stop
+```
+
+#### Interactive Setup
+```bash
+# Use the interactive script for guided setup
+./start_rtsp_demo.sh
+
+# Choose option 3 to start RTSP streamer
+# Choose option 2 to run pipeline with RTSP
+# Choose option 5 to check status
+```
+
+#### Custom RTSP URLs
+```bash
+# Use custom RTSP URLs
+python main_rtsp.py --mode rtsp --rtsp-urls "rtsp://your-server:8554/stream0,rtsp://your-server:8554/stream1,rtsp://your-server:8554/stream2"
+```
+
+### RTSP Configuration
+
+The RTSP streamer uses the following configuration:
+- **Docker Image**: `us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0`
+- **RTSP Port**: 8554
+- **Web Interface Port**: 8888
+- **Video Source**: `./data` directory (mounted as `/data/videos` in container)
+- **Stream Names**: `stream0`, `stream1`, `stream2`
+- **Loop Mode**: Enabled (videos loop continuously)
+
+### RTSP vs Local Files
+
+| Feature | Local Files | RTSP Streams |
+|---------|-------------|--------------|
+| **Video Source** | Direct file access | RTSP server |
+| **Setup** | No additional setup | Requires Docker |
+| **Performance** | Faster startup | Slight overhead |
+| **Flexibility** | Limited to local files | Any RTSP source |
+| **Scalability** | Single machine | Distributed |
+| **Use Cases** | Development, testing | Production, live feeds |
+
+### Troubleshooting RTSP Mode
+
+1. **RTSP streamer not starting**: Check Docker is running
+2. **No video streams**: Verify videos are in `./data` directory
+3. **Connection refused**: Check ports 8554 and 8888 are available
+4. **Platform warning**: Normal on ARM Macs, doesn't affect functionality
+5. **Pipeline can't connect**: Ensure RTSP streamer is running before starting pipeline
+
 ## Testing the Demo
 
 ### 1. Web Visualization Testing
@@ -368,11 +601,16 @@ gsutil ls gs://your-bucket/video-pipeline-demo/stream3/
 ### Common Issues
 
 1. **Video files not found**: Ensure video files exist and paths are correct
-2. **Port conflicts**: Make sure ports 8000 and 8001 are available for Webvis
+2. **Port conflicts**: Make sure ports 8000, 8001, and 8554 are available
 3. **Memory issues**: Large video files may require more memory
 4. **GCS upload failures**: Check GCS credentials and bucket permissions
 5. **Face detection not working**: Ensure OpenCV models are downloaded
 6. **VizCal analysis missing**: Check that Stream 2 has video content
+7. **RTSP connection failed**: Ensure RTSP streamer is running (`make rtsp-start`)
+8. **RTSP streams not available**: Check that videos are in ./data directory
+9. **Docker not running**: RTSP streamer requires Docker to be installed and running
+10. **Platform warning**: You may see a platform warning (linux/amd64 vs linux/arm64) - this is normal and doesn't affect functionality
+11. **RTSP port conflicts**: Ensure ports 8554 and 8888 are available for RTSP streamer
 
 ### Debug Mode
 
@@ -387,7 +625,3 @@ Enable debug logging by modifying the filter configurations in `main.py`:
 - **Increase deduplication thresholds** to reduce processing
 - **Disable VizCal analysis** if not needed
 - **Use smaller video segments** for GCS uploads
-
-## License
-
-Apache-2.0
