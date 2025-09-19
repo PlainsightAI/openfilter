@@ -50,18 +50,21 @@ def main():
         return
     
     logger.info("Starting Video Pipeline Demo")
-    logger.info(f"Video 1: {video1_path}")
-    logger.info(f"Video 2: {video2_path}")
-    logger.info(f"Video 3: {video3_path}")
+    logger.info(f"Video 1: {video1_path}")          
+    logger.info(f"Video 2: {video2_path}")          
+    logger.info(f"Video 3: {video3_path}")          
     logger.info("=" * 60)
     
     # Define the filter pipeline
     filters = [
         # Video Input - Two streams with different topics
+        # main sallon
+        # stream2 kitchen 
+        # stream3 reception
         (VideoIn, {
             "id": "video_in",
             "sources": f'''
-                file://{video1_path}!loop, 
+                file://{video1_path}!loop,          
                 file://{video2_path}!loop;stream2,
                 file://{video3_path}!loop;stream3
             ''',
@@ -134,19 +137,20 @@ def main():
             "compression": 6
         }),
         
-        # # Frame Deduplication - On face crops
-        # (FilterFrameDedup, {
-        #     "id": "frame_dedup_crops",
-        #     "sources": "tcp://localhost:5558",
-        #     "outputs": "tcp://*:5560",
-        #     "hash_threshold": 5,
-        #     "motion_threshold": 1200,
-        #     "min_time_between_frames": 1.0,
-        #     "ssim_threshold": 0.90,
-        #     "output_folder": "./output/deduped_face_crops",
-        #     "forward_deduped_frames": True,
-        #     "debug": False,
-        # }),
+        # Frame Deduplication - On face crops
+        (FilterFrameDedup, {
+            "id": "frame_dedup_crops",
+            "sources": "tcp://localhost:5550",
+            "outputs": "tcp://*:5560",
+            "hash_threshold": 5,
+            "motion_threshold": 1200,
+            "min_time_between_frames": 1.0,
+            "ssim_threshold": 0.90,
+            "output_folder": "./output/sallon",
+            "forward_deduped_frames": True,
+            "save_images": True,
+            "debug": False,
+        }),
         
         # Web Visualization - Multiple streams
         (Webvis, {
@@ -162,7 +166,7 @@ def main():
         (Webvis, {
             "id": "webvis_crops",
             "sources": [
-                "tcp://localhost:5558",  # All topics from FilterCrop (including face crops)
+                "tcp://localhost:5560",  # All topics from FilterCrop (including face crops)
             ],
             "port": 8001,
         }),
