@@ -28,6 +28,7 @@ dependencies = [
   # "filter-frame-dedup~=0.1.0",
   # "filter-faceblur~=0.1.0",
   # "filter-crop~=0.1.0",
+  # "filter-connector-gcs~=2.0.0",
 ]
 
 [project.optional-dependencies]

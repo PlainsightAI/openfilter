@@ -23,6 +23,7 @@ from openfilter.filter_runtime.filters.image_out import ImageOut
 from filter_frame_dedup.filter import FilterFrameDedup
 from filter_faceblur.filter import FilterFaceblur
 from filter_crop.filter import FilterCrop
+from filter_connector_gcs.filter import FilterConnectorGCS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,12 @@ def main():
     video1_path = os.getenv('VIDEO1_PATH', 'sample_video1.mp4')
     video2_path = os.getenv('VIDEO2_PATH', 'sample_video2.mp4')
     video3_path = os.getenv('VIDEO3_PATH', 'sample_video3.mp4')
+    
+    # Get GCS configuration from environment or use defaults
+    gcs_bucket = os.getenv('GCS_BUCKET')
+    gcs_path = os.getenv('GCS_PATH', 'video-pipeline-demo/deduplicated-frames')
+    segment_duration = float(os.getenv('SEGMENT_DURATION', '0.2'))
+    image_directory = os.getenv('IMAGE_DIRECTORY', './output/sallon')
     
     # Check if video files exist
     if not os.path.exists(video1_path):
@@ -152,6 +159,29 @@ def main():
             "debug": False,
         }),
         
+        # GCS Connector - Upload multiple streams to different folders in GCS
+        (FilterConnectorGCS, {
+            "id": "gcs_connector",
+            "sources": [
+                "tcp://localhost:5552;main",      # Stream 1 (face blurred)
+                "tcp://localhost:5554;stream2",   # Stream 2 (face blurred) 
+                "tcp://localhost:5556;stream3",   # Stream 3 (face blurred)
+            ],
+            "outputs": [
+                # stream2 first because the images are saved in the stream2 folder
+                f"gs://{gcs_bucket}/{gcs_path}/stream2/stream2_%Y-%m-%d_%H-%M-%S.mp4!segtime={segment_duration};stream2", 
+                
+                f"gs://{gcs_bucket}/{gcs_path}/stream1/stream1_%Y-%m-%d_%H-%M-%S.mp4!segtime={segment_duration};main",
+                
+                f"gs://{gcs_bucket}/{gcs_path}/stream3/stream3_%Y-%m-%d_%H-%M-%S.mp4!segtime={segment_duration};stream3",
+            ],
+            "gcs_bucket": gcs_bucket,
+            "gcs_path": gcs_path,
+            "segment_duration": segment_duration,
+            "image_directory": image_directory,
+            "debug": True,   # Enable debug to see what's happening
+        }),
+        
         # Web Visualization - Multiple streams
         (Webvis, {
             "id": "webvis",
@@ -176,6 +206,7 @@ def main():
     logger.info("Stream 1: Video → FaceBlur → Webvis")
     logger.info("Stream 2: Video → FaceBlur → FaceCrop → ImageOut (face_* topics only) + Webvis")
     logger.info("Stream 3: Video → FaceBlur → Webvis")
+    logger.info("Deduplication: Video → FrameDedup → GCS Connector")
     logger.info("Webvis available at:")
     logger.info("  - Main streams: http://localhost:8000")
     logger.info("    - Stream 1: http://localhost:8000/stream1 (face blurred)")
@@ -184,6 +215,10 @@ def main():
     logger.info("  - Face crops: http://localhost:8001 (all FilterCrop outputs)")
     logger.info("Image outputs:")
     logger.info("  - Cropped face images only (face_* topics): ./output/face_crops/")
+    logger.info("  - Deduplicated frames: ./output/sallon/")
+    logger.info("GCS Configuration:")
+    logger.info("  - Bucket: protege-artifacts-development")
+    logger.info("  - Path: video-pipeline-demo/deduplicated-frames")
     logger.info("=" * 60)
     
     try:
