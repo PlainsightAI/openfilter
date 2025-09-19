@@ -1,6 +1,6 @@
 # OpenFilter Observability Demo Makefile
 
-.PHONY: help setup test run run-telemetry run-openlineage clean
+.PHONY: help setup test run run-telemetry run-openlineage run-otel-only clean
 
 help: ## Show this help message
 	@echo "OpenFilter Observability Demo"
@@ -34,6 +34,14 @@ run-openlineage: ## Run demo with OpenLineage enabled
 	OPENLINEAGE_API_KEY=test_key \
 	OF_SAFE_METRICS=frames_processed,frames_with_detections,detections_per_frame,detection_confidence \
 	python app.py --input file://sample_video.mp4!loop --fps 10
+
+run-otel-only: ## Run OTEL-only demo (no OpenLineage)
+	@echo "☁️  Running OTEL-only demo..."
+	@echo "⚠️  Make sure to configure OTEL_EXPORTER_OTLP_ENDPOINT in config_otel_only.env"
+	TELEMETRY_EXPORTER_ENABLED=true \
+	TELEMETRY_EXPORTER_TYPE=otlp \
+	OF_SAFE_METRICS_FILE=safe_metrics_otel.yaml \
+	python app_otel_only.py
 
 run-full: ## Run demo with full observability stack
 	@echo "🎯 Running demo with full observability stack..."

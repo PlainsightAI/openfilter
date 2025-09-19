@@ -20,6 +20,8 @@ class MetricSpec:
         value_fn: Function to extract value from frame data
         boundaries: For histograms, bucket boundaries (optional - will auto-generate if None)
         num_buckets: For histograms, number of buckets to auto-generate (default: 10)
+        export_mode: How to export metrics ('raw', 'aggregated', 'both') - controls aggregation behavior
+        target: Where to send metrics ('otel', 'openlineage', 'both') - controls destination
         _otel_inst: OpenTelemetry instrument instance (set by TelemetryRegistry)
     """
     name: str
@@ -27,12 +29,20 @@ class MetricSpec:
     value_fn: Callable[[dict], Union[int, float, None]]
     boundaries: Optional[List[Union[int, float]]] = None
     num_buckets: int = 10  # For auto-generated histogram buckets
+    export_mode: str = "aggregated"  # 'raw', 'aggregated', 'both'
+    target: str = "both"  # 'otel', 'openlineage', 'both'
     _otel_inst: Optional[Instrument] = None
     
     def __post_init__(self):
         """Validate the metric specification."""
         if self.instrument not in ['counter', 'histogram', 'gauge']:
             raise ValueError(f"Invalid instrument type: {self.instrument}. Must be 'counter', 'histogram', or 'gauge'")
+        
+        if self.export_mode not in ['raw', 'aggregated', 'both']:
+            raise ValueError(f"Invalid export_mode: {self.export_mode}. Must be 'raw', 'aggregated', or 'both'")
+            
+        if self.target not in ['otel', 'openlineage', 'both']:
+            raise ValueError(f"Invalid target: {self.target}. Must be 'otel', 'openlineage', or 'both'")
         
         if self.instrument == 'histogram' and self.boundaries is not None:
             if len(self.boundaries) < 2:
