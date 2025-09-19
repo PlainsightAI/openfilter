@@ -24,6 +24,7 @@ from filter_frame_dedup.filter import FilterFrameDedup
 from filter_faceblur.filter import FilterFaceblur
 from filter_crop.filter import FilterCrop
 from filter_connector_gcs.filter import FilterConnectorGCS
+from vizcal.filter import Vizcal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +43,17 @@ def main():
     gcs_path = os.getenv('GCS_PATH', 'video-pipeline-demo/deduplicated-frames')
     segment_duration = float(os.getenv('SEGMENT_DURATION', '0.2'))
     image_directory = os.getenv('IMAGE_DIRECTORY', './output/sallon')
+    
+    # Get VizCal configuration from environment or use defaults
+    vizcal_config = {
+        'calculate_camera_stability': os.getenv('FILTER_CALCULATE_CAMERA_STABILITY', 'True').lower() == 'true',
+        'calculate_video_properties': os.getenv('FILTER_CALCULATE_VIDEO_PROPERTIES', 'True').lower() == 'true',
+        'calculate_movement': os.getenv('FILTER_CALCULATE_MOVEMENT', 'False').lower() == 'true',
+        'shake_threshold': float(os.getenv('FILTER_SHAKE_THRESHOLD', '5')),
+        'movement_threshold': float(os.getenv('FILTER_MOVEMENT_THRESHOLD', '1.0')),
+        'forward_upstream_data': os.getenv('FILTER_FORWARD_UPSTREAM_DATA', 'True').lower() == 'true',
+        'show_text_overlays': os.getenv('FILTER_SHOW_TEXT_OVERLAYS', 'True').lower() == 'true',
+    }
     
     # Check if video files exist
     if not os.path.exists(video1_path):
@@ -119,10 +131,10 @@ def main():
             "debug": False,
         }),
         
-        # Face Crop - Stream 1 (from face detections)
+        # Face Crop - Stream 2 (from VizCal output with face detections)
         (FilterCrop, {
             "id": "facecrop",
-            "sources": "tcp://localhost:5554",
+            "sources": "tcp://localhost:5554;stream2",
             "outputs": "tcp://*:5558",
             "detection_key": "detections",
             "detection_class_field": "class",
@@ -164,7 +176,7 @@ def main():
             "id": "gcs_connector",
             "sources": [
                 "tcp://localhost:5552;main",      # Stream 1 (face blurred)
-                "tcp://localhost:5554;stream2",   # Stream 2 (face blurred) 
+                "tcp://localhost:5554;stream2",   # Stream 2 (face blurred + VizCal analysis) 
                 "tcp://localhost:5556;stream3",   # Stream 3 (face blurred)
             ],
             "outputs": [
@@ -187,16 +199,32 @@ def main():
             "id": "webvis",
             "sources": [
                 "tcp://localhost:5552;main>stream1",  # Stream 1 with face crops
-                "tcp://localhost:5554;stream2",  # Stream 2 with face crops
+                "tcp://localhost:5554;stream2",  # Stream 2 with VizCal analysis
                 "tcp://localhost:5556;stream3",  # Stream 3 with face crops
             ],
             "port": 8000,
         }),
         
+        # VizCal - Stream 2 analysis (after face blur)
+        (Vizcal, {
+            "id": "vizcal_stream2",
+            "sources": "tcp://localhost:5554;stream2",
+            "outputs": "tcp://*:5580",
+            "calculate_camera_stability": vizcal_config['calculate_camera_stability'],
+            "calculate_video_properties": vizcal_config['calculate_video_properties'],
+            "calculate_movement": vizcal_config['calculate_movement'],
+            "shake_threshold": vizcal_config['shake_threshold'],
+            "movement_threshold": vizcal_config['movement_threshold'],
+            "forward_upstream_data": vizcal_config['forward_upstream_data'],
+            "show_text_overlays": vizcal_config['show_text_overlays'],
+            # "mq_log": "pretty",
+        }),
+        
         (Webvis, {
             "id": "webvis_crops",
             "sources": [
-                "tcp://localhost:5560",  # All topics from FilterCrop (including face crops)
+                "tcp://localhost:5560",  # All topics from FilterCrop (including face crops),
+                "tcp://localhost:5580;stream2>stream2_info",  # Stream 2 with VizCal analysis
             ],
             "port": 8001,
         }),
@@ -204,13 +232,13 @@ def main():
     
     logger.info("Pipeline Configuration:")
     logger.info("Stream 1: Video → FaceBlur → Webvis")
-    logger.info("Stream 2: Video → FaceBlur → FaceCrop → ImageOut (face_* topics only) + Webvis")
+    logger.info("Stream 2: Video → FaceBlur → VizCal → FaceCrop → ImageOut (face_* topics only) + Webvis + GCS")
     logger.info("Stream 3: Video → FaceBlur → Webvis")
     logger.info("Deduplication: Video → FrameDedup → GCS Connector")
     logger.info("Webvis available at:")
     logger.info("  - Main streams: http://localhost:8000")
     logger.info("    - Stream 1: http://localhost:8000/stream1 (face blurred)")
-    logger.info("    - Stream 2: http://localhost:8000/stream2 (face blurred)")
+    logger.info("    - Stream 2: http://localhost:8000/stream2 (face blurred + VizCal analysis)")
     logger.info("    - Stream 3: http://localhost:8000/stream3 (face blurred)")
     logger.info("  - Face crops: http://localhost:8001 (all FilterCrop outputs)")
     logger.info("Image outputs:")

@@ -1,37 +1,54 @@
 # Video Pipeline Demo
 
-This example demonstrates a comprehensive video processing pipeline using OpenFilter with multiple filters working together to process two video streams in parallel.
+This example demonstrates a comprehensive video processing pipeline using OpenFilter with multiple filters working together to process three video streams in parallel, featuring face detection, camera analysis, frame deduplication, and cloud storage integration.
 
-## 🚀 Ready to Use
+## What does it do?
 
 This example is complete and ready to run! It includes:
 - ✅ Complete pipeline script (`main.py`)
-- ✅ Sample video files for testing
-- ✅ All configuration files
-- ✅ Test script to verify setup
-- ✅ Comprehensive documentation
+- ✅ Multi-stream video processing (3 streams)
+- ✅ Face detection and blurring with different intensities
+- ✅ Camera stability analysis (VizCal)
+- ✅ Face cropping and image saving
+- ✅ Frame deduplication
+- ✅ Google Cloud Storage integration
+- ✅ Real-time web visualization
+- ✅ All configuration files and documentation
 
 ## Pipeline Overview
 
-The demo showcases a sophisticated video processing pipeline with two parallel streams:
+The demo showcases a sophisticated video processing pipeline with three parallel streams:
 
-**Stream 1 (with deduplication):**
+**Stream 1 (Sallon - Face Blurred):**
 ```
-VideoIn → FilterFrameDedup → FilterFaceblur → FilterCrop → Webvis
+VideoIn → FilterFaceblur (blur=2.0) → Webvis
 ```
 
-**Stream 2 (direct processing):**
+**Stream 2 (Kitchen - Analysis & Cropping):**
 ```
-VideoIn → FilterFaceblur → FilterCrop → Webvis
+VideoIn → FilterFaceblur (blur=0.0) → VizCal → FilterCrop → ImageOut + Webvis + GCS
+```
+
+**Stream 3 (Reception - Heavy Blur):**
+```
+VideoIn → FilterFaceblur (blur=10.0) → Webvis
+```
+
+**Deduplication Stream:**
+```
+VideoIn → FilterFrameDedup → GCS
 ```
 
 ## Features
 
-- **Dual Video Input**: Processes two video streams simultaneously
-- **Frame Deduplication**: Reduces redundant frames in one stream using multiple detection methods
-- **Face Detection & Blurring**: Automatically detects and blurs faces in both streams
-- **Face Cropping**: Extracts cropped images from detected faces
-- **Real-time Visualization**: Web interface to view processed streams
+- **Multi-Stream Processing**: Processes three video streams simultaneously with different configurations
+- **Face Detection & Blurring**: Automatically detects and blurs faces with configurable intensities
+- **Camera Analysis**: Real-time camera stability analysis using VizCal filter
+- **Face Cropping**: Extracts cropped images from detected faces with automatic saving
+- **Frame Deduplication**: Reduces redundant frames using hash, motion, and SSIM detection
+- **Cloud Storage**: Automatic upload to Google Cloud Storage with organized folder structure
+- **Real-time Visualization**: Web interface to view all processed streams
+- **Multi-Format Output**: Saves images in PNG format with compression
 
 ## Quick Start
 
@@ -40,22 +57,23 @@ VideoIn → FilterFaceblur → FilterCrop → Webvis
 1. Install OpenFilter and required filters:
 ```bash
 # Install from the openfilter package index
-pip install -r requirements.txt
-
-# Or install from local development versions (if available)
-pip install ../../filter-frame-dedup
-pip install ../../filter-faceblur  
-pip install ../../filter-crop
+make install
 ```
 
-2. Prepare video files:
+2. The video files:
+The video files should live in [./data](./data)
+
+
+1. Set up Google Cloud Storage (optional):
 ```bash
-# Place your video files in the example directory
-cp your_video1.mp4 sample_video1.mp4
-cp your_video2.mp4 sample_video2.mp4
+# Set GCS environment variables
+export GCS_BUCKET="your-bucket-name"
+export GCS_PATH="video-pipeline-demo"
+export SEGMENT_DURATION="0.2"
+export IMAGE_DIRECTORY="./output/sallon"
 ```
 
-3. Test the installation:
+1. Test the installation:
 ```bash
 python test_pipeline.py
 ```
@@ -66,17 +84,34 @@ python test_pipeline.py
 # Basic usage with default video files
 python main.py
 
-# Or specify custom video files
-VIDEO1_PATH=path/to/video1.mp4 VIDEO2_PATH=path/to/video2.mp4 python main.py
+# Or specify custom video files and GCS settings
+VIDEO1_PATH=path/to/sallon.mp4 VIDEO2_PATH=path/to/kitchen.mp4 VIDEO3_PATH=path/to/reception.mp4 \
+GCS_BUCKET=your-bucket GCS_PATH=video-demo python main.py
 ```
 
 ### Viewing Results
 
+#### Web Visualization
 Open your browser and navigate to:
-- **Webvis Interface**: http://localhost:8000
-- **Stream 1**: http://localhost:8000/stream1 (face-blurred frames)
-- **Stream 2**: http://localhost:8000/stream2 (face-blurred frames)
-- **Stream 3**: http://localhost:8000/stream3 (face-blurred frames)
+
+**Main Streams (Port 8000):**
+- **Stream 1 (Sallon)**: http://localhost:8000/stream1 - Face blurred (blur=2.0)
+- **Stream 2 (Kitchen)**: http://localhost:8000/stream2 - Face detection + VizCal analysis
+- **Stream 3 (Reception)**: http://localhost:8000/stream3 - Heavy face blur (blur=10.0)
+
+**Face Crops & Analysis (Port 8001):**
+- **Face Crops**: http://localhost:8001 - All cropped face images
+- **Stream2 Analysis**: http://localhost:8001/stream2_info - Camera stability analysis
+
+#### Local File Outputs
+- **Face Crops**: `./output/face_crops/` - Individual cropped face images (PNG format)
+- **Deduplicated Frames**: `./output/sallon/` - Deduplicated video frames
+
+#### Google Cloud Storage
+If GCS is configured, videos are uploaded to:
+- `gs://{bucket}/{path}/stream1/` - Stream 1 videos
+- `gs://{bucket}/{path}/stream2/` - Stream 2 videos (with analysis)
+- `gs://{bucket}/{path}/stream3/` - Stream 3 videos
 
 ## Configuration
 
@@ -84,80 +119,274 @@ Open your browser and navigate to:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VIDEO1_PATH` | `sample_video1.mp4` | Path to first video file |
-| `VIDEO2_PATH` | `sample_video2.mp4` | Path to second video file |
-| `VIDEO3_PATH` | `sample_video3.mp4` | Path to third video file |
+| `VIDEO1_PATH` | `sample_video1.mp4` | Path to sallon video file |
+| `VIDEO2_PATH` | `sample_video2.mp4` | Path to kitchen video file |
+| `VIDEO3_PATH` | `sample_video3.mp4` | Path to reception video file |
+| `GCS_BUCKET` | `None` | Google Cloud Storage bucket name |
+| `GCS_PATH` | `video-pipeline-demo/deduplicated-frames` | GCS path prefix |
+| `SEGMENT_DURATION` | `0.2` | Video segment duration for GCS upload |
+| `IMAGE_DIRECTORY` | `./output/sallon` | Local directory for images |
+
+#### VizCal Configuration
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FILTER_CALCULATE_CAMERA_STABILITY` | `True` | Enable camera stability analysis |
+| `FILTER_CALCULATE_VIDEO_PROPERTIES` | `True` | Enable video properties calculation |
+| `FILTER_CALCULATE_MOVEMENT` | `False` | Enable movement detection |
+| `FILTER_SHAKE_THRESHOLD` | `5` | Camera shake detection threshold |
+| `FILTER_MOVEMENT_THRESHOLD` | `1.0` | Movement detection threshold |
+| `FILTER_FORWARD_UPSTREAM_DATA` | `True` | Forward data from upstream filters |
+| `FILTER_SHOW_TEXT_OVERLAYS` | `True` | Show analysis overlays on video |
 
 ### Filter Configuration
 
 The pipeline uses the following filter configurations:
+
+#### FilterFaceblur (Per Stream)
+- **Stream 1 (Sallon)**: Blur strength 2.0, face detection enabled
+- **Stream 2 (Kitchen)**: Blur strength 0.0 (detection only), face detection enabled
+- **Stream 3 (Reception)**: Blur strength 10.0, face detection enabled
+- **Detector**: YuNet face detection model
+- **Confidence Threshold**: 0.3 (lower = detect more faces)
+- **Face Coordinates**: Included for cropping
+
+#### FilterCrop
+- **Detection Key**: `detections`
+- **Detection Class Field**: `class`
+- **Detection ROI Field**: `rois`
+- **Output Prefix**: `face_`
+- **Topic Mode**: `all` (processes all topics)
 
 #### FilterFrameDedup
 - **Hash Threshold**: 5 (lower = more sensitive)
 - **Motion Threshold**: 1200 (lower = more sensitive)
 - **SSIM Threshold**: 0.90 (lower = more dissimilar)
 - **Min Time Between Frames**: 1.0 seconds
+- **Save Images**: True (saves to `./output/sallon/`)
+- **Forward Deduped Frames**: True
 
-#### FilterFaceblur
-- **Detector**: YuNet face detection model
-- **Blur Algorithm**: Gaussian blur
-- **Blur Strength**: 2.0 (higher = more blur)
-- **Confidence Threshold**: 0.3 (lower = detect more faces)
+#### VizCal (Stream 2 Only)
+- **Camera Stability**: Enabled (shake threshold: 5)
+- **Video Properties**: Enabled
+- **Movement Detection**: Disabled
+- **Text Overlays**: Enabled
+- **Multi-topic Processing**: Supported
 
-#### FilterCrop
-- **Detection Key**: `face_coordinates`
-- **Output Prefix**: `face_crop_1_` and `face_crop_2_`
-- **Topic Mode**: `main_only`
+#### FilterConnectorGCS
+- **Multiple Sources**: Streams 1, 2, and 3
+- **Organized Output**: Separate folders per stream
+- **Segment Duration**: 0.2 seconds
+- **Debug Mode**: Enabled
 
 ## Output
 
-The pipeline generates several outputs:
+The pipeline generates multiple types of outputs:
 
-1. **Deduplicated Frames**: Saved to `./output/deduped_frames/`
-2. **Web Visualization**: Real-time display of processed streams
-3. **Face Crops**: Individual cropped face images in the web interface
+### 1. Web Visualization
+- **Main Streams**: Real-time display of all three processed streams
+- **Face Crops**: Individual cropped face images with analysis overlays
+- **Camera Analysis**: Real-time camera stability metrics for Stream 2
+
+### 2. Local File Outputs
+- **Face Crops**: `./output/face_crops/` - Individual cropped face images (PNG format)
+- **Deduplicated Frames**: `./output/sallon/` - Deduplicated video frames with timestamps
+
+### 3. Google Cloud Storage (if configured)
+- **Stream 1**: `gs://{bucket}/{path}/stream1/` - Sallon videos (face blurred)
+- **Stream 2**: `gs://{bucket}/{path}/stream2/` - Kitchen videos (with VizCal analysis)
+- **Stream 3**: `gs://{bucket}/{path}/stream3/` - Reception videos (heavily blurred)
+
+### 4. Real-time Analysis Data
+- **Camera Stability**: Shake distance, stability category
+- **Video Properties**: Frame dimensions, FPS, quality metrics
+- **Face Detection**: Bounding boxes, confidence scores
+- **Deduplication Metrics**: Hash similarity, motion detection
 
 ## Pipeline Architecture
 
+
+### Simplified Diagram - High Level
+
+```mermaid
+graph TD
+    %% Video Inputs
+    V1[Video 1<br/>Sallon] --> FD[FilterFrameDedup]
+    V2[Video 2<br/>Kitchen] --> FB2[FilterFaceblur<br/>blur=0.0]
+    V3[Video 3<br/>Reception] --> FB3[FilterFaceblur<br/>blur=10.0]
+    
+    %% Stream 1 Processing
+    FD --> FB1[FilterFaceblur<br/>blur=2.0]
+    FB1 --> WV1[Webvis<br/>Port 8000]
+    
+    %% Stream 2 Processing
+    FB2 --> VC[VizCal<br/>Camera Analysis]
+    VC --> FC[FilterCrop<br/>Face Detection]
+    FC --> IO[ImageOut<br/>Face Crops]
+    FC --> WV2[Webvis<br/>Port 8001]
+    IO --> GCS[FilterConnectorGCS<br/>Cloud Storage]
+    
+    %% Stream 3 Processing
+    FB3 --> WV3[Webvis<br/>Port 8000]
+    
+    %% Deduplication Stream
+    FD --> GCS2[FilterConnectorGCS<br/>Deduplicated Frames]
+    
+    %% Outputs
+    WV1 --> OUT1[Stream 1 Output<br/>Face Blurred]
+    WV2 --> OUT2[Face Crops + Analysis]
+    WV3 --> OUT3[Stream 3 Output<br/>Heavy Blur]
+    GCS --> OUT4[GCS Stream 2<br/>gs://bucket/stream2/]
+    GCS2 --> OUT5[GCS Deduplicated<br/>gs://bucket/deduped/]
+    
+    %% Styling
+    classDef videoInput fill:#e1f5fe
+    classDef filter fill:#f3e5f5
+    classDef output fill:#e8f5e8
+    classDef webvis fill:#fff3e0
+    
+    class V1,V2,V3 videoInput
+    class FD,FB1,FB2,FB3,VC,FC,IO,GCS,GCS2 filter
+    class WV1,WV2,WV3 webvis
+    class OUT1,OUT2,OUT3,OUT4,OUT5 output
 ```
-┌─────────────┐    ┌─────────────────┐    ┌──────────────┐    ┌─────────────┐
-│   Video 1   │───▶│ FilterFrameDedup│───▶│ FilterFaceblur│───▶│ FilterCrop  │
-└─────────────┘    └─────────────────┘    └──────────────┘    └─────────────┘
-                                                                    │
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐             │
-│   Video 2   │───▶│ FilterFaceblur│───▶│ FilterCrop  │─────────────┘
-└─────────────┘    └──────────────┘    └─────────────┘
-                                                           │
-                                                           ▼
-                                                    ┌─────────────┐
-                                                    │   Webvis    │
-                                                    │ (Port 8000) │
-                                                    └─────────────┘
+
+### Filter Pipeline Implementation
+
+```mermaid
+graph TD
+    %% Video Input Filter
+    VI[VideoIn<br/>Port 5550] --> |main,stream2,stream3| FB1[FilterFaceblur_1<br/>Port 5552]
+    VI --> |main,stream2,stream3| FB2[FilterFaceblur_2<br/>Port 5554]
+    VI --> |main,stream2,stream3| FB3[FilterFaceblur_3<br/>Port 5556]
+    VI --> |main,stream2,stream3| FD[FilterFrameDedup<br/>Port 5560]
+    
+    %% Stream 1: main topic
+    FB1 --> |main| WV1[Webvis<br/>Port 8000]
+    FB1 --> |main| GCS1[FilterConnectorGCS<br/>Stream 1]
+    
+    %% Stream 2: stream2 topic
+    FB2 --> |stream2| VC[VizCal<br/>Port 5580]
+    FB2 --> |stream2| FC[FilterCrop<br/>Port 5558]
+    VC --> |stream2| FC
+    FC --> |face_*| IO[ImageOut<br/>Face Crops]
+    FC --> |main,face_*| WV2[Webvis<br/>Port 8001]
+    VC --> |stream2| WV2
+    FB2 --> |stream2| GCS2[FilterConnectorGCS<br/>Stream 2]
+    
+    %% Stream 3: stream3 topic
+    FB3 --> |stream3| WV3[Webvis<br/>Port 8000]
+    FB3 --> |stream3| GCS3[FilterConnectorGCS<br/>Stream 3]
+    
+    %% Deduplication
+    FD --> |main| GCS4[FilterConnectorGCS<br/>Deduplicated]
+    FD --> |main| WV4[Webvis<br/>Port 8001]
+    
+    %% Outputs
+    WV1 --> OUT1[Webvis Stream1<br/>localhost:8000/stream1]
+    WV2 --> OUT2[Webvis Face Crops<br/>localhost:8001]
+    WV3 --> OUT3[Webvis Stream3<br/>localhost:8000/stream3]
+    WV4 --> OUT4[Webvis Deduplicated<br/>localhost:8001]
+    
+    IO --> OUT5[Local Files<br/>./output/face_crops/]
+    FD --> OUT6[Local Files<br/>./output/sallon/]
+    
+    GCS1 --> OUT7[GCS Stream1<br/>gs://bucket/stream1/]
+    GCS2 --> OUT8[GCS Stream2<br/>gs://bucket/stream2/]
+    GCS3 --> OUT9[GCS Stream3<br/>gs://bucket/stream3/]
+    GCS4 --> OUT10[GCS Deduplicated<br/>gs://bucket/deduped/]
+    
+    %% Styling
+    classDef videoIn fill:#e3f2fd
+    classDef faceblur fill:#f3e5f5
+    classDef vizcal fill:#e8f5e8
+    classDef crop fill:#fff3e0
+    classDef dedup fill:#fce4ec
+    classDef webvis fill:#e0f2f1
+    classDef gcs fill:#f1f8e9
+    classDef output fill:#f5f5f5
+    
+    class VI videoIn
+    class FB1,FB2,FB3 faceblur
+    class VC vizcal
+    class FC crop
+    class FD dedup
+    class WV1,WV2,WV3,WV4 webvis
+    class GCS1,GCS2,GCS3,GCS4 gcs
+    class OUT1,OUT2,OUT3,OUT4,OUT5,OUT6,OUT7,OUT8,OUT9,OUT10 output
 ```
 
 ## Use Cases
 
 This pipeline is ideal for:
 
-- **Privacy Protection**: Automatically blur faces in surveillance footage
+- **Multi-Camera Surveillance**: Process multiple camera feeds with different privacy settings
+- **Privacy Protection**: Automatically blur faces with configurable intensities
+- **Camera Analysis**: Monitor camera stability and video quality in real-time
 - **Content Analysis**: Extract keyframes and face regions from video content
 - **Storage Optimization**: Reduce storage by deduplicating similar frames
+- **Cloud Integration**: Automatically upload processed videos to cloud storage
 - **Real-time Processing**: Process live video streams with multiple filters
+- **A/B Testing**: Compare different processing approaches on the same video
+
+## Testing the Demo
+
+### 1. Web Visualization Testing
+- **Main Interface**: Visit http://localhost:8000 to see all three streams
+- **Face Crops**: Visit http://localhost:8001 to see cropped face images
+- **Analysis Overlay**: Check Stream 2 for camera stability analysis overlays
+
+### 2. File Output Testing
+```bash
+# Check face crops are being saved
+ls -la ./output/face_crops/
+
+# Check deduplicated frames
+ls -la ./output/sallon/
+
+# Monitor real-time file creation
+watch -n 1 'ls -la ./output/face_crops/ | tail -5'
+```
+
+### 3. GCS Output Testing (if configured)
+```bash
+# List uploaded videos
+gsutil ls gs://your-bucket/video-pipeline-demo/
+
+# Check specific stream folders
+gsutil ls gs://your-bucket/video-pipeline-demo/stream1/
+gsutil ls gs://your-bucket/video-pipeline-demo/stream2/
+gsutil ls gs://your-bucket/video-pipeline-demo/stream3/
+```
+
+### 4. Performance Monitoring
+- **CPU Usage**: Monitor system resources during processing
+- **Memory Usage**: Check for memory leaks with large videos
+- **Network**: Monitor GCS upload bandwidth usage
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **Video files not found**: Ensure video files exist and paths are correct
-2. **Port conflicts**: Make sure port 8000 is available for Webvis
+2. **Port conflicts**: Make sure ports 8000 and 8001 are available for Webvis
 3. **Memory issues**: Large video files may require more memory
+4. **GCS upload failures**: Check GCS credentials and bucket permissions
+5. **Face detection not working**: Ensure OpenCV models are downloaded
+6. **VizCal analysis missing**: Check that Stream 2 has video content
 
 ### Debug Mode
 
 Enable debug logging by modifying the filter configurations in `main.py`:
 ```python
-"debug": True,  # Enable for FilterFrameDedup and FilterFaceblur
+"debug": True,  # Enable for FilterFrameDedup, FilterFaceblur, and FilterConnectorGCS
 ```
+
+### Performance Tuning
+
+- **Reduce blur strength** for better performance
+- **Increase deduplication thresholds** to reduce processing
+- **Disable VizCal analysis** if not needed
+- **Use smaller video segments** for GCS uploads
 
 ## License
 
