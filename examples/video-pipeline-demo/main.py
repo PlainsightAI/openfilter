@@ -226,7 +226,7 @@ def main():
         (Webvis, {
             "id": "webvis_crops",
             "sources": [
-                "tcp://localhost:5560",  # All topics from FilterCrop (including face crops),
+                "tcp://localhost:5560",  # All topics from FilterDeduped (including face crops),
                 "tcp://localhost:5580;stream2>stream2_info",  # Stream 2 with VizCal analysis
                 "tcp://localhost:5580;stream3>stream3_info",  # Stream 3 with VizCal analysis
             ],
