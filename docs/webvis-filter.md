@@ -128,19 +128,29 @@ GET /camera1/data
 
 #### Data Features
 - **Server-Sent Events**: Real-time data streaming via text/event-stream
-- **Frame Metadata**: Frame information and statistics
+- **JSON Data**: Frame data dictionary as JSON string
 - **Topic-based URLs**: Data from specific topics via URL path
-- **Event Stream**: Real-time data updates
+- **Event Stream**: Real-time data updates every second
 - **API Integration**: Easy integration with web applications
+
+#### Data Format
+The `/data` endpoint streams Server-Sent Events with the following format:
+```
+data: {'meta': {'id': 231, 'ts': 1758745938.571617, 'src': 'file://./data/video-03.mp4', 'src_fps': 25.0, 'detections': [{'class': 'face', 'rois': [421, 133, 503, 236], 'confidence': 0.9186320304870605}, {'class': 'face', 'rois': [754, 8, 826, 132], 'confidence': 0.9028760194778442}]}, 'faces_detected': 2, 'face_coordinates': [{'bbox': [421, 133, 82, 103], 'confidence': 0.9186320304870605}, {'bbox': [754, 8, 72, 124], 'confidence': 0.9028760194778442}], 'face_details': [{'face_id': 0, 'bounding_box': {'x': 421, 'y': 133, 'width': 82, 'height': 103}, 'center': {'x': 462, 'y': 184}, 'confidence': 0.9186320304870605}, {'face_id': 1, 'bounding_box': {'x': 754, 'y': 8, 'width': 72, 'height': 124}, 'center': {'x': 790, 'y': 70}, 'confidence': 0.9028760194778442}]}
+
+```
 
 #### Data Examples
 ```bash
 # Stream main topic data
 curl -N http://localhost:8000/main/data
+# Response: Server-Sent Events with JSON frame data
 
-# Stream camera1 topic data
+# Stream camera1 topic data  
 curl -N http://localhost:8000/camera1/data
+# Response: Server-Sent Events with JSON frame data
 ```
+
 
 ## Topic Management
 
