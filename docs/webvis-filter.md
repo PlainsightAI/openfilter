@@ -38,7 +38,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
+        port=8000,
     )),
 ])
 ```
@@ -46,17 +46,13 @@ Filter.run_multi([
 ### Advanced Configuration with Multiple Options
 
 ```python
-# Web visualization with comprehensive options
+# Web visualization with available options
 Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
+        port=8000,
         host='0.0.0.0',        # Listen on all interfaces
-        title='Pipeline Monitor', # Custom page title
-        topics=['main', 'camera1'], # Specific topics
-        data_endpoint=True,     # Enable data streaming
-        cors_origins=['*'],     # Allow all origins
     )),
 ])
 ```
@@ -68,12 +64,8 @@ You can configure via environment variables:
 ```bash
 export FILTER_SOURCES="tcp://localhost:5550"
 export FILTER_OUTPUTS="tcp://*:5552"
-export FILTER_PORT="8080"
+export FILTER_PORT="8000"
 export FILTER_HOST="0.0.0.0"
-export FILTER_TITLE="Pipeline Monitor"
-export FILTER_TOPICS="main,camera1"
-export FILTER_DATA_ENDPOINT="true"
-export FILTER_CORS_ORIGINS="*"
 ```
 
 ## Web Interface
@@ -83,7 +75,7 @@ export FILTER_CORS_ORIGINS="*"
 The webvis filter provides a web interface accessible at:
 
 ```
-http://localhost:8080/
+http://localhost:8000/
 ```
 
 #### Page Features
@@ -93,143 +85,67 @@ http://localhost:8080/
 - **Responsive Layout**: Adapts to different screen sizes
 - **Auto-refresh**: Automatically updates with new frames
 
-#### Page Structure
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Pipeline Monitor</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        /* Responsive CSS styles */
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Pipeline Monitor</h1>
-        <div class="controls">
-            <select id="topic-select">
-                <option value="main">Main</option>
-                <option value="camera1">Camera 1</option>
-            </select>
-        </div>
-        <div class="image-container">
-            <img id="stream-image" src="/stream?topic=main" alt="Live Stream">
-        </div>
-        <div class="metadata">
-            <div id="frame-info">Frame: 0</div>
-            <div id="timestamp">Timestamp: -</div>
-            <div id="fps">FPS: 0</div>
-        </div>
-    </div>
-    <script>
-        // JavaScript for real-time updates
-    </script>
-</body>
-</html>
-```
 
 ### Image Streaming Endpoint
 
-#### Stream Endpoint (`/stream`)
-Provides real-time image streaming:
+#### Topic Endpoint (`/{topic}`)
+Provides real-time image streaming for specific topics:
 
 ```
-GET /stream?topic=main
-GET /stream?topic=camera1
+GET /
+GET /main
+GET /camera1
 ```
 
 #### Stream Features
 - **Multipart/x-mixed-replace**: Standard MJPEG streaming format
-- **Topic Filtering**: Stream specific topics
+- **Topic-based URLs**: Direct topic access via URL path
 - **JPEG Encoding**: Efficient image compression
 - **Real-time Updates**: Immediate frame updates
 - **Browser Compatibility**: Works with all modern browsers
 
 #### Stream Examples
-```python
-# Stream main topic
-curl -N http://localhost:8080/stream?topic=main
+```bash
+# Stream main topic (default)
+curl -N http://localhost:8000/
+
+# Stream main topic explicitly
+curl -N http://localhost:8000/main
 
 # Stream camera1 topic
-curl -N http://localhost:8080/stream?topic=camera1
+curl -N http://localhost:8000/camera1
 ```
 
 ### Data Streaming Endpoint
 
-#### Data Endpoint (`/data`)
-Provides frame metadata streaming:
+#### Data Endpoint (`/{topic}/data`)
+Provides frame metadata streaming for specific topics:
 
 ```
-GET /data?topic=main
-GET /data?topic=camera1
+GET /main/data
+GET /camera1/data
 ```
 
 #### Data Features
-- **JSON Streaming**: Real-time JSON data
+- **Server-Sent Events**: Real-time data streaming via text/event-stream
 - **Frame Metadata**: Frame information and statistics
-- **Topic Filtering**: Data from specific topics
-- **WebSocket-like**: Real-time data updates
+- **Topic-based URLs**: Data from specific topics via URL path
+- **Event Stream**: Real-time data updates
 - **API Integration**: Easy integration with web applications
 
 #### Data Examples
-```python
+```bash
 # Stream main topic data
-curl -N http://localhost:8080/data?topic=main
+curl -N http://localhost:8000/main/data
 
 # Stream camera1 topic data
-curl -N http://localhost:8080/data?topic=camera1
+curl -N http://localhost:8000/camera1/data
 ```
 
 ## Topic Management
 
-### Topic Configuration
+The webvis filter automatically creates endpoints for any topics that receive data. Topics are discovered dynamically from incoming frames - you cannot configure which topics to include or exclude.
 
-#### Specific Topics
-```python
-topics=['main', 'camera1', 'camera2']  # Only these topics
-topics=None  # All topics (default)
-```
-
-#### Topic Examples
-```python
-# Specific topics only
-Filter.run_multi([
-    (Webvis, dict(
-        sources='tcp://localhost:5550',
-        outputs='tcp://*:5552',
-        port=8080,
-        topics=['main', 'camera1'],  # Only main and camera1
-    )),
-])
-
-# All topics
-Filter.run_multi([
-    (Webvis, dict(
-        sources='tcp://localhost:5550',
-        outputs='tcp://*:5552',
-        port=8080,
-        topics=None,  # All topics
-    )),
-])
-```
-
-### Topic Selection
-
-The web interface provides topic selection:
-
-```javascript
-// Topic selection JavaScript
-function updateTopic() {
-    const topic = document.getElementById('topic-select').value;
-    const image = document.getElementById('stream-image');
-    const dataUrl = document.getElementById('data-url');
-    
-    image.src = `/stream?topic=${topic}`;
-    dataUrl.href = `/data?topic=${topic}`;
-}
-```
 
 ## Usage Examples
 
@@ -247,12 +163,12 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        port=8080,
+        port=8000,
     )),
 ])
 ```
 
-**Behavior:** Displays object detection results in web browser at `http://localhost:8080`.
+**Behavior:** Displays object detection results in web browser at `http://localhost:8000`.
 
 ### Example 2: Multi-Camera Monitoring
 ```python
@@ -266,11 +182,12 @@ Filter.run_multi([
         outputs='tcp://*:5552',
     )),
     (Webvis, dict(
-        sources=['tcp://localhost:5550', 'tcp://localhost:5552'],
+        sources=[
+            'tcp://localhost:5550', 
+            # need to remap the topic, cause 1 main topic is accepted
+            'tcp://localhost:5552;>camera2'], 
         outputs='tcp://*:5554',
-        port=8080,
-        topics=['camera1', 'camera2'],
-        title='Multi-Camera Monitor',
+        port=8000,
     )),
 ])
 ```
@@ -291,9 +208,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        port=8080,
-        data_endpoint=True,  # Enable data streaming
-        title='Face Detection Monitor',
+        port=8000,
     )),
 ])
 ```
@@ -315,9 +230,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        port=8080,
-        data_endpoint=True,
-        title='Debug Monitor',
+        port=8000,
     )),
 ])
 ```
@@ -338,10 +251,8 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        port=8080,
+        port=8000,
         host='0.0.0.0',  # Listen on all interfaces
-        cors_origins=['*'],  # Allow all origins
-        title='Production Monitor',
     )),
 ])
 ```
@@ -358,100 +269,11 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
-        data_endpoint=True,
-        cors_origins=['http://localhost:3000'],  # React app
+        port=8000,
     )),
 ])
 ```
 
-**Behavior:** Provides API endpoints for integration with React applications.
-
-## Web Interface Features
-
-### Responsive Design
-
-The web interface adapts to different screen sizes:
-
-```css
-/* Responsive CSS */
-.container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 20px;
-}
-
-.image-container {
-    text-align: center;
-    margin: 20px 0;
-}
-
-#stream-image {
-    max-width: 100%;
-    height: auto;
-    border: 1px solid #ccc;
-}
-
-@media (max-width: 768px) {
-    .container {
-        padding: 10px;
-    }
-    
-    #stream-image {
-        max-width: 100%;
-    }
-}
-```
-
-### Real-time Updates
-
-JavaScript handles real-time updates:
-
-```javascript
-// Real-time update JavaScript
-let frameCount = 0;
-let lastUpdate = Date.now();
-
-function updateMetadata() {
-    const now = Date.now();
-    const fps = frameCount / ((now - lastUpdate) / 1000);
-    
-    document.getElementById('fps').textContent = `FPS: ${fps.toFixed(1)}`;
-    document.getElementById('frame-info').textContent = `Frame: ${frameCount}`;
-    
-    frameCount++;
-    lastUpdate = now;
-}
-
-// Update metadata every second
-setInterval(updateMetadata, 1000);
-```
-
-### Topic Selection
-
-Dynamic topic selection:
-
-```javascript
-// Topic selection
-function loadTopics() {
-    fetch('/topics')
-        .then(response => response.json())
-        .then(topics => {
-            const select = document.getElementById('topic-select');
-            select.innerHTML = '';
-            
-            topics.forEach(topic => {
-                const option = document.createElement('option');
-                option.value = topic;
-                option.textContent = topic;
-                select.appendChild(option);
-            });
-        });
-}
-
-// Load topics on page load
-document.addEventListener('DOMContentLoaded', loadTopics);
-```
 
 ## API Endpoints
 
@@ -462,93 +284,41 @@ document.addEventListener('DOMContentLoaded', loadTopics);
 - **Purpose**: Main web interface
 - **Response**: HTML page with visualization
 
-#### 2. Stream Endpoint (`/stream`)
+#### 2. Topic Stream Endpoint (`/{topic}`)
 - **Method**: GET
-- **Purpose**: Image streaming
-- **Parameters**: `topic` (optional)
+- **Purpose**: Image streaming for specific topic
+- **Parameters**: `topic` in URL path
 - **Response**: multipart/x-mixed-replace JPEG stream
 
-#### 3. Data Endpoint (`/data`)
+#### 3. Topic Data Endpoint (`/{topic}/data`)
 - **Method**: GET
-- **Purpose**: Frame metadata streaming
-- **Parameters**: `topic` (optional)
-- **Response**: JSON data stream
-
-#### 4. Topics Endpoint (`/topics`)
-- **Method**: GET
-- **Purpose**: List available topics
-- **Response**: JSON array of topic names
-
-#### 5. Health Endpoint (`/health`)
-- **Method**: GET
-- **Purpose**: Health check
-- **Response**: JSON status
+- **Purpose**: Frame metadata streaming for specific topic
+- **Parameters**: `topic` in URL path
+- **Response**: text/event-stream data
 
 ### API Examples
 
-#### Get Available Topics
-```bash
-curl http://localhost:8080/topics
-# Response: ["main", "camera1", "camera2"]
-```
-
 #### Stream Images
 ```bash
-curl -N http://localhost:8080/stream?topic=main
+curl -N http://localhost:8000/main
+# Response: multipart/x-mixed-replace JPEG stream
+
+curl -N http://localhost:8000/camera1
 # Response: multipart/x-mixed-replace JPEG stream
 ```
 
 #### Stream Data
 ```bash
-curl -N http://localhost:8080/data?topic=main
-# Response: JSON data stream
-```
+curl -N http://localhost:8000/main/data
+# Response: text/event-stream data
 
-#### Health Check
-```bash
-curl http://localhost:8080/health
-# Response: {"status": "healthy", "topics": ["main", "camera1"]}
+curl -N http://localhost:8000/camera1/data
+# Response: text/event-stream data
 ```
 
 ## CORS Configuration
 
-### Cross-Origin Resource Sharing
-
-Configure CORS for web integration:
-
-```python
-# Allow all origins
-cors_origins=['*']
-
-# Specific origins
-cors_origins=['http://localhost:3000', 'https://myapp.com']
-
-# No CORS (default)
-cors_origins=None
-```
-
-### CORS Examples
-```python
-# React app integration
-Filter.run_multi([
-    (Webvis, dict(
-        sources='tcp://localhost:5550',
-        outputs='tcp://*:5552',
-        port=8080,
-        cors_origins=['http://localhost:3000'],  # React dev server
-    )),
-])
-
-# Production web app
-Filter.run_multi([
-    (Webvis, dict(
-        sources='tcp://localhost:5550',
-        outputs='tcp://*:5552',
-        port=8080,
-        cors_origins=['https://myapp.com'],  # Production domain
-    )),
-])
-```
+The webvis filter has CORS (Cross-Origin Resource Sharing) hardcoded to allow all origins (`*`). This cannot be configured - all web requests from any domain are allowed by default.
 
 ## Performance Considerations
 
@@ -581,7 +351,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        port=8080,
+        port=8000,
     )),
 ])
 ```
@@ -604,13 +374,13 @@ Filter.run_multi([
 ### Error Examples
 ```python
 # Port already in use
-port=8080  # Error: Port 8080 already in use
+port=8000  # Error: Port 8000 already in use
 
 # Invalid host binding
 host='invalid'  # Error: Invalid host address
 
 # CORS configuration error
-cors_origins=['invalid']  # Error: Invalid CORS origin
+# CORS cannot be configured - it's hardcoded
 ```
 
 ## Debugging and Monitoring
@@ -672,9 +442,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
-        data_endpoint=True,  # Enable data streaming
-        cors_origins=['*'],  # Allow all origins for testing
+        port=8000,
     )),
 ])
 ```
@@ -688,8 +456,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
-        cors_origins=['http://localhost:3000'],  # Custom app
+        port=8000,
     )),
 ])
 ```
@@ -709,14 +476,12 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5554',
-        port=8080,
-        title='Camera 1 Monitor',
+        port=8000,
     )),
     (Webvis, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5556',
         port=8081,
-        title='Camera 2 Monitor',
     )),
 ])
 ```
@@ -728,9 +493,7 @@ Filter.run_multi([
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        port=8080,
-        data_endpoint=True,  # Enable data API
-        cors_origins=['https://myapp.com'],  # Production domain
+        port=8000,
     )),
 ])
 ```
@@ -742,12 +505,8 @@ Filter.run_multi([
 class WebvisConfig(FilterConfig):
     sources: str | list[str] | list[tuple[str, dict[str, Any]]]
     outputs: str | list[str] | list[tuple[str, dict[str, Any]]]
-    port: int
+    port: int | None
     host: str | None
-    title: str | None
-    topics: list[str] | None
-    data_endpoint: bool | None
-    cors_origins: list[str] | None
 ```
 
 ### Webvis
@@ -769,12 +528,7 @@ class Webvis(Filter):
 ```
 
 ### Environment Variables
-- `DEBUG_WEBVIS`: Enable debug logging
 - `FILTER_SOURCES`: Input sources
 - `FILTER_OUTPUTS`: Output destinations
-- `FILTER_PORT`: Web server port
-- `FILTER_HOST`: Web server host
-- `FILTER_TITLE`: Web page title
-- `FILTER_TOPICS`: Target topics
-- `FILTER_DATA_ENDPOINT`: Enable data streaming
-- `FILTER_CORS_ORIGINS`: CORS allowed origins
+- `FILTER_PORT`: Web server port (default: 8000)
+- `FILTER_HOST`: Web server host (default: '0.0.0.0')
