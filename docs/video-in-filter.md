@@ -35,6 +35,7 @@ from openfilter.filter_runtime.filters.video_in import VideoIn
 
 # Simple video file input
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///path/to/video.mp4',
         outputs='tcp://*:5550',
@@ -47,6 +48,7 @@ Filter.run_multi([
 ```python
 # Video input with comprehensive options
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///path/to/video.mp4',
         outputs='tcp://*:5550',
@@ -99,6 +101,7 @@ sources='file:///path/to/video.mov'
 ```python
 # Local file input
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///home/user/videos/sample.mp4',
         outputs='tcp://*:5550',
@@ -108,19 +111,20 @@ Filter.run_multi([
 
 ### 2. Webcam and USB Camera
 
-#### Camera Index Format
+#### Camera URL Format
 ```python
-sources='0'        # Default camera
-sources='1'        # Second camera
-sources='2'        # Third camera
+sources='webcam://0'        # Default camera
+sources='webcam://1'        # Second camera
+sources='webcam://2'        # Third camera
 ```
 
 #### Camera Examples
 ```python
 # Webcam input
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
-        sources='0',  # Default webcam
+        sources='webcam://0',  # Default webcam
         outputs='tcp://*:5550',
         fps=30,
     )),
@@ -128,12 +132,13 @@ Filter.run_multi([
 
 # Multiple cameras
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
-        sources='0',  # Camera 1
+        sources='webcam://0',  # Camera 1
         outputs='tcp://*:5550',
     )),
     (VideoIn, dict(
-        sources='1',  # Camera 2
+        sources='webcam://1',  # Camera 2
         outputs='tcp://*:5552',
     )),
 ])
@@ -151,6 +156,7 @@ sources='rtsp://192.168.1.100:554/stream1'
 ```python
 # IP camera stream
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://admin:password@192.168.1.100:554/stream1',
         outputs='tcp://*:5550',
@@ -160,6 +166,7 @@ Filter.run_multi([
 
 # Multiple RTSP streams
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://camera1.local/stream',
         outputs='tcp://*:5550',
@@ -183,6 +190,7 @@ sources='https://server:port/stream'
 ```python
 # HTTP video stream
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='http://192.168.1.100:8080/video',
         outputs='tcp://*:5550',
@@ -191,6 +199,7 @@ Filter.run_multi([
 
 # HTTPS stream
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='https://streaming.server.com/live',
         outputs='tcp://*:5550',
@@ -210,6 +219,7 @@ sources='s3://my-bucket/videos/sample.mp4'
 ```python
 # S3 video file
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='s3://my-video-bucket/sample.mp4',
         outputs='tcp://*:5550',
@@ -233,6 +243,7 @@ bgr=False  # RGB format (default for many ML frameworks)
 ```python
 # BGR format for OpenCV processing
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///video.mp4',
         outputs='tcp://*:5550',
@@ -273,6 +284,7 @@ loop=False  # Play once (default)
 ```python
 # Continuous video processing
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///short_video.mp4',
         outputs='tcp://*:5550',
@@ -299,6 +311,7 @@ fps=None    # Original video FPS (default)
 ```python
 # Reduce frame rate for performance
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///high_fps_video.mp4',
         outputs='tcp://*:5550',
@@ -335,6 +348,7 @@ resize=None          # No resize (default)
 ```python
 # Resize for performance
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///4k_video.mp4',
         outputs='tcp://*:5550',
@@ -352,6 +366,7 @@ Filter.run_multi([
 ### Example 1: Basic Video File Processing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///path/to/video.mp4',
         outputs='tcp://*:5550',
@@ -372,8 +387,9 @@ Filter.run_multi([
 ### Example 2: Webcam with Real-time Processing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
-        sources='0',  # Default webcam
+        sources='webcam://0',  # Default webcam
         outputs='tcp://*:5550',
         fps=30,
         sync=True,
@@ -395,6 +411,7 @@ Filter.run_multi([
 ### Example 3: IP Camera Monitoring
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://admin:password@192.168.1.100:554/stream1',
         outputs='tcp://*:5550',
@@ -417,13 +434,14 @@ Filter.run_multi([
 ### Example 4: Multi-Camera Setup
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
-        sources='0',  # Camera 1
+        sources='webcam://0',  # Camera 1
         outputs='tcp://*:5550',
         fps=15,
     )),
     (VideoIn, dict(
-        sources='1',  # Camera 2
+        sources='webcam://1',  # Camera 2
         outputs='tcp://*:5552',
         fps=15,
     )),
@@ -444,6 +462,7 @@ Filter.run_multi([
 ### Example 5: Video Analysis with Looping
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///short_video.mp4',
         outputs='tcp://*:5550',
@@ -472,6 +491,7 @@ Filter.run_multi([
 ### Example 6: S3 Video Processing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='s3://my-video-bucket/sample.mp4',
         outputs='tcp://*:5550',
@@ -509,6 +529,7 @@ Filter.run_multi([
 ```python
 # Optimize for performance
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///video.mp4',
         outputs='tcp://*:5550',
@@ -541,7 +562,7 @@ Filter.run_multi([
 sources='file:///nonexistent.mp4'  # Error: File not found
 
 # Invalid camera index
-sources='999'  # Error: Camera not available
+sources='webcam://999'  # Error: Camera not available
 
 # Invalid RTSP URL
 sources='rtsp://invalid.url/stream'  # Error: Connection failed
@@ -603,6 +624,7 @@ export LOG_LEVEL=DEBUG
 ```python
 # Enable comprehensive debugging
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///video.mp4',
         outputs='tcp://*:5550',
@@ -623,6 +645,7 @@ Filter.run_multi([
 ```python
 # Custom video processing pipeline
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///video.mp4',
         outputs='tcp://*:5550',
@@ -646,6 +669,7 @@ sources = [
 ]
 
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources=sources,
         outputs='tcp://*:5550',
@@ -668,6 +692,7 @@ def get_video_config(source):
 # Apply configuration
 config = get_video_config('rtsp://camera.local/stream')
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://camera.local/stream',
         outputs='tcp://*:5550',

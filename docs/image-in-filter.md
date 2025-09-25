@@ -37,6 +37,7 @@ from openfilter.filter_runtime.filters.image_in import ImageIn
 
 # Simple local directory
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path/to/images',
         outputs='tcp://*:5550',
@@ -49,6 +50,7 @@ Filter.run_multi([
 ```python
 # Multiple sources with FPS limiting
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path1;main, s3://bucket/images;cloud',
         outputs='tcp://*:5550',
@@ -153,6 +155,7 @@ The ImageIn filter supports FPS (Frames Per Second) control to limit the rate at
 ```python
 # Global FPS control
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///images',
         outputs='tcp://*:5550',
@@ -162,6 +165,7 @@ Filter.run_multi([
 
 # Per-source FPS control
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///images!maxfps=2.0, s3://bucket/images!maxfps=0.5',
         outputs='tcp://*:5550',
@@ -282,6 +286,7 @@ sources='file:///local/images;main, s3://bucket/images;cloud'
 ```python
 # Optimal settings for dynamic image monitoring
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///watch/folder',
         outputs='tcp://*:5550',
@@ -523,6 +528,7 @@ The ImageIn filter includes comprehensive test coverage and real example scenari
 ### Example 1: Basic Image Processing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path/to/images',
         outputs='tcp://*:5550',
@@ -538,6 +544,7 @@ Filter.run_multi([
 ### Example 2: Continuous Monitoring with FPS Control
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path/to/images',
         outputs='tcp://*:5550',
@@ -555,6 +562,7 @@ Filter.run_multi([
 ### Example 3: Infinite Loop for Demo with FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path/to/images!loop!maxfps=0.5',
         outputs='tcp://*:5550',
@@ -570,6 +578,7 @@ Filter.run_multi([
 ### Example 4: Pattern Filtering with FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///path/to/images!pattern=*.jpg!maxfps=2.0',
         outputs='tcp://*:5550',
@@ -585,6 +594,7 @@ Filter.run_multi([
 ### Example 5: Multiple Sources with Different FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///local/images!maxfps=1.0;main, s3://bucket/images!maxfps=0.5;cloud',
         outputs='tcp://*:5550',
@@ -600,6 +610,7 @@ Filter.run_multi([
 ### Example 6: S3 with Options and FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='s3://my-bucket/images!pattern=*.png!region=us-west-2!maxfps=1.0',
         outputs='tcp://*:5550',
@@ -615,6 +626,7 @@ Filter.run_multi([
 ### Example 7: GCS with Recursive Scanning and FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='gs://my-bucket/images!recursive!pattern=*.jpg!maxfps=0.5',
         outputs='tcp://*:5550',
@@ -630,6 +642,7 @@ Filter.run_multi([
 ### Example 8: Dynamic Image Processing (Real-World Scenario)
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///upload/incoming!pattern=*.jpg!maxfps=1.0',
         outputs='tcp://*:5550',
@@ -938,6 +951,7 @@ This will show detailed information about:
 ### Custom Image Processing Pipeline with FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///images!loop!maxfps=1.0',
         outputs='tcp://*:5550',
@@ -956,6 +970,7 @@ Filter.run_multi([
 ### Multi-Source with Different Topics and FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///local!maxfps=1.0;main, s3://bucket/cloud!maxfps=0.5;cloud',
         outputs='tcp://*:5550',
@@ -969,6 +984,7 @@ Filter.run_multi([
 ### Batch Processing with Exit and FPS
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///batch!maxfps=2.0',
         outputs='tcp://*:5550',

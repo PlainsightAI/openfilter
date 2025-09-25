@@ -33,6 +33,7 @@ from openfilter.filter_runtime.filters.util import Util
 
 # Simple logging utility
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -46,16 +47,19 @@ Filter.run_multi([
 ```python
 # Util filter with logging, delays, and image transforms
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
         log=True,
         sleep=0.1,  # 100ms delay
         maxfps=30,  # Limit to 30 FPS
-        flip=True,  # Flip images horizontally
-        rotate=90,  # Rotate images 90 degrees
-        resize='800x600',  # Resize images
-        draw_boxes=True,  # Draw bounding boxes
+        xforms=[
+            'flipx;main',  # Flip main topic images horizontally
+            'rotcw;main',  # Rotate main topic images 90 degrees clockwise
+            'resize 800x600;main',  # Resize main topic images
+            'box 0+0x0.2x0.2#f00;main',  # Draw red box on main topic
+        ],
     )),
 ])
 ```
@@ -70,10 +74,7 @@ export FILTER_OUTPUTS="tcp://*:5552"
 export FILTER_LOG="true"
 export FILTER_SLEEP="0.1"
 export FILTER_MAXFPS="30"
-export FILTER_FLIP="true"
-export FILTER_ROTATE="90"
-export FILTER_RESIZE="800x600"
-export FILTER_DRAW_BOXES="true"
+export FILTER_XFORMS="flipx;main,rotcw;main,resize 800x600;main"
 ```
 
 ## Operation Types
@@ -139,63 +140,89 @@ maxfps=None  # No limit (default)
 - **Display Synchronization**: Match display refresh rates
 - **Resource Management**: Control resource consumption
 
-### 4. Image Transformations
+### 4. Image Transformations (`xforms`)
 
-The Util filter supports various image transformations:
+The Util filter supports various image transformations through the `xforms` parameter. Each transform is specified as a string with the format `action[parameters];topics`:
 
-#### Flip Operation (`flip`)
+#### Available Transform Actions
+
+**Flip Operations:**
 ```python
-flip=True   # Flip horizontally
-flip=False  # No flip (default)
+xforms=['flipx;main']      # Flip around Y axis (horizontal flip)
+xforms=['flipy;main']      # Flip around X axis (vertical flip)  
+xforms=['flipboth;main']   # Flip both axes (same as 180° rotation)
 ```
 
-#### Rotate Operation (`rotate`)
+**Rotation Operations:**
 ```python
-rotate=90   # Rotate 90 degrees clockwise
-rotate=180  # Rotate 180 degrees
-rotate=270  # Rotate 270 degrees (90 counter-clockwise)
-rotate=None # No rotation (default)
+xforms=['rotcw;main']      # Rotate 90° clockwise
+xforms=['rotccw;main']     # Rotate 90° counter-clockwise
 ```
 
-#### Resize Operation (`resize`)
+**Color Format Operations:**
 ```python
-resize='800x600'    # Resize to 800x600
-resize='1920x1080'  # Resize to 1920x1080
-resize=None         # No resize (default)
+xforms=['swaprgb;main']    # Swap RGB channels (BGR ↔ RGB)
+xforms=['fmtrgb;main']     # Convert to RGB format
+xforms=['fmtbgr;main']     # Convert to BGR format
+xforms=['fmtgray;main']    # Convert to grayscale
 ```
 
-#### Draw Boxes Operation (`draw_boxes`)
+**Resize Operations:**
 ```python
-draw_boxes=True   # Draw bounding boxes
-draw_boxes=False  # No boxes (default)
+xforms=['resize 800x600;main']           # Resize to exact dimensions (preserves aspect)
+xforms=['resize 800+600;main']           # Resize to exact dimensions (ignores aspect)
+xforms=['maxsize 800x600;main']          # Scale down if larger than max size
+xforms=['minsize 800x600;main']          # Scale up if smaller than min size
+xforms=['resize 800x600lin;main']        # With linear interpolation
+xforms=['resize 800x600near;main']       # With nearest neighbor interpolation
+xforms=['resize 800x600cub;main']        # With cubic interpolation
+```
+
+**Box Drawing:**
+```python
+xforms=['box 0+0x0.2x0.2#f00;main']      # Draw red box at (0,0) with size 0.2x0.2
+xforms=['box 0.1+0.1x0.3x0.3#00ff00;main'] # Draw green box with specific position
+```
+
+#### Topic Specification
+
+Transformations can be applied to specific topics or all topics:
+```python
+xforms=['flipx;main']                    # Apply only to 'main' topic
+xforms=['flipx;main,camera1']            # Apply to 'main' and 'camera1' topics
+xforms=['flipx']                         # Apply to all topics (no topic specified)
 ```
 
 ## Topic Filtering
 
-The Util filter supports topic-specific operations:
+The Util filter supports topic-specific operations through the `xforms` parameter:
 
-### Topic Configuration
+### Topic Configuration in XForms
 ```python
 # Apply to specific topics
-topics=['main', 'camera1']  # Only process these topics
+xforms=['flipx;main,camera1']  # Apply flipx to main and camera1 topics
 
-# Apply to all topics (default)
-topics=None  # Process all topics
+# Apply to all topics (no topic specified)
+xforms=['flipx']  # Apply flipx to all topics
 ```
 
 ### Topic-Specific Examples
 ```python
-# Log only main topic
+# Log all topics (log applies to all)
 log=True
-topics=['main']
 
 # Flip only camera images
-flip=True
-topics=['camera1', 'camera2']
+xforms=['flipx;camera1,camera2']
 
 # Resize only detection results
-resize='800x600'
-topics=['detections']
+xforms=['resize 800x600;detections']
+
+# Different operations for different topics
+xforms=[
+    'flipx;camera1',           # Flip camera1
+    'rotcw;camera2',           # Rotate camera2
+    'resize 640x480;detections' # Resize detections
+]
 ```
 
 ## Usage Examples
@@ -203,6 +230,7 @@ topics=['detections']
 ### Example 1: Basic Logging and Monitoring
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file://input.mp4',
         outputs='tcp://*:5550',
@@ -224,6 +252,7 @@ Filter.run_multi([
 ### Example 2: Performance Tuning with Delays
 ```python
 Filter.run_multi([
+    # ... other filters above
     (CameraInput, dict(
         sources='rtsp://camera.url',
         outputs='tcp://*:5550',
@@ -246,6 +275,7 @@ Filter.run_multi([
 ### Example 3: Image Transformations
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///images/',
         outputs='tcp://*:5550',
@@ -253,9 +283,11 @@ Filter.run_multi([
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        flip=True,      # Flip images horizontally
-        rotate=90,      # Rotate 90 degrees
-        resize='800x600',  # Resize to 800x600
+        xforms=[
+            'flipx',              # Flip all images horizontally
+            'rotcw',              # Rotate all images 90 degrees clockwise
+            'resize 800x600',     # Resize all images to 800x600
+        ],
     )),
     (ImageOut, dict(
         sources='tcp://localhost:5552',
@@ -269,6 +301,7 @@ Filter.run_multi([
 ### Example 4: Detection Visualization
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ObjectDetection, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -276,8 +309,7 @@ Filter.run_multi([
     (Util, dict(
         sources='tcp://localhost:5552',
         outputs='tcp://*:5554',
-        draw_boxes=True,  # Draw bounding boxes
-        topics=['main'],  # Only on main topic
+        xforms=['box 0+0x0.2x0.2#f00;main'],  # Draw red box on main topic
     )),
     (ImageOut, dict(
         sources='tcp://localhost:5554',
@@ -291,6 +323,7 @@ Filter.run_multi([
 ### Example 5: Multi-Topic Processing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (MultiSourceInput, dict(
         sources=['camera1', 'camera2', 'camera3'],
         outputs='tcp://*:5550',
@@ -298,14 +331,12 @@ Filter.run_multi([
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        log=True,
-        topics=['camera1', 'camera2'],  # Log only specific cameras
-    )),
-    (Util, dict(
-        sources='tcp://localhost:5552',
-        outputs='tcp://*:5554',
-        resize='640x480',
-        topics=['camera3'],  # Resize only camera3
+        log=True,  # Log all topics
+        xforms=[
+            'flipx;camera1',           # Flip camera1
+            'rotcw;camera2',           # Rotate camera2
+            'resize 640x480;camera3',  # Resize camera3
+        ],
     )),
 ])
 ```
@@ -315,6 +346,7 @@ Filter.run_multi([
 ### Example 6: Debug and Performance Monitoring
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ComplexProcessor, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -338,82 +370,92 @@ Filter.run_multi([
 
 ## Image Transformation Details
 
-### Flip Operation
-The flip operation performs horizontal image flipping:
+### XForms Syntax
 
-```python
-# Before flip
-image = [1, 2, 3, 4, 5, 6, 7, 8]
-
-# After flip
-image = [8, 7, 6, 5, 4, 3, 2, 1]
+The `xforms` parameter accepts a list of transform specifications with the format:
+```
+action[parameters];topic1,topic2,...
 ```
 
-**Use Cases:**
-- **Mirror Effects**: Create mirror images
-- **Camera Correction**: Fix camera orientation
-- **Data Augmentation**: Increase dataset variety
-- **Display Adjustment**: Match display requirements
+Where:
+- `action`: The transform action (flipx, rotcw, resize, etc.)
+- `parameters`: Optional parameters for the action
+- `topic1,topic2`: Optional comma-separated list of topics (if omitted, applies to all topics)
 
-### Rotate Operation
-The rotate operation rotates images by specified degrees:
+### Flip Operations
 
+**flipx** - Flip around Y axis (horizontal flip):
 ```python
-# 90-degree rotation
-rotate=90   # Clockwise rotation
-rotate=270  # Equivalent to -90 degrees (counter-clockwise)
+xforms=['flipx;main']  # Flip main topic horizontally
 ```
 
-**Rotation Matrix:**
-- **90°**: (x, y) → (y, -x)
-- **180°**: (x, y) → (-x, -y)
-- **270°**: (x, y) → (-y, x)
-
-**Use Cases:**
-- **Orientation Correction**: Fix image orientation
-- **Display Rotation**: Match display orientation
-- **Data Augmentation**: Rotate training data
-- **Camera Mounting**: Adjust for camera angle
-
-### Resize Operation
-The resize operation scales images to specified dimensions:
-
+**flipy** - Flip around X axis (vertical flip):
 ```python
-resize='800x600'    # Width x Height
-resize='1920x1080'  # HD resolution
-resize='640x480'    # VGA resolution
+xforms=['flipy;main']  # Flip main topic vertically
 ```
 
-**Resize Methods:**
-- **Bilinear Interpolation**: Smooth scaling
-- **Aspect Ratio**: Maintains proportions
-- **Quality**: Preserves image quality
-
-**Use Cases:**
-- **Performance Optimization**: Reduce processing load
-- **Standardization**: Uniform image sizes
-- **Display Requirements**: Match display resolution
-- **Storage Optimization**: Reduce file sizes
-
-### Draw Boxes Operation
-The draw_boxes operation draws bounding boxes on images:
-
+**flipboth** - Flip both axes (equivalent to 180° rotation):
 ```python
-draw_boxes=True   # Enable box drawing
-draw_boxes=False  # Disable box drawing
+xforms=['flipboth;main']  # Flip main topic both ways
 ```
 
-**Box Drawing Features:**
-- **Detection Boxes**: Draws detection bounding boxes
-- **Color Coding**: Different colors for different classes
-- **Labels**: Optional class labels
-- **Confidence**: Optional confidence scores
+### Rotation Operations
 
-**Use Cases:**
-- **Visualization**: Visualize detection results
-- **Debugging**: Verify detection accuracy
-- **Presentation**: Show results to users
-- **Analysis**: Visual analysis of detections
+**rotcw** - Rotate 90° clockwise:
+```python
+xforms=['rotcw;main']  # Rotate main topic clockwise
+```
+
+**rotccw** - Rotate 90° counter-clockwise:
+```python
+xforms=['rotccw;main']  # Rotate main topic counter-clockwise
+```
+
+### Color Format Operations
+
+**swaprgb** - Swap RGB channels (BGR ↔ RGB):
+```python
+xforms=['swaprgb;main']  # Swap color channels for main topic
+```
+
+**fmtrgb**, **fmtbgr**, **fmtgray** - Convert to specific color formats:
+```python
+xforms=['fmtrgb;main']   # Convert to RGB format
+xforms=['fmtbgr;main']   # Convert to BGR format  
+xforms=['fmtgray;main']  # Convert to grayscale
+```
+
+### Resize Operations
+
+**resize** - Resize to exact dimensions:
+```python
+xforms=['resize 800x600;main']     # Preserve aspect ratio
+xforms=['resize 800+600;main']     # Ignore aspect ratio
+xforms=['resize 800x600lin;main']  # With linear interpolation
+```
+
+**maxsize** - Scale down if larger than specified size:
+```python
+xforms=['maxsize 800x600;main']  # Scale down if larger than 800x600
+```
+
+**minsize** - Scale up if smaller than specified size:
+```python
+xforms=['minsize 800x600;main']  # Scale up if smaller than 800x600
+```
+
+### Box Drawing
+
+**box** - Draw solid color box with relative coordinates:
+```python
+xforms=['box 0+0x0.2x0.2#f00;main']  # Red box at (0,0) with size 0.2x0.2
+xforms=['box 0.1+0.1x0.3x0.3#00ff00;main']  # Green box at (0.1,0.1) with size 0.3x0.3
+```
+
+Box format: `x+yxwidthxheight[#color]`
+- Coordinates and sizes are relative (0.0 to 1.0)
+- Color is optional RGB hex (3 or 6 digits)
+- If no color specified, uses black
 
 ## Performance Considerations
 
@@ -439,13 +481,14 @@ draw_boxes=False  # Disable box drawing
 ```python
 # Optimize for performance
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
         log=False,        # Disable logging for production
         sleep=None,       # No delays
         maxfps=30,        # Reasonable frame rate limit
-        resize='640x480', # Smaller images for faster processing
+        xforms=['resize 640x480'], # Smaller images for faster processing
     )),
 ])
 ```
@@ -466,11 +509,14 @@ Filter.run_multi([
 
 ### Error Examples
 ```python
-# Invalid resize format
-resize='invalid'  # Error: Invalid resize format
+# Invalid xforms format
+xforms=['invalid_action;main']  # Error: Invalid xform action
 
-# Invalid rotation angle
-rotate=45  # Error: Only 90, 180, 270 degrees supported
+# Invalid resize format
+xforms=['resize invalid;main']  # Error: Invalid size format
+
+# Invalid rotation (only 90° increments supported)
+xforms=['rotate 45;main']  # Error: Use rotcw or rotccw for 90° rotations
 
 # Invalid sleep value
 sleep=-1  # Error: Sleep cannot be negative
@@ -532,6 +578,7 @@ export LOG_LEVEL=DEBUG
 ```python
 # Enable comprehensive debugging
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -548,12 +595,15 @@ Filter.run_multi([
 ```python
 # Combine multiple transformations
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        flip=True,
-        rotate=90,
-        resize='800x600',
+        xforms=[
+            'flipx',
+            'rotcw',
+            'resize 800x600',
+        ],
     )),
 ])
 ```
@@ -562,17 +612,14 @@ Filter.run_multi([
 ```python
 # Different operations for different topics
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
-        log=True,
-        topics=['main'],  # Log only main topic
-    )),
-    (Util, dict(
-        sources='tcp://localhost:5552',
-        outputs='tcp://*:5554',
-        resize='640x480',
-        topics=['camera1', 'camera2'],  # Resize only cameras
+        log=True,  # Log all topics
+        xforms=[
+            'resize 640x480;camera1,camera2',  # Resize only cameras
+        ],
     )),
 ])
 ```
@@ -581,6 +628,7 @@ Filter.run_multi([
 ```python
 # Profile processing performance
 Filter.run_multi([
+    # ... other filters above
     (Util, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -598,35 +646,24 @@ Filter.run_multi([
 class UtilConfig(FilterConfig):
     sources: str | list[str] | list[tuple[str, dict[str, Any]]]
     outputs: str | list[str] | list[tuple[str, dict[str, Any]]]
-    log: bool | None
+    log: bool | str | None
     sleep: float | None
-    maxfps: int | None
-    flip: bool | None
-    rotate: int | None
-    resize: str | None
-    draw_boxes: bool | None
-    topics: list[str] | None
+    maxfps: float | None
+    xforms: str | list[str | XForm] | None
 ```
 
 ### Util
 ```python
 class Util(Filter):
-    FILTER_TYPE = 'Processing'
+    FILTER_TYPE = 'System'
     
     @classmethod
     def normalize_config(cls, config)
-    def init(self, config)
     def setup(self, config)
-    def shutdown(self)
     def process(self, frames)
-    def log_frame(self, frame)
-    def apply_delay(self, frame)
-    def apply_fps_limit(self, frame)
-    def apply_transforms(self, frame)
-    def flip_image(self, image)
-    def rotate_image(self, image, angle)
-    def resize_image(self, image, size)
-    def draw_boxes(self, image, detections)
+    def execute_xforms(self, topic_xform)
+    def execute_xform_size(self, xform, frame)
+    def execute_xform_box(self, xform, frame)
 ```
 
 ### Environment Variables
@@ -636,8 +673,4 @@ class Util(Filter):
 - `FILTER_LOG`: Enable frame logging
 - `FILTER_SLEEP`: Processing delay in seconds
 - `FILTER_MAXFPS`: Maximum frame rate
-- `FILTER_FLIP`: Enable image flipping
-- `FILTER_ROTATE`: Image rotation angle
-- `FILTER_RESIZE`: Image resize dimensions
-- `FILTER_DRAW_BOXES`: Enable box drawing
-- `FILTER_TOPICS`: Target topics for operations
+- `FILTER_XFORMS`: Comma-separated list of transforms

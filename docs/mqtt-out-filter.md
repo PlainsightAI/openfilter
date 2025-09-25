@@ -35,6 +35,7 @@ from openfilter.filter_runtime.filters.mqtt_out import MQTTOut
 
 # Simple MQTT publishing
 Filter.run_multi([
+    # ... other filters above
     (MQTTOut, dict(
         sources='tcp://localhost:5550',
         outputs='mqtt://localhost:1883/my_base_topic',
@@ -47,6 +48,7 @@ Filter.run_multi([
 ```python
 # Complex topic mapping with QoS and retention
 Filter.run_multi([
+    # ... other filters above
     (MQTTOut, dict(
         sources='tcp://localhost:5550',
         broker_host='mqtt.example.com',
@@ -247,6 +249,7 @@ interval=2.0  # Sample and publish every 2 seconds
 ### Example 1: Basic Image Publishing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file://input.mp4',
         outputs='tcp://*:5550',
@@ -264,6 +267,7 @@ Filter.run_multi([
 ### Example 2: Sensor Data Publishing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (REST, dict(
         sources='http://localhost:8000',
         outputs='tcp://*:5550',
@@ -286,6 +290,7 @@ Filter.run_multi([
 ### Example 3: Object Detection Results
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ObjectDetectionFilter, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -308,6 +313,7 @@ Filter.run_multi([
 ### Example 4: Multi-Camera Setup
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file://camera1.mp4;cam1, file://camera2.mp4;cam2',
         outputs='tcp://*:5550',
@@ -330,6 +336,7 @@ Filter.run_multi([
 ### Example 5: Configuration and Status
 ```python
 Filter.run_multi([
+    # ... other filters above
     (SystemMonitor, dict(
         sources='internal://system',
         outputs='tcp://*:5550',
@@ -353,6 +360,7 @@ Filter.run_multi([
 ### Example 6: Alert System
 ```python
 Filter.run_multi([
+    # ... other filters above
     (AnomalyDetection, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -463,6 +471,103 @@ export DEBUG_MQTT=true
 - **Message Sizes**: Track payload sizes
 
 ## Advanced Usage
+
+### Ephemeral Sources for Non-Blocking Processing
+
+The MQTT-out filter supports **ephemeral sources** using the `?` and `??` syntax. This is particularly useful for monitoring, metrics collection, and side-channel processing without affecting the main pipeline performance.
+
+#### Single Ephemeral (`?`)
+```python
+Filter.run_multi([
+    # ... other filters above
+    (MQTTOut, dict(
+        sources='tcp://localhost:5550?;main',  # Single ? for ephemeral connection
+        outputs='mqtt://localhost:1883/monitoring',
+        mappings=['main/data > status!qos=2'],
+        interval=5,  # Sample every 5 seconds
+    )),
+])
+```
+
+**Behavior:**
+- Does **not participate** in frame synchronization
+- Can request frames without blocking the main pipeline
+- Messages may be dropped if processing is too slow
+- Perfect for monitoring, logging, or side-channel analysis
+
+#### Doubly Ephemeral (`??`)
+```python
+Filter.run_multi([
+    # ... other filters above
+    (MQTTOut, dict(
+        sources=[
+            'tcp://localhost:6550?? ; _metrics > m_vidin',     # Doubly ephemeral for metrics
+            'tcp://localhost:6560?? ; _metrics > m_split',     # No upstream notification
+            'tcp://localhost:5550?? ; main > frames!qos=0',    # Silent monitoring
+        ],
+        outputs='mqtt://localhost:1883/metrics',
+        mappings=[
+            'm_vidin/data > m_vidin',
+            'm_split/data > m_split', 
+            'frames/data > frames',
+        ],
+        interval=10,  # Sample every 10 seconds
+    )),
+])
+```
+
+**Behavior:**
+- **Silent listener** - doesn't even notify upstream of its existence
+- No flow control or synchronization
+- Ideal for metrics collection, debugging, or passive monitoring
+- Never affects upstream filter performance
+
+#### Use Cases
+
+**1. Metrics Collection**
+```python
+# Collect system metrics without affecting video processing
+Filter.run_multi([
+    # ... other filters above
+    (MQTTOut, dict(
+        sources='tcp://localhost:5550??;_metrics',  # Silent metrics collection
+        outputs='mqtt://localhost:1883/system',
+        mappings=['_metrics/data > metrics!retain=true'],
+        interval=5,
+    )),
+])
+```
+
+**2. Side-Channel Analysis**
+```python
+# Process expensive AI analysis without slowing main pipeline
+Filter.run_multi([
+    # ... other filters above
+    (MQTTOut, dict(
+        sources='tcp://localhost:5550?;main',  # Ephemeral for slow processing
+        outputs='mqtt://localhost:1883/analysis',
+        mappings=['main/image > ai_input!qos=0'],
+        interval=2,  # Lower frequency to handle slow processing
+    )),
+])
+```
+
+**3. Debug Monitoring**
+```python
+# Monitor pipeline without affecting production flow
+Filter.run_multi([
+    # ... other filters above
+    (MQTTOut, dict(
+        sources='tcp://localhost:5550??;*',  # Silent monitoring of all topics
+        outputs='mqtt://localhost:1883/debug',
+        mappings=[
+            '*/data > debug_data!qos=0',
+            '*/image > debug_frames!qos=0',
+        ],
+        interval=1,  # High frequency for debugging
+    )),
+])
+```
 
 ### Custom Serialization
 ```python

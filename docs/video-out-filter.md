@@ -1,27 +1,27 @@
 # VideoOut Filter
 
-The VideoOut filter is an output filter for OpenFilter that writes incoming Frame images to video files or RTSP streams. It supports segmented file output, adaptive FPS control, and various video encoding parameters. The filter uses the `vidgear` library for robust video writing and streaming capabilities.
+The VideoOut filter is an output filter for OpenFilter that writes incoming Frame images to video files or RTSP streams. It supports segmented file output by time, adaptive FPS control, and various video encoding parameters through the `params` dictionary. The filter uses the `vidgear` library for robust video writing and streaming capabilities.
+
+> Note: THIS IS NOT A RTSP SERVER. Keep in mind that when using RTSP stream as an output you will still need to use a RTSP server such as `mediamtx`.
 
 ## Overview
 
 The VideoOut filter is designed to handle video output scenarios where you need to:
 - Write processed images to video files in various formats
 - Stream video to RTSP endpoints for live viewing
-- Create segmented video files for organized storage
-- Control video encoding parameters (quality, bitrate, codec)
+- Create segmented video files based on time duration
+- Control video encoding parameters via the `params` dictionary
 - Handle adaptive frame rate based on input
 - Support multiple output formats (MP4, AVI, MOV, etc.)
-- Manage video file rotation and cleanup
 - Stream to multiple RTSP clients simultaneously
 
 ## Key Features
 
 - **Multiple Output Formats**: MP4, AVI, MOV, MKV, WebM
 - **RTSP Streaming**: Live video streaming to RTSP endpoints
-- **Segmented Output**: Automatic video file segmentation
-- **Adaptive FPS**: Dynamic frame rate adjustment
-- **Video Encoding**: Configurable codec and quality settings
-- **File Management**: Automatic file rotation and cleanup
+- **Time-based Segmentation**: Automatic video file segmentation by time (in minutes)
+- **Adaptive FPS**: Dynamic frame rate adjustment based on input
+- **Video Encoding**: Configurable encoding parameters via `params` dictionary
 - **Multi-Stream Support**: Stream to multiple RTSP clients
 - **Error Recovery**: Robust error handling and recovery
 
@@ -35,6 +35,7 @@ from openfilter.filter_runtime.filters.video_out import VideoOut
 
 # Simple video file output
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///path/to/output.mp4',
@@ -47,16 +48,16 @@ Filter.run_multi([
 ```python
 # Video output with comprehensive options
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///path/to/output.mp4',
+        outputs='file:///path/to/output.mp4!segtime=1',  # 1-minute segments
         fps=30,             # Output 30 FPS
-        codec='libx264',    # H.264 codec
-        bitrate='2M',       # 2 Mbps bitrate
-        crf=23,             # Constant Rate Factor
-        preset='medium',    # Encoding preset
-        segment_duration=60, # 60-second segments
-        max_files=10,       # Keep 10 files
+        params={
+            'crf': 23,           # Constant Rate Factor (quality)
+            'preset': 'medium',  # Encoding preset
+            'bitrate': '2M',     # 2 Mbps bitrate
+        }
     )),
 ])
 ```
@@ -66,15 +67,10 @@ Filter.run_multi([
 You can configure via environment variables:
 
 ```bash
-export FILTER_SOURCES="tcp://localhost:5550"
-export FILTER_OUTPUTS="file:///path/to/output.mp4"
-export FILTER_FPS="30"
-export FILTER_CODEC="libx264"
-export FILTER_BITRATE="2M"
-export FILTER_CRF="23"
-export FILTER_PRESET="medium"
-export FILTER_SEGMENT_DURATION="60"
-export FILTER_MAX_FILES="10"
+export VIDEO_OUT_BGR="true"           # BGR format (default: true)
+export VIDEO_OUT_FPS="30"             # Default FPS (default: 15)
+export VIDEO_OUT_SEGTIME="1"          # Default segment time in minutes
+export VIDEO_OUT_PARAMS='{"crf": 23}' # Default encoding parameters
 ```
 
 ## Output Destinations
@@ -99,6 +95,7 @@ outputs='file:///path/to/output.mov'
 ```python
 # Local file output
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///home/user/videos/output.mp4',
@@ -119,6 +116,7 @@ outputs='rtsp://192.168.1.100:554/live'
 ```python
 # RTSP streaming
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='rtsp://192.168.1.100:554/live',
@@ -132,56 +130,66 @@ Filter.run_multi([
 
 #### Segment Configuration
 ```python
-segment_duration=60  # 60-second segments
-segment_duration=300 # 5-minute segments
-segment_duration=None # No segmentation
+# Using segtime in output string (in minutes)
+outputs='file:///output.mp4!segtime=1'    # 1-minute segments
+outputs='file:///output.mp4!segtime=5'    # 5-minute segments
+outputs='file:///output.mp4'              # No segmentation
+
+# Or using segtime parameter
+segtime=1    # 1-minute segments
+segtime=5    # 5-minute segments  
+segtime=None # No segmentation
 ```
 
 #### Segment Examples
 ```python
 # Segmented video output
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///videos/segment_{segment_number}.mp4',
-        segment_duration=60,  # 60-second segments
-        max_files=10,         # Keep 10 files
+        outputs='file:///videos/recording_%Y%m%d_%H%M%S.mp4!segtime=1',  # 1-minute segments
+        fps=30,
     )),
 ])
 ```
 
 ## Video Encoding Options
 
-### Codec Selection (`codec`)
+### Encoding Parameters (`params`)
 
-Controls the video codec used for encoding:
+All video encoding parameters are controlled through the `params` dictionary:
 
 ```python
-codec='libx264'  # H.264 (default)
-codec='libx265'  # H.265 (HEVC)
-codec='libvpx'   # VP8
-codec='libvpx-vp9' # VP9
+params={
+    'crf': 23,           # Constant Rate Factor (0=best quality, 51=worst)
+    'preset': 'medium',  # Encoding preset (ultrafast, fast, medium, slow, veryslow)
+    'bitrate': '2M',     # Target bitrate
+    'pix_fmt': 'yuv420p', # Pixel format
+    'g': 50,             # Group of pictures (GOP) size
+    'vf': 'scale=1280:720' # Video filters
+}
 ```
 
 #### Codec Examples
 ```python
 # H.264 encoding
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
-        codec='libx264',
-        crf=23,
+        params={'crf': 23, 'preset': 'medium'},
     )),
 ])
 
 # H.265 encoding for better compression
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
-        codec='libx265',
-        crf=28,
+        params={'crf': 28, 'preset': 'slow'},
     )),
 ])
 ```
@@ -192,49 +200,49 @@ Filter.run_multi([
 Controls video quality and file size:
 
 ```python
-crf=18  # High quality, large file
-crf=23  # Good quality, balanced (default)
-crf=28  # Lower quality, smaller file
+params={'crf': 18}  # High quality, large file
+params={'crf': 23}  # Good quality, balanced
+params={'crf': 28}  # Lower quality, smaller file
 ```
 
 #### Bitrate Control (`bitrate`)
 Controls target bitrate:
 
 ```python
-bitrate='1M'   # 1 Mbps
-bitrate='2M'   # 2 Mbps
-bitrate='5M'   # 5 Mbps
+params={'bitrate': '1M'}   # 1 Mbps
+params={'bitrate': '2M'}   # 2 Mbps
+params={'bitrate': '5M'}   # 5 Mbps
 ```
 
 #### Quality Examples
 ```python
 # High quality output
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///high_quality.mp4',
-        crf=18,
-        preset='slow',  # Slower encoding for better quality
+        params={'crf': 18, 'preset': 'slow'},  # Slower encoding for better quality
     )),
 ])
 
 # Balanced quality and size
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///balanced.mp4',
-        crf=23,
-        preset='medium',
+        params={'crf': 23, 'preset': 'medium'},
     )),
 ])
 
 # Small file size
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///small.mp4',
-        crf=28,
-        bitrate='500k',
+        params={'crf': 28, 'bitrate': '500k'},
     )),
 ])
 ```
@@ -244,32 +252,32 @@ Filter.run_multi([
 Controls encoding speed vs. quality trade-off:
 
 ```python
-preset='ultrafast'  # Fastest encoding, lower quality
-preset='fast'       # Fast encoding
-preset='medium'     # Balanced (default)
-preset='slow'       # Slower encoding, better quality
-preset='veryslow'   # Slowest encoding, best quality
+params={'preset': 'ultrafast'}  # Fastest encoding, lower quality
+params={'preset': 'fast'}       # Fast encoding
+params={'preset': 'medium'}     # Balanced (default)
+params={'preset': 'slow'}       # Slower encoding, better quality
+params={'preset': 'veryslow'}   # Slowest encoding, best quality
 ```
 
 #### Preset Examples
 ```python
 # Fast encoding for real-time processing
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///fast.mp4',
-        preset='fast',
-        crf=25,
+        params={'preset': 'fast', 'crf': 25},
     )),
 ])
 
 # High quality encoding
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///quality.mp4',
-        preset='slow',
-        crf=18,
+        params={'preset': 'slow', 'crf': 18},
     )),
 ])
 ```
@@ -284,13 +292,15 @@ Controls the output video frame rate:
 fps=30      # 30 FPS output
 fps=60      # 60 FPS output
 fps=15      # 15 FPS output
-fps=None    # Adaptive FPS (default)
+fps=True    # Adaptive FPS (recommended)
+fps=None    # Uses environment variable default (15)
 ```
 
 #### FPS Examples
 ```python
 # Fixed 30 FPS output
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
@@ -298,98 +308,98 @@ Filter.run_multi([
     )),
 ])
 
-# Adaptive FPS based on input
+# Adaptive FPS based on input (recommended)
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///adaptive.mp4',
-        fps=None,  # Adaptive FPS
+        fps=True,  # Adaptive FPS
     )),
 ])
 ```
 
 ### Adaptive FPS
 
-When `fps=None`, the filter adapts to input frame rate:
+When `fps=True`, the filter adapts to input frame rate by tracking the rate at which frames are written and setting this rate for each new file segment or restarting the RTSP stream if the rate strays too far from what the stream is set to.
 
 ```python
 # Adaptive FPS examples
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///adaptive.mp4',
-        fps=None,  # Will match input FPS
+        outputs='file:///adaptive.mp4!segtime=1',  # Requires segmentation for adaptive FPS
+        fps=True,  # Will match input FPS
     )),
 ])
 ```
+
+**Note:** Adaptive FPS only works for files if they are output in segments (`segtime` specified), otherwise there will never be an opportunity to set a more correct framerate than the initial guess.
 
 ## File Management
 
 ### Segment Management
 
-#### Segment Duration (`segment_duration`)
-Controls how long each video segment should be:
+#### Segment Duration (`segtime`)
+Controls how long each video segment should be (in **minutes**):
 
 ```python
-segment_duration=60   # 60-second segments
-segment_duration=300  # 5-minute segments
-segment_duration=3600 # 1-hour segments
-segment_duration=None # No segmentation
-```
-
-#### Maximum Files (`max_files`)
-Controls how many segment files to keep:
-
-```python
-max_files=10   # Keep 10 files
-max_files=50   # Keep 50 files
-max_files=None # Keep all files
+segtime=1      # 1-minute segments
+segtime=5      # 5-minute segments
+segtime=60     # 1-hour segments
+segtime=None   # No segmentation
 ```
 
 #### Segment Examples
 ```python
-# 1-minute segments, keep 10 files
+# 1-minute segments
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///segments/segment_{segment_number}.mp4',
-        segment_duration=60,
-        max_files=10,
+        outputs='file:///segments/recording_%Y%m%d_%H%M%S.mp4!segtime=1',
+        fps=30,
     )),
 ])
 
-# 5-minute segments, keep 20 files
+# 5-minute segments
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///segments/segment_{segment_number}.mp4',
-        segment_duration=300,
-        max_files=20,
+        outputs='file:///segments/recording_%Y%m%d_%H%M%S.mp4!segtime=5',
+        fps=30,
     )),
 ])
 ```
+
+**Note:** The VideoOut filter does **not** provide automatic file rotation or `max_files` functionality. You would need to implement this separately if needed.
 
 ### File Rotation
 
-Automatic file rotation based on segments:
+The VideoOut filter creates new files based on the `segtime` parameter and filename templating:
 
 ```python
-# Automatic file rotation
+# Automatic file rotation with timestamped filenames
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///videos/recording_{timestamp}.mp4',
-        segment_duration=3600,  # 1-hour segments
-        max_files=24,           # Keep 24 hours of recordings
+        outputs='file:///videos/recording_%Y%m%d_%H%M%S.mp4!segtime=60',  # 1-hour segments
+        fps=30,
     )),
 ])
 ```
+
+**Filename templating:** You can use `strftime` formatting in the output filename. The filter will also append a segment index (e.g., `_000001`, `_000002`) to distinguish segments.
 
 ## Usage Examples
 
 ### Example 1: Basic Video Recording
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -411,6 +421,7 @@ Filter.run_multi([
 ### Example 2: RTSP Live Streaming
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='0',  # Webcam
         outputs='tcp://*:5550',
@@ -419,8 +430,7 @@ Filter.run_multi([
         sources='tcp://localhost:5550',
         outputs='rtsp://192.168.1.100:554/live',
         fps=30,
-        codec='libx264',
-        bitrate='2M',
+        params={'bitrate': '2M'},
     )),
 ])
 ```
@@ -430,25 +440,25 @@ Filter.run_multi([
 ### Example 3: Segmented Recording
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://camera.local/stream',
         outputs='tcp://*:5550',
     )),
     (VideoOut, dict(
         sources='tcp://localhost:5550',
-        outputs='file:///recordings/segment_{segment_number}.mp4',
-        segment_duration=300,  # 5-minute segments
-        max_files=12,          # Keep 1 hour of recordings
+        outputs='file:///recordings/recording_%Y%m%d_%H%M%S.mp4!segtime=5',  # 5-minute segments
         fps=15,
     )),
 ])
 ```
 
-**Behavior:** Records camera stream in 5-minute segments, keeping 1 hour of recordings.
+**Behavior:** Records camera stream in 5-minute segments with timestamped filenames.
 
 ### Example 4: High Quality Recording
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -460,19 +470,21 @@ Filter.run_multi([
     (VideoOut, dict(
         sources='tcp://localhost:5552',
         outputs='file:///high_quality.mp4',
-        codec='libx265',  # H.265 for better compression
-        crf=18,           # High quality
-        preset='slow',    # Slow encoding for best quality
         fps=30,
+        params={
+            'crf': 18,        # High quality
+            'preset': 'slow', # Slow encoding for best quality
+        }
     )),
 ])
 ```
 
-**Behavior:** Creates high-quality H.265 encoded video.
+**Behavior:** Creates high-quality encoded video with slow preset for best quality.
 
 ### Example 5: Multi-Stream Output
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='0',  # Webcam
         outputs='tcp://*:5550',
@@ -486,7 +498,7 @@ Filter.run_multi([
         sources='tcp://localhost:5550',
         outputs='rtsp://192.168.1.100:554/live',
         fps=15,  # Lower FPS for streaming
-        bitrate='1M',
+        params={'bitrate': '1M'},
     )),
 ])
 ```
@@ -496,6 +508,7 @@ Filter.run_multi([
 ### Example 6: Surveillance System
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://camera.local/stream',
         outputs='tcp://*:5550',
@@ -506,17 +519,14 @@ Filter.run_multi([
     )),
     (VideoOut, dict(
         sources='tcp://localhost:5552',
-        outputs='file:///surveillance/motion_{timestamp}.mp4',
-        segment_duration=60,  # 1-minute segments
-        max_files=1440,       # Keep 24 hours of recordings
+        outputs='file:///surveillance/motion_%Y%m%d_%H%M%S.mp4!segtime=1',  # 1-minute segments
         fps=15,
-        codec='libx264',
-        crf=25,
+        params={'crf': 25},
     )),
 ])
 ```
 
-**Behavior:** Records motion-detected video in 1-minute segments for 24 hours.
+**Behavior:** Records motion-detected video in 1-minute segments with timestamped filenames.
 
 ## Performance Considerations
 
@@ -542,13 +552,15 @@ Filter.run_multi([
 ```python
 # Optimize for performance
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
-        codec='libx264',  # Faster codec
-        preset='fast',    # Faster preset
-        crf=25,           # Balanced quality
         fps=15,           # Lower frame rate
+        params={
+            'preset': 'fast',    # Faster preset
+            'crf': 25,           # Balanced quality
+        }
     )),
 ])
 ```
@@ -571,11 +583,11 @@ Filter.run_multi([
 
 ### Error Examples
 ```python
-# Invalid codec
-codec='invalid_codec'  # Error: Unsupported codec
+# Invalid parameters
+params={'invalid_param': 'value'}  # Error: Unknown parameter
 
-# Invalid bitrate
-bitrate='invalid'  # Error: Invalid bitrate format
+# Invalid bitrate format
+params={'bitrate': 'invalid'}  # Error: Invalid bitrate format
 
 # Permission denied
 outputs='file:///root/output.mp4'  # Error: Permission denied
@@ -589,7 +601,6 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # Enable video output debugging
-export DEBUG_VIDEO_OUT=true
 export LOG_LEVEL=DEBUG
 ```
 
@@ -637,12 +648,15 @@ export LOG_LEVEL=DEBUG
 ```python
 # Enable comprehensive debugging
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
         fps=15,      # Lower FPS for debugging
-        crf=25,      # Balanced quality
-        preset='fast', # Faster encoding
+        params={
+            'crf': 25,      # Balanced quality
+            'preset': 'fast', # Faster encoding
+        }
     )),
 ])
 ```
@@ -653,6 +667,7 @@ Filter.run_multi([
 ```python
 # Custom video processing with output
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -664,8 +679,7 @@ Filter.run_multi([
     (VideoOut, dict(
         sources='tcp://localhost:5552',
         outputs='file:///processed.mp4',
-        codec='libx265',
-        crf=20,
+        params={'crf': 20},
     )),
 ])
 ```
@@ -675,15 +689,16 @@ Filter.run_multi([
 # Dynamic configuration based on input
 def get_output_config(input_source):
     if 'camera' in input_source:
-        return {'fps': 30, 'bitrate': '2M'}
+        return {'fps': 30, 'params': {'bitrate': '2M'}}
     elif 'file' in input_source:
-        return {'fps': None, 'crf': 23}
+        return {'fps': True, 'params': {'crf': 23}}
     else:
-        return {'fps': 15, 'crf': 25}
+        return {'fps': 15, 'params': {'crf': 25}}
 
 # Apply configuration
 config = get_output_config('camera')
 Filter.run_multi([
+    # ... other filters above
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output.mp4',
@@ -696,6 +711,7 @@ Filter.run_multi([
 ```python
 # Output in multiple formats
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -703,14 +719,12 @@ Filter.run_multi([
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output_h264.mp4',
-        codec='libx264',
-        crf=23,
+        params={'crf': 23},
     )),
     (VideoOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output_h265.mp4',
-        codec='libx265',
-        crf=28,
+        params={'crf': 28},
     )),
 ])
 ```
@@ -720,15 +734,12 @@ Filter.run_multi([
 ### VideoOutConfig
 ```python
 class VideoOutConfig(FilterConfig):
-    sources: str | list[str] | list[tuple[str, dict[str, Any]]]
-    outputs: str | list[str] | list[tuple[str, dict[str, Any]]]
-    fps: int | None
-    codec: str | None
-    bitrate: str | None
-    crf: int | None
-    preset: str | None
-    segment_duration: int | None
-    max_files: int | None
+    sources: str | list[str]
+    outputs: str | list[str | Output]
+    bgr: bool | None                    # BGR vs RGB format
+    fps: float | Literal[True] | None   # Frame rate (True = adaptive)
+    segtime: float | None               # Segment time in minutes
+    params: dict[str, Any] | None       # Video encoding parameters
 ```
 
 ### VideoOut
@@ -742,20 +753,12 @@ class VideoOut(Filter):
     def setup(self, config)
     def shutdown(self)
     def process(self, frames)
-    def write_video(self, frame, output_config)
-    def create_encoder(self, config)
-    def manage_segments(self, output_path)
-    def cleanup_old_files(self, output_path, max_files)
+    def process_src_fps(self, frames)    # For adaptive FPS
+    def process_check_rtsp_fps(self, frames)
 ```
 
 ### Environment Variables
-- `DEBUG_VIDEO_OUT`: Enable debug logging
-- `FILTER_SOURCES`: Input sources
-- `FILTER_OUTPUTS`: Output destinations
-- `FILTER_FPS`: Output frame rate
-- `FILTER_CODEC`: Video codec
-- `FILTER_BITRATE`: Target bitrate
-- `FILTER_CRF`: Constant Rate Factor
-- `FILTER_PRESET`: Encoding preset
-- `FILTER_SEGMENT_DURATION`: Segment duration in seconds
-- `FILTER_MAX_FILES`: Maximum number of files to keep
+- `VIDEO_OUT_BGR`: BGR format (default: true)
+- `VIDEO_OUT_FPS`: Default FPS (default: 15)
+- `VIDEO_OUT_SEGTIME`: Default segment time in minutes
+- `VIDEO_OUT_PARAMS`: Default encoding parameters as JSON string

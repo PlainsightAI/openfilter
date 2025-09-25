@@ -1,12 +1,11 @@
 # REST Filter
 
-The REST filter is an input filter for OpenFilter that provides HTTP REST API endpoints to receive data and images from external sources. It exposes FastAPI endpoints that can accept JSON payloads, multipart form data, and file uploads, then forwards the received data through the OpenFilter pipeline as Frame objects.
+The REST filter is an input filter for OpenFilter that provides HTTP REST API endpoints to receive data from external sources. It exposes FastAPI endpoints that can accept JSON payloads and binary data, then forwards the received data through the OpenFilter pipeline as Frame objects.
 
 ## Overview
 
 The REST filter is designed to handle HTTP-based data ingestion scenarios where you need to:
 - Accept data from web applications and external systems
-- Handle file uploads and multipart form data
 - Provide RESTful API endpoints for data ingestion
 - Support various HTTP methods (GET, POST, PUT, PATCH, DELETE)
 - Load local files from a specified resource path
@@ -16,7 +15,6 @@ The REST filter is designed to handle HTTP-based data ingestion scenarios where 
 ## Key Features
 
 - **REST API Endpoints**: FastAPI-based HTTP server with multiple endpoints
-- **File Upload Support**: Multipart form data handling for images and files
 - **JSON Payload Support**: Direct JSON data ingestion
 - **Local File Loading**: Serve files from local resource path
 - **Path Parameters**: Dynamic endpoint routing with path parameters
@@ -34,6 +32,7 @@ from openfilter.filter_runtime.filters.rest import Rest
 
 # Simple REST API server
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
@@ -42,18 +41,19 @@ Filter.run_multi([
 ])
 ```
 
-### Advanced Configuration with File Upload
+### Advanced Configuration
 
 ```python
-# REST API with file upload and local resources
+# REST API with local resources
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
         port=8080,
         resource_path='/path/to/local/files',
         methods=['GET', 'POST', 'PUT'],
-        endpoints=['/upload', '/data', '/files/{filename}'],
+        endpoints=['/data', '/files/{filename}'],
     )),
 ])
 ```
@@ -68,7 +68,7 @@ export FILTER_HOST="0.0.0.0"
 export FILTER_PORT="8080"
 export FILTER_RESOURCE_PATH="/path/to/files"
 export FILTER_METHODS="GET,POST,PUT"
-export FILTER_ENDPOINTS="/upload,/data,/files/{filename}"
+export FILTER_ENDPOINTS="/data,/files/{filename}"
 ```
 
 ## HTTP Endpoints
@@ -82,19 +82,13 @@ The REST filter provides several built-in endpoints:
 - **Purpose**: Health check and basic information
 - **Response**: JSON with server status
 
-#### 2. Upload Endpoint (`/upload`)
-- **Method**: POST
-- **Purpose**: File upload with multipart form data
-- **Content-Type**: `multipart/form-data`
-- **Parameters**: `file` (required), optional metadata fields
-
-#### 3. Data Endpoint (`/data`)
+#### 2. Data Endpoint (`/data`)
 - **Method**: POST, PUT, PATCH
 - **Purpose**: JSON data ingestion
 - **Content-Type**: `application/json`
 - **Body**: JSON payload
 
-#### 4. Dynamic File Endpoint (`/files/{filename}`)
+#### 3. Dynamic File Endpoint (`/files/{filename}`)
 - **Method**: GET, POST, PUT, PATCH, DELETE
 - **Purpose**: File operations with path parameters
 - **Path Parameters**: `filename` - the file to operate on
@@ -105,7 +99,6 @@ You can define custom endpoints using the `endpoints` configuration:
 
 ```python
 endpoints=[
-    '/api/v1/upload',
     '/api/v1/data',
     '/api/v1/files/{filename}',
     '/custom/endpoint/{id}',
@@ -116,7 +109,7 @@ endpoints=[
 
 ### Supported Methods
 - **GET**: Retrieve data and files
-- **POST**: Upload files and send data
+- **POST**: Send data
 - **PUT**: Update/replace data
 - **PATCH**: Partial data updates
 - **DELETE**: Remove data
@@ -150,35 +143,6 @@ frame.data = {
 }
 ```
 
-### File Upload Processing
-Multipart form data is processed to extract files and metadata:
-
-```python
-# Form data fields
-{
-    "file": <uploaded_file>,
-    "metadata": '{"camera_id": "cam1", "timestamp": "2024-01-15T10:30:00Z"}',
-    "topic": "main"
-}
-
-# Converted to Frame object
-frame = Frame()
-frame.data = {
-    "metadata": {...},
-    "topic": "main"
-}
-# File content is handled separately based on content type
-```
-
-### Image File Handling
-When uploaded files are images, they are automatically processed:
-
-```python
-# Image files (jpg, png, etc.) are decoded and stored as image data
-frame = Frame()
-frame.data = {"filename": "image.jpg", "size": 1024}
-# Image data is stored in frame.image or frame.jpg depending on format
-```
 
 ## Local File Serving
 
@@ -202,7 +166,7 @@ GET /files/videos/sample.mp4
 Different HTTP methods provide different file operations:
 
 - **GET**: Download/read file
-- **POST**: Upload/create file
+- **POST**: Create file
 - **PUT**: Replace file content
 - **PATCH**: Update file metadata
 - **DELETE**: Remove file
@@ -212,6 +176,7 @@ Different HTTP methods provide different file operations:
 ### Example 1: Basic REST API Server
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
@@ -230,32 +195,34 @@ Filter.run_multi([
 
 **Behavior:** Accepts HTTP requests, processes data through object detection, and saves results.
 
-### Example 2: File Upload with Processing
+### Example 2: Data Processing Pipeline
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
         port=8080,
-        resource_path='/uploads',
-        endpoints=['/upload', '/files/{filename}'],
+        resource_path='/data',
+        endpoints=['/data', '/files/{filename}'],
     )),
-    (ImageProcessing, dict(
+    (DataProcessor, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
     )),
-    (ImageOut, dict(
+    (OutputFilter, dict(
         sources='tcp://localhost:5552',
-        outputs='file:///processed/{filename}',
+        outputs='file:///processed/data.json',
     )),
 ])
 ```
 
-**Behavior:** Accepts file uploads, processes them, and saves processed results.
+**Behavior:** Accepts data requests, processes them, and saves processed results.
 
 ### Example 3: JSON Data Ingestion
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
@@ -280,13 +247,13 @@ Filter.run_multi([
 ### Example 4: Multi-Endpoint API
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
         port=8080,
         resource_path='/resources',
         endpoints=[
-            '/api/v1/upload',
             '/api/v1/data',
             '/api/v1/files/{filename}',
             '/health',
@@ -297,7 +264,6 @@ Filter.run_multi([
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
         routing_rules={
-            'upload': 'tcp://*:5553',
             'data': 'tcp://*:5554',
             'files': 'tcp://*:5555',
         },
@@ -310,6 +276,7 @@ Filter.run_multi([
 ### Example 5: Webhook Integration
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
@@ -332,6 +299,7 @@ Filter.run_multi([
 ### Example 6: File Management API
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',
@@ -354,37 +322,6 @@ Filter.run_multi([
 **Behavior:** Provides complete file management API with CRUD operations.
 
 ## API Usage Examples
-
-### Uploading Files
-
-#### Using curl
-```bash
-# Upload an image file
-curl -X POST http://localhost:8080/upload \
-  -F "file=@image.jpg" \
-  -F "metadata={\"camera_id\": \"cam1\", \"timestamp\": \"2024-01-15T10:30:00Z\"}"
-
-# Upload with custom topic
-curl -X POST http://localhost:8080/upload \
-  -F "file=@data.json" \
-  -F "topic=main" \
-  -F "source=external_api"
-```
-
-#### Using Python requests
-```python
-import requests
-
-# Upload file with metadata
-with open('image.jpg', 'rb') as f:
-    files = {'file': f}
-    data = {
-        'metadata': '{"camera_id": "cam1", "timestamp": "2024-01-15T10:30:00Z"}',
-        'topic': 'main'
-    }
-    response = requests.post('http://localhost:8080/upload', files=files, data=data)
-    print(response.json())
-```
 
 ### Sending JSON Data
 
@@ -424,21 +361,21 @@ print(response.json())
 #### Download file
 ```bash
 # Download a file
-curl -X GET http://localhost:8080/files/image1.jpg -o downloaded_image.jpg
+curl -X GET http://localhost:8080/files/data1.json -o downloaded_data.json
 ```
 
-#### Upload to specific file path
+#### Create file
 ```bash
-# Upload to specific filename
-curl -X PUT http://localhost:8080/files/new_image.jpg \
-  -F "file=@image.jpg" \
-  -F "metadata={\"description\": \"New image\"}"
+# Create a new file
+curl -X POST http://localhost:8080/files/new_data.json \
+  -H "Content-Type: application/json" \
+  -d '{"data": "content"}'
 ```
 
 #### Delete file
 ```bash
 # Delete a file
-curl -X DELETE http://localhost:8080/files/old_image.jpg
+curl -X DELETE http://localhost:8080/files/old_data.json
 ```
 
 ## Error Handling
@@ -464,17 +401,17 @@ curl -X DELETE http://localhost:8080/files/old_image.jpg
 - **Invalid JSON**: Malformed JSON payload
 - **Missing Files**: File not found in resource path
 - **Permission Errors**: File access permission issues
-- **Large Files**: Files exceeding size limits
+- **Large Data**: Data exceeding size limits
 - **Unsupported Methods**: HTTP method not allowed
 - **Missing Parameters**: Required parameters not provided
 
 ## Security Considerations
 
 ### Input Validation
-- **File Type Validation**: Restrict allowed file types
-- **Size Limits**: Limit file upload sizes
+- **Data Type Validation**: Restrict allowed data types
+- **Size Limits**: Limit data payload sizes
 - **Path Traversal**: Prevent directory traversal attacks
-- **Content Validation**: Validate uploaded content
+- **Content Validation**: Validate received content
 
 ### Access Control
 - **Authentication**: Implement authentication mechanisms
@@ -486,11 +423,12 @@ curl -X DELETE http://localhost:8080/files/old_image.jpg
 ```python
 # Example security configuration
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='127.0.0.1',  # Bind to localhost only
         port=8080,
-        resource_path='/secure/files',  # Restricted path
+        resource_path='/secure/data',  # Restricted path
         # Add authentication middleware
         # Add rate limiting
         # Add input validation
@@ -503,7 +441,7 @@ Filter.run_multi([
 ### Request Handling
 - **Async Processing**: FastAPI provides async request handling
 - **Connection Pooling**: Efficient HTTP connection management
-- **Memory Usage**: Monitor memory usage for large file uploads
+- **Memory Usage**: Monitor memory usage for large data payloads
 - **Processing Time**: Consider downstream processing time
 
 ### File Operations
@@ -515,7 +453,7 @@ Filter.run_multi([
 ### Monitoring
 - **Request Metrics**: Monitor request rates and response times
 - **Error Rates**: Track HTTP error rates
-- **File Operations**: Monitor file upload/download rates
+- **Data Operations**: Monitor data processing rates
 - **Resource Usage**: Track CPU and memory usage
 
 ## Troubleshooting
@@ -528,11 +466,11 @@ Filter.run_multi([
 3. Check firewall settings
 4. Validate configuration parameters
 
-#### File Upload Failures
-1. Check file size limits
-2. Verify file permissions
+#### Data Processing Failures
+1. Check data size limits
+2. Verify data permissions
 3. Ensure sufficient disk space
-4. Validate file format support
+4. Validate data format support
 
 #### JSON Processing Errors
 1. Validate JSON syntax
@@ -559,7 +497,7 @@ export LOG_LEVEL=DEBUG
 ### Debug Information
 - **Request Logging**: Log all incoming requests
 - **Response Logging**: Log response details
-- **File Operations**: Log file access operations
+- **Data Operations**: Log data access operations
 - **Error Details**: Detailed error information
 
 ## Advanced Usage
@@ -593,6 +531,7 @@ async def custom_endpoint(data: dict):
 ```python
 # Integrate with external APIs and services
 Filter.run_multi([
+    # ... other filters above
     (Rest, dict(
         outputs='tcp://*:5550',
         host='0.0.0.0',

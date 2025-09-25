@@ -34,6 +34,7 @@ from openfilter.filter_runtime.filters.image_out import ImageOut
 
 # Simple single output
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///path/to/output_%Y%m%d_%H%M%S_%d.png',
@@ -46,6 +47,7 @@ Filter.run_multi([
 ```python
 # Multiple outputs with different topics and options
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs=[
@@ -188,19 +190,36 @@ The ImageOut filter generates unique filenames using multiple strategies:
 ```
 
 ### Frame ID Integration
+
+The ImageOut filter supports two filename generation modes:
+
+**Mode 1: Using `%d` for frame counting**
 ```python
-# Uses frame.data.meta.id or frame.data.meta.frame_id
-# Output pattern: file:///path/image_%d.jpg
-# Generated files:
-# image_main_12345.jpg  # topic_main + frame_id
-# image_face_67890.jpg  # topic_face + frame_id
+outputs='file:///path/image_%d.jpg'
+# Results in: image_000001.jpg, image_000002.jpg, etc.
+# %d is replaced with 6-digit frame count
 ```
+
+**Mode 2: Using topic and frame metadata (when `%d` is not used)**
+```python
+outputs='file:///path/image.jpg'
+# Results in: image_topic_frameid.jpg
+# Frame ID extracted from frame.data.meta.frame_id, meta.id, or meta.timestamp
+# If no metadata available, topic name is used as frame_id
+```
+
+**Filename Generation Rules:**
+- If `%d` is present: replaced with 6-digit frame count (e.g., `000001`)
+- If `%d` is not present: topic and frame_id are automatically appended
+- Frame ID priority: `meta.frame_id` → `meta.id` → `meta.timestamp` → topic name
+- Multiple outputs with same topic will have unique filenames via frame_id
 
 ## Usage Examples
 
 ### Example 1: Basic Image Saving
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output/images_%d.jpg',
@@ -213,6 +232,7 @@ Filter.run_multi([
 ### Example 2: Multiple Topics with Different Formats
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs=[
@@ -229,6 +249,7 @@ Filter.run_multi([
 ### Example 3: Wildcard Topic Matching
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output/cameras_%d.jpg;camera_*!quality=90',
@@ -241,6 +262,7 @@ Filter.run_multi([
 ### Example 4: Timestamped Outputs
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs='file:///output/images_%Y%m%d_%H%M%S_%d.png',
@@ -255,6 +277,7 @@ Filter.run_multi([
 ### Example 5: Backup Strategy
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs=[
@@ -271,6 +294,7 @@ Filter.run_multi([
 ### Example 6: Frame Processing Pipeline
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file://input.mp4',
         outputs='tcp://*:5550',
@@ -380,21 +404,10 @@ This will show detailed information about:
 
 ## Advanced Usage
 
-### Custom Filename Generation
-```python
-# Using frame metadata for custom naming
-Filter.run_multi([
-    (ImageOut, dict(
-        sources='tcp://localhost:5550',
-        outputs='file:///output/camera_{frame_id}_%d.jpg',
-        # Frame metadata will be used for {frame_id} placeholder
-    )),
-])
-```
-
 ### Quality-Based Routing
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs=[
@@ -408,6 +421,7 @@ Filter.run_multi([
 ### Format Conversion Pipeline
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageOut, dict(
         sources='tcp://localhost:5550',
         outputs=[

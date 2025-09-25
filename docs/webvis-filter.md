@@ -35,6 +35,7 @@ from openfilter.filter_runtime.filters.webvis import Webvis
 
 # Simple web visualization
 Filter.run_multi([
+    # ... other filters above
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -48,6 +49,7 @@ Filter.run_multi([
 ```python
 # Web visualization with available options
 Filter.run_multi([
+    # ... other filters above
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -162,6 +164,7 @@ The webvis filter automatically creates endpoints for any topics that receive da
 ### Example 1: Basic Web Visualization
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -183,6 +186,7 @@ Filter.run_multi([
 ### Example 2: Multi-Camera Monitoring
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='0',  # Camera 1
         outputs='tcp://*:5550',
@@ -207,6 +211,7 @@ Filter.run_multi([
 ### Example 3: Real-time Processing Visualization
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://camera.local/stream',
         outputs='tcp://*:5550',
@@ -228,6 +233,7 @@ Filter.run_multi([
 ### Example 4: Debugging and Development
 ```python
 Filter.run_multi([
+    # ... other filters above
     (ImageIn, dict(
         sources='file:///images/',
         outputs='tcp://*:5550',
@@ -250,6 +256,7 @@ Filter.run_multi([
 ### Example 5: Production Monitoring
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='rtsp://production-camera.local/stream',
         outputs='tcp://*:5550',
@@ -272,6 +279,7 @@ Filter.run_multi([
 ### Example 6: API Integration
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='0',  # Webcam
         outputs='tcp://*:5550',
@@ -348,6 +356,7 @@ The webvis filter has CORS (Cross-Origin Resource Sharing) hardcoded to allow al
 ```python
 # Optimize for web performance
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file:///input.mp4',
         outputs='tcp://*:5550',
@@ -449,6 +458,7 @@ export LOG_LEVEL=DEBUG
 ```python
 # Enable comprehensive debugging
 Filter.run_multi([
+    # ... other filters above
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -463,6 +473,7 @@ Filter.run_multi([
 ```python
 # Custom web interface integration
 Filter.run_multi([
+    # ... other filters above
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -475,6 +486,7 @@ Filter.run_multi([
 ```python
 # Multiple web visualization instances
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='0',  # Camera 1
         outputs='tcp://*:5550',
@@ -500,6 +512,7 @@ Filter.run_multi([
 ```python
 # API integration with external systems
 Filter.run_multi([
+    # ... other filters above
     (Webvis, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',

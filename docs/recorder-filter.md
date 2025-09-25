@@ -34,6 +34,7 @@ from openfilter.filter_runtime.filters.recorder import Recorder
 
 # Simple JSON recording
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///path/to/record.jsonl',
@@ -47,6 +48,7 @@ Filter.run_multi([
 ```python
 # CSV recording with specific field filtering
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///path/to/data.csv!append',
@@ -242,6 +244,7 @@ outputs='file:///path/to/data.csv!append'
 ### Example 1: Basic Data Logging
 ```python
 Filter.run_multi([
+    # ... other filters above
     (VideoIn, dict(
         sources='file://input.mp4',
         outputs='tcp://*:5550',
@@ -263,6 +266,7 @@ Filter.run_multi([
 ### Example 2: CSV Analysis Export
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///analysis/detection_data.csv!append',
@@ -282,6 +286,7 @@ Filter.run_multi([
 ### Example 3: Sensor Data Logging
 ```python
 Filter.run_multi([
+    # ... other filters above
     (SensorFilter, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -306,6 +311,7 @@ Filter.run_multi([
 ### Example 4: Debug Logging
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///debug/full_data.jsonl',
@@ -321,6 +327,7 @@ Filter.run_multi([
 ### Example 5: Selective Field Recording
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///reports/summary.csv',
@@ -341,6 +348,7 @@ Filter.run_multi([
 ### Example 6: Multi-Topic Recording
 ```python
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///logs/all_topics.jsonl',
@@ -507,6 +515,7 @@ if include_detections:
 ```python
 # Use with other filters for conditional recording
 Filter.run_multi([
+    # ... other filters above
     (ThresholdFilter, dict(
         sources='tcp://localhost:5550',
         outputs='tcp://*:5552',
@@ -524,6 +533,7 @@ Filter.run_multi([
 ```python
 # Record same data in different formats
 Filter.run_multi([
+    # ... other filters above
     (Recorder, dict(
         sources='tcp://localhost:5550',
         outputs='file:///logs/detailed.jsonl',
