@@ -45,8 +45,6 @@ OpenFilter Library release notes
 - Updated Util filter documentation to reflect xforms-based configuration
 - Corrected VideoOut filter documentation for segmentation parameters
 
-
-
 ## v0.1.12 - 2025-07-25
 
 ### Added
