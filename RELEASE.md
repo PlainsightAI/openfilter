@@ -3,6 +3,48 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.13 - 2025-09-24
+
+### Added
+- **Complete Filter Documentation**: Comprehensive documentation for all OpenFilter filters
+  - `image-out-filter.md` - Image output with filename generation and quality options
+  - `webvis-filter.md` - Web visualization with FastAPI endpoints
+  - `mqtt-out-filter.md` - MQTT output with ephemeral source support
+  - `video-out-filter.md` - Video output with segmentation and encoding
+  - `video-in-filter.md` - Video input with webcam/RTSP/file support
+  - `util-filter.md` - Utility filter with xforms-based transformations
+  - `rest-filter.md` - REST API filter for HTTP data ingestion
+  - `recorder-filter.md` - Data recording capabilities
+
+- **ImageOut Filter**: New output filter for writing images to files
+  - Filename generation with timestamp and frame numbering
+  - Multiple image format support (JPEG, PNG, etc.)
+  - Quality and compression options
+  - Topic-based image selection
+
+- **Comprehensive Test Suite**: Added tests for ImageOut filter
+  - Unit tests for ImageWriter class functionality
+  - Integration tests for filter pipeline scenarios
+  - 619 lines of test coverage
+
+- **Example Demos**: Created demonstration examples
+  - Image output demo with various configuration options
+  - Video pipeline demo with face enhancement and RTSP support
+  - GCS integration examples for cloud storage
+  - Makefile automation for demo scenarios
+
+### Fixed
+- Corrected documentation inaccuracies to match actual filter implementations
+- Updated parameter names and configuration options
+- Fixed webcam URL format specification (`webcam://` prefix)
+- Updated examples to use proper syntax and formats
+
+### Changed
+- Enhanced documentation structure with consistent API references
+- Added `# ... other filters above` comments to pipeline examples
+- Updated Util filter documentation to reflect xforms-based configuration
+- Corrected VideoOut filter documentation for segmentation parameters
+
 ## v0.1.12 - 2025-07-25
 
 ### Added
