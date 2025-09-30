@@ -91,13 +91,13 @@ Special “hidden” parameters are allowed in configs which are parameters with
 
 The run_multi function is central to creating complex workflows in `filter_runtime`. It allows you to define multiple filters in sequence or parallel by specifying the class and configuration for each. It is constructed from two artifacts:
 
-Filter Class: The class type of the filter (e.g., Video, FaceBlurFilter).
+Filter Class: The class type of the filter (e.g., Video, FaceGuard).
 
 Configuration: A dictionary containing specific parameters for the filter instance, such as id, sources, outputs, and any additional parameters required by the filter.
 
 By chaining together multiple filters using run_multi, you can build flexible, reusable workflows that process video streams, apply filters, and output results to various destinations (e.g., files, web interfaces). This modular approach allows for easy customization and scaling of workflows by simply adding or modifying filters in the sequence.
 
-The provided code snippet is an example of how to build a video processing workflow using the openfilter library. This workflow processes a video file to blur faces and demonstrates the use of various filters like Video, FaceBlurFilter, Util, and Webvis. 
+The provided code snippet is an example of how to build a video processing workflow using the openfilter library. This workflow processes a video file to blur faces and demonstrates the use of various filters like Video, FaceGuard, Util, and Web Viewer. 
 
 ## Diving Deep on Filters
 
