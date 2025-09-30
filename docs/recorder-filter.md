@@ -1,10 +1,10 @@
-# Recorder Filter
+# Data Capture Filter
 
-The Recorder filter is an output filter for OpenFilter that records frame data to files in JSON or CSV format. It provides flexible data filtering rules to include or exclude specific fields, supports both JSON and CSV output formats, and offers configurable data handling for different use cases.
+The Data Capture filter is an output filter for OpenFilter that records frame data to files in JSON or CSV format. It provides flexible data filtering rules to include or exclude specific fields, supports both JSON and CSV output formats, and offers configurable data handling for different use cases.
 
 ## Overview
 
-The Recorder filter is designed to handle data recording scenarios where you need to:
+The Data Capture filter is designed to handle data recording scenarios where you need to:
 - Log frame data for analysis and debugging
 - Export processed data in structured formats
 - Filter sensitive or unnecessary data fields
@@ -80,7 +80,7 @@ export DEBUG_RECORDER="true"
 
 ## Data Filtering Rules
 
-The Recorder filter uses a powerful rule-based system for filtering frame data:
+The Data Capture filter uses a powerful rule-based system for filtering frame data:
 
 ### Rule Syntax
 ```

@@ -91,13 +91,13 @@ Special “hidden” parameters are allowed in configs which are parameters with
 
 The run_multi function is central to creating complex workflows in `filter_runtime`. It allows you to define multiple filters in sequence or parallel by specifying the class and configuration for each. It is constructed from two artifacts:
 
-Filter Class: The class type of the filter (e.g., Video, FaceBlurFilter).
+Filter Class: The class type of the filter (e.g., Video, FaceGuard).
 
 Configuration: A dictionary containing specific parameters for the filter instance, such as id, sources, outputs, and any additional parameters required by the filter.
 
 By chaining together multiple filters using run_multi, you can build flexible, reusable workflows that process video streams, apply filters, and output results to various destinations (e.g., files, web interfaces). This modular approach allows for easy customization and scaling of workflows by simply adding or modifying filters in the sequence.
 
-The provided code snippet is an example of how to build a video processing workflow using the openfilter library. This workflow processes a video file to blur faces and demonstrates the use of various filters like Video, FaceBlurFilter, Util, and Webvis. 
+The provided code snippet is an example of how to build a video processing workflow using the openfilter library. This workflow processes a video file to blur faces and demonstrates the use of various filters like Video, FaceGuard, Util, and Web Viewer. 
 
 ## Diving Deep on Filters
 
@@ -109,7 +109,7 @@ Synchronization is taken care of automatically so that all input frames that com
 
 The `filter_runtime` component of the `OpenFilter` Python package takes care of setting up and running a Filter subclass and synchronized communication with other Filters in the pipeline via ZeroMQ over TCP or IPC (pipes). This includes parsing config settings, calling setup and shutdown functions, calling the user's `Filter.process()` function on incoming data and sending returned data on downstream to other connected Filters in the pipeline. `OpenFilter` a CLI tool to run filters directly or examine logs and metrics output by filters.
 
-`filter_runtime` includes as part of itself several support Filters which are needed for the operation of general user Filters. Things like video input and output, console logging, image manipulation, data recording, image visualization, MQTT output of data and telemetry are all provided. When you install `OpenFilter` you specify whether you want the bare bones library with only dependencies needed for your Filter to function (`pip install openfilter`) or whether you want other dependencies installed needed for the builtin support Filters (e.g. `pip install openfilter[video_in]`, `pip install openfilter[webvis]` or `pip install openfilter[all]`) .
+`filter_runtime` includes as part of itself several support Filters which are needed for the operation of general user Filters. Things like Video Source and Video Streamer, console logging, image manipulation, Data Capture, Web Viewer, MQTT Bridge output of data and telemetry are all provided. When you install `OpenFilter` you specify whether you want the bare bones library with only dependencies needed for your Filter to function (`pip install openfilter`) or whether you want other dependencies installed needed for the builtin support Filters (e.g. `pip install openfilter[video_in]`, `pip install openfilter[webvis]` or `pip install openfilter[all]`) .
 
 Once installed, you can run the CLI via `openfilter --help` which will give you a list of other commands you can use, including running Filter pipelines.
 

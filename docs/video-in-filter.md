@@ -1,10 +1,10 @@
-# VideoIn Filter
+# Video Source Filter
 
-The VideoIn filter is an input filter for OpenFilter that reads video streams from various sources including files, webcams, and network streams (RTSP, HTTP, S3). It supports various video processing options like BGR/RGB conversion, synchronization modes, looping, FPS control, and image resizing. The filter uses the `vidgear` library for robust video capture and processing.
+The Video Source filter is an input filter for OpenFilter that reads video streams from various sources including files, webcams, and network streams (RTSP, HTTP, S3). It supports various video processing options like BGR/RGB conversion, synchronization modes, looping, FPS control, and image resizing. The filter uses the `vidgear` library for robust video capture and processing.
 
 ## Overview
 
-The VideoIn filter is designed to handle video input scenarios where you need to:
+The Video Source filter is designed to handle video input scenarios where you need to:
 - Read video files from local storage or cloud storage (S3)
 - Capture video from webcams and USB cameras
 - Stream video from network sources (RTSP, HTTP)

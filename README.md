@@ -22,7 +22,7 @@ Jump to:
 - 🔁 Easily pluggable filter components
 - 🧪 Develop and test filters locally with Python
 - ⚡ High-throughput synchronized pipelines
-- 📡 MQTT/REST visualization and data publishing
+- 📡 MQTT Bridge/REST Connect visualization and data publishing
 - 🧵 Parallel processing via load-balanced filter branches
 - 📊 Built-in telemetry and metrics streaming (coming soon)
 
@@ -100,7 +100,7 @@ Explore real-world examples covering:
 * Writing frames to JPEG or output video
 * Dual-video pipelines with multiple topics
 * Load balancing using multiple filter processes
-* Sending metrics to MQTT
+* Sending metrics to MQTT Bridge
 * Ephemeral side-channel processing
 * S3 integration for cloud video processing
 * Fully declarative + class-based configuration

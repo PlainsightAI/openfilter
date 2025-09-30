@@ -1,10 +1,10 @@
-# Webvis Filter
+# Web Viewer Filter
 
-The Webvis filter is an output filter for OpenFilter that provides a web-based visualization of incoming image streams. It hosts a FastAPI application that serves JPEG-encoded frames via a multipart/x-mixed-replace stream, accessible through a web browser. The filter also provides a `/data` endpoint for streaming frame metadata, making it ideal for real-time monitoring and debugging of OpenFilter pipelines.
+The Web Viewer filter is an output filter for OpenFilter that provides a web-based visualization of incoming image streams. It hosts a FastAPI application that serves JPEG-encoded frames via a multipart/x-mixed-replace stream, accessible through a web browser. The filter also provides a `/data` endpoint for streaming frame metadata, making it ideal for real-time monitoring and debugging of OpenFilter pipelines.
 
 ## Overview
 
-The Webvis filter is designed to handle web-based visualization scenarios where you need to:
+The Web Viewer filter is designed to handle web-based visualization scenarios where you need to:
 - Display real-time image streams in a web browser
 - Monitor OpenFilter pipeline output visually
 - Debug image processing results
@@ -74,7 +74,7 @@ export FILTER_HOST="0.0.0.0"
 
 ### Main Visualization Page
 
-The webvis filter provides a web interface accessible at:
+The Web Viewer filter provides a web interface accessible at:
 
 ```
 http://localhost:8000/
@@ -156,7 +156,7 @@ curl -N http://localhost:8000/camera1/data
 
 ## Topic Management
 
-The webvis filter automatically creates endpoints for any topics that receive data. Topics are discovered dynamically from incoming frames - you cannot configure which topics to include or exclude.
+The Web Viewer filter automatically creates endpoints for any topics that receive data. Topics are discovered dynamically from incoming frames - you cannot configure which topics to include or exclude.
 
 
 ## Usage Examples
@@ -336,7 +336,7 @@ curl -N http://localhost:8000/camera1/data
 
 ## CORS Configuration
 
-The webvis filter has CORS (Cross-Origin Resource Sharing) hardcoded to allow all origins (`*`). This cannot be configured - all web requests from any domain are allowed by default.
+The Web Viewer filter has CORS (Cross-Origin Resource Sharing) hardcoded to allow all origins (`*`). This cannot be configured - all web requests from any domain are allowed by default.
 
 ## Performance Considerations
 

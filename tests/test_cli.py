@@ -148,7 +148,7 @@ class TestCLI(unittest.TestCase):
                 "run",
                 *f"""
             - VideoIn
-                --sources file://{TEST_VIDEO_FNM}
+                --sources file://{TEST_VIDEO_FNM}!loop=3
             - Util
             - VideoOut
                 --outputs file://{TEST_VIDEO_OUT_FNM}

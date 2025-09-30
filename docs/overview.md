@@ -11,7 +11,7 @@ For installation, go directly to [Installation](#installation). Examples, [Examp
 More in depth guides can be found here:
 * [Your First Filter](./your-first-filter.md)
 
-This is a framework for `Filter` components which compose an image processing pipeline. It mostly takes care of setup, serialization and communication between the components and various outher quality-of-life things. There are also some basic utility components included for stuff like reading and writing video, REST endpoint input, MQTT output, visualisation and more.
+This is a framework for `Filter` components which compose an image processing pipeline. It mostly takes care of setup, serialization and communication between the components and various outher quality-of-life things. There are also some basic utility components included for stuff like reading and writing video, REST endpoint input, MQTT Bridge, Web Viewer and more.
 
 A user filter component will subclass off of the `Filter` class provided here and is meant to be built and run as an indivisual unit in a pipeline. There are functions to run a user Filter component alongside other Filters in their own processes in order to rapidly test and iterate.
 
@@ -180,7 +180,7 @@ Note that we don't need to encode the jpg image ourselves but rather use the `Fr
 
 ## Multiple input videos on different topics and simple MQTT
 
-This example demonstrates sending on different topics from reading two videos simultaneously and passing them on to two downstream filters. The `Util` filter will just log what it gets and the `MQTT` filter will output the image as a base64 encoded jpg and the metadata that came with the frame to an mqtt topic. Needless to say you must have an MQTT broker running. You can view the MQTT output with something like [MQTT explorer](https://mqtt-explorer.com/). Note that in the `Util` filter we subscribe to the `main` topic which comes from the first video and a special hidden `_metrics` topic which has some runtime metrics from the `VideoIn` filter. The script will terminate when the first video finishes.
+This example demonstrates sending on different topics from reading two videos simultaneously and passing them on to two downstream filters. The `Util` filter will just log what it gets and the `MQTT Bridge` filter will output the image as a base64 encoded jpg and the metadata that came with the frame to an mqtt topic. Needless to say you must have an MQTT broker running. You can view the MQTT output with something like [MQTT explorer](https://mqtt-explorer.com/). Note that in the `Util` filter we subscribe to the `main` topic which comes from the first video and a special hidden `_metrics` topic which has some runtime metrics from the `Video Source` filter. The script will terminate when the first video finishes.
 
     from openfilter.filter_runtime.filter import Filter
     from openfilter.filter_runtime.filters.mqtt_out import MQTTOut
@@ -702,12 +702,12 @@ To test Marquez with a real OpenFilter pipeline, you can clone the demo reposito
 
 This example includes:
 
-- `VideoIn`: reads a sample video
-- `FilterLicensePlateDetection`: detects license plates
-- `FilterCrop`: crops the plate region
-- `FilterOpticalCharacterRecognition`: runs OCR
-- `FilterLicenseAnnotationDemo`: annotates frames with detected text
-- `Webvis`: visualizes frames in the browser
+- `Video Source`: reads a sample video
+- `DriveID`: detects license plates
+- `Clipper`: crops the plate region
+- `TextScan`: runs OCR
+- `Plate ID OCR`: annotates frames with detected text
+- `Web Viewer`: visualizes frames in the browser
 
 ### 🧪 Pipeline Runner Script
 
@@ -988,7 +988,7 @@ Prerequisites:
 
 * Util Filter with useful stuff like logging, censor boxes, resize, etc...
 
-* Recorder Filter to record data from upstream to json files.
+* Data Capture Filter to record data from upstream to json files.
 
 * Remember than when using `tcp://` sources and outputs that there are two ports which are used, the port specified and the port specified +1. This is important if you will be exposing ports to use with ssh tunnels for example, REMEMBER THIS SECOND PORT or stuff will not work.
 
