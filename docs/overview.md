@@ -703,10 +703,10 @@ To test Marquez with a real OpenFilter pipeline, you can clone the demo reposito
 This example includes:
 
 - `Video Source`: reads a sample video
-- `FilterLicensePlateDetection`: detects license plates
-- `FilterCrop`: crops the plate region
-- `FilterOpticalCharacterRecognition`: runs OCR
-- `FilterLicenseAnnotationDemo`: annotates frames with detected text
+- `DriveID`: detects license plates
+- `Clipper`: crops the plate region
+- `TextScan`: runs OCR
+- `Plate ID OCR`: annotates frames with detected text
 - `Web Viewer`: visualizes frames in the browser
 
 ### 🧪 Pipeline Runner Script
