@@ -1,12 +1,12 @@
-# VideoOut Filter
+# Video Streamer Filter
 
-The VideoOut filter is an output filter for OpenFilter that writes incoming Frame images to video files or RTSP streams. It supports segmented file output by time, adaptive FPS control, and various video encoding parameters through the `params` dictionary. The filter uses the `vidgear` library for robust video writing and streaming capabilities.
+The Video Streamer filter is an output filter for OpenFilter that writes incoming Frame images to video files or RTSP streams. It supports segmented file output by time, adaptive FPS control, and various video encoding parameters through the `params` dictionary. The filter uses the `vidgear` library for robust video writing and streaming capabilities.
 
 > Note: THIS IS NOT A RTSP SERVER. Keep in mind that when using RTSP stream as an output you will still need to use a RTSP server such as `mediamtx`.
 
 ## Overview
 
-The VideoOut filter is designed to handle video output scenarios where you need to:
+The Video Streamer filter is designed to handle video output scenarios where you need to:
 - Write processed images to video files in various formats
 - Stream video to RTSP endpoints for live viewing
 - Create segmented video files based on time duration

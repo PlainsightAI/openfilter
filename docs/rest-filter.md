@@ -1,10 +1,10 @@
-# REST Filter
+# REST Connect Filter
 
-The REST filter is an input filter for OpenFilter that provides HTTP REST API endpoints to receive data from external sources. It exposes FastAPI endpoints that can accept JSON payloads and binary data, then forwards the received data through the OpenFilter pipeline as Frame objects.
+The REST Connect filter is an input filter for OpenFilter that provides HTTP REST API endpoints to receive data from external sources. It exposes FastAPI endpoints that can accept JSON payloads and binary data, then forwards the received data through the OpenFilter pipeline as Frame objects.
 
 ## Overview
 
-The REST filter is designed to handle HTTP-based data ingestion scenarios where you need to:
+The REST Connect filter is designed to handle HTTP-based data ingestion scenarios where you need to:
 - Accept data from web applications and external systems
 - Provide RESTful API endpoints for data ingestion
 - Support various HTTP methods (GET, POST, PUT, PATCH, DELETE)
@@ -75,7 +75,7 @@ export FILTER_ENDPOINTS="/data,/files/{filename}"
 
 ### Default Endpoints
 
-The REST filter provides several built-in endpoints:
+The REST Connect filter provides several built-in endpoints:
 
 #### 1. Root Endpoint (`/`)
 - **Method**: GET
@@ -122,7 +122,7 @@ methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 ## Data Handling
 
 ### JSON Payload Processing
-The REST filter converts JSON payloads into Frame objects:
+The REST Connect filter converts JSON payloads into Frame objects:
 
 ```python
 # Incoming JSON
@@ -489,7 +489,7 @@ Filter.run_multi([
 import logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Enable REST filter debugging
+# Enable REST Connect filter debugging
 export DEBUG_REST=true
 export LOG_LEVEL=DEBUG
 ```

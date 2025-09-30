@@ -3,18 +3,23 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v0.1.14 - 2025-09-29
+
+### Updated
+- **Documentation**: Updated documentation
+ 
 ## v0.1.13 - 2025-09-24
 
 ### Added
 - **Complete Filter Documentation**: Comprehensive documentation for all OpenFilter filters
   - `image-out-filter.md` - Image output with filename generation and quality options
-  - `webvis-filter.md` - Web visualization with FastAPI endpoints
-  - `mqtt-out-filter.md` - MQTT output with ephemeral source support
-  - `video-out-filter.md` - Video output with segmentation and encoding
-  - `video-in-filter.md` - Video input with webcam/RTSP/file support
+  - `webvis-filter.md` - Web Viewer with FastAPI endpoints
+  - `mqtt-out-filter.md` - MQTT Bridge output with ephemeral source support
+  - `video-out-filter.md` - Video Streamer output with segmentation and encoding
+  - `video-in-filter.md` - Video Source input with webcam/RTSP/file support
   - `util-filter.md` - Utility filter with xforms-based transformations
-  - `rest-filter.md` - REST API filter for HTTP data ingestion
-  - `recorder-filter.md` - Data recording capabilities
+  - `rest-filter.md` - REST Connect API filter for HTTP data ingestion
+  - `recorder-filter.md` - Data Capture recording capabilities
 
 - **ImageOut Filter**: New output filter for writing images to files
   - Filename generation with timestamp and frame numbering

@@ -1,10 +1,10 @@
-# MQTTOut Filter
+# MQTT Bridge Filter
 
-The MQTTOut filter is an output filter for OpenFilter that publishes incoming frame data and images to MQTT brokers. It supports flexible topic mapping, QoS settings, message retention, and automatic serialization of various data types including images as base64-encoded data.
+The MQTT Bridge filter is an output filter for OpenFilter that publishes incoming frame data and images to MQTT brokers. It supports flexible topic mapping, QoS settings, message retention, and automatic serialization of various data types including images as base64-encoded data.
 
 ## Overview
 
-The MQTTOut filter is designed to handle MQTT publishing scenarios where you need to:
+The MQTT Bridge filter is designed to handle MQTT publishing scenarios where you need to:
 - Publish frame data and images to MQTT brokers
 - Map OpenFilter topics to MQTT topics with flexible routing
 - Control message quality of service (QoS) and retention
