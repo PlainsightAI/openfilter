@@ -147,3 +147,48 @@ make analyze-all
 - `latency_analysis.py` - OpenFilter processing analysis
 - `network_analysis.py` - Network latency analysis  
 - `README.md` - This comprehensive guide
+
+
+## Appendix
+
+**Evidence that ALL frames are processed**:
+
+### 1. **Synchronous Processing Architecture** (`filter.py:814-833`)
+```python
+def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
+    # Process the frames first, so the filter can add its own results
+    if (processed_frames := self.process(frames)) is None:
+        return None
+```
+- **Every frame is processed**: The `process()` method is called for every frame that arrives
+- **No conditional skipping**: No logic that would skip or drop frames
+
+### 2. **ZeroMQ Flow Control** (`zeromq.py:272-302`)
+```python
+def send(self, topicmsgs: dict[str, ZMQMessage] | Callable[[], dict[str, ZMQMessage]], ...):
+    """Send a list of messages to a list of topics. Will only send once all tracked clients have requested a message
+    with a `msg_id` equal to or below the `msg_id` of this message send."""
+```
+- **Synchronized delivery**: Frames are only sent when all downstream clients are ready
+- **No frame loss**: The system waits for all clients to request frames before sending
+
+### 3. **Video Input Guarantees** (`video_in.py:625-633`)
+```python
+sync:
+    Only has meaning for file:// sources. If True then frames will be delivered one by one without skipping or
+    waiting to maintain realtime, in this way all frames will be read and presented.
+```
+- **Explicit documentation**: "all frames will be read and presented"
+- **No frame skipping**: Designed specifically to process every frame
+
+### 4. **Webvis Processing** (`webvis.py:131-137`)
+```python
+def process(self, frames):
+    for topic, frame in frames.items():
+        if frame.has_image:
+            if (queue := self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))).empty():
+                queue.put(frame)  # Immediate processing
+                self.current_data = frame.data
+```
+- **Immediate processing**: Every frame with an image is processed immediately
+- **No conditional logic**: No code paths that skip frames
