@@ -1,0 +1,29 @@
+services:
+
+  vidin:
+    image: plainsightai/openfilter-video-in
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: vidin
+      # Multi-stream video sources
+      FILTER_SOURCES: |
+        file:///app/data/sample-video-with-timestamp.mp4!loop,
+        file:///app/data/sample-video-with-timestamp.mp4!loop;stream2,
+        file:///app/data/sample-video-with-timestamp.mp4!loop;stream3
+      FILTER_OUTPUTS: tcp://*
+
+    volumes:
+      - ./data:/app/data
+
+  webvis:
+    image: plainsightai/openfilter-webvis
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: webvis
+      FILTER_SOURCES: |
+        tcp://vidin;main>stream1,
+        tcp://vidin;stream2,
+        tcp://vidin;stream3
+      FILTER_PORT: ${WEBVIS_PORT:-8000}
+    ports:
+      - ${WEBVIS_PORT:-8000}:${WEBVIS_PORT:-8000}

@@ -1,0 +1,13 @@
+# Webvis Example Requirements
+
+# Core OpenFilter dependencies
+openfilter
+
+# Video processing
+opencv-python>=4.5.0
+
+# Additional dependencies for timestamp overlay
+numpy>=1.21.0
+
+# Optional: For better video codec support
+# ffmpeg-python>=0.2.0

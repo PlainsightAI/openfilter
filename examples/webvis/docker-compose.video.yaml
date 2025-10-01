@@ -1,0 +1,22 @@
+services:
+
+  vidin:
+    image: plainsightai/openfilter-video-in
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: vidin
+      # Use local video file with timestamp
+      FILTER_SOURCES: file:///app/data/sample-video-with-timestamp.mp4!loop
+      FILTER_OUTPUTS: tcp://*
+    volumes:
+      - ./data:/app/data
+
+  webvis:
+    image: plainsightai/openfilter-webvis
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: webvis
+      FILTER_SOURCES: tcp://vidin
+      FILTER_PORT: ${WEBVIS_PORT:-8000}
+    ports:
+      - ${WEBVIS_PORT:-8000}:${WEBVIS_PORT:-8000}
