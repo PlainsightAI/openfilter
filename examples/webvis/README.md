@@ -112,6 +112,9 @@ make run               # Run Python example
 make cli               # Run CLI example
 make docker-start      # Start Docker Compose
 make rtsp-start        # Start RTSP streamer
+make analyze-latency   # Analyze OpenFilter processing latency
+make analyze-network   # Analyze network vs OpenFilter latency
+make analyze-all       # Run comprehensive latency analysis suite
 make clean             # Clean up generated files
 ```
 
