@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from queue import Queue
 from threading import Thread
 
@@ -16,6 +17,8 @@ QUEUE_LEN = 3
 class WebvisConfig(FilterConfig):
     host: str | None
     port: int | None
+    enable_json: bool = False
+    sleep_interval: float = 1.0
 
 
 class Webvis(Filter):
@@ -71,8 +74,11 @@ class Webvis(Filter):
             import time
             def gen():
                 while True:
-                    yield f"data: {self.current_data}\n\n"
-                    time.sleep(1)
+                    if self.enable_json:
+                        yield f"data: {json.dumps(self.current_data)}\n\n"
+                    else:
+                        yield f"data: {self.current_data}\n\n"
+                    time.sleep(self.sleep_interval)
 
             return StreamingResponse(gen(), media_type='text/event-stream')
 
@@ -94,6 +100,24 @@ class Webvis(Filter):
     def normalize_config(cls, config):
         outputs = split_commas_maybe(config.get('outputs'))  # we do not assume how Filter will normalize sources/outputs in the future
         config  = WebvisConfig(super().normalize_config(dict_without(config, 'outputs')))
+        env_mapping = {
+            "enable_json": bool,
+            "sleep_interval": float,
+        }
+        for key, expected_type in env_mapping.items():
+            env_key = f"FILTER_{key.upper()}"
+        for key, expected_type in env_mapping.items():
+            env_key = f"FILTER_{key.upper()}"
+            env_val = os.getenv(env_key)
+            if env_val is not None:
+                if expected_type is bool:
+                    setattr(config, key, env_val.strip().lower() == "true")
+                elif expected_type is float:
+                    setattr(config, key, float(env_val.strip()))
+                elif expected_type is int:
+                    setattr(config, key, int(env_val.strip()))
+                else:
+                    setattr(config, key, env_val.strip())
 
         if outputs is not None:
             config.outputs = outputs
@@ -125,6 +149,8 @@ class Webvis(Filter):
 
     def setup(self, config):
         self.streams = {}  # {'topic': Queue, ...}
+        self.enable_json = config.enable_json
+        self.sleep_interval = config.sleep_interval
 
         Thread(target=self.serve, args=(config.host, config.port), daemon=True).start()
 
@@ -134,6 +160,8 @@ class Webvis(Filter):
                 if (queue := self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))).empty():
                     queue.put(frame)
                     self.current_data = frame.data
+                else:
+                    logger.debug('Skipping frames')
 
 
 if __name__ == '__main__':
