@@ -51,6 +51,42 @@ class FilterToQueue(Filter):
         sleep(self.config.sleep or 0)
 
 
+class SendCountOrNone(Filter):
+    """Filter that returns None for odd counts and Frame for even counts."""
+    def setup(self, config):
+        self.count = -1
+
+    def process(self, frames):
+        if (count := self.count + 1) == 4:
+            self.exit()
+
+        self.count = count
+
+        return None if count & 1 else Frame({'count': count})
+
+
+class SendCountOrNoneCB(Filter):
+    """Filter that returns a callback with None for odd counts and Frame for even counts."""
+    def setup(self, config):
+        self.count = -1
+
+    def process(self, frames):
+        if (count := self.count + 1) == 4:
+            self.exit()
+
+        self.count = count
+
+        return lambda: None if count & 1 else Frame({'count': count})
+
+
+class MyFilter(Filter):
+    """Filter that puts frames to a queue and returns them."""
+    def process(self, frames):
+        self.config.queue.put(frames)
+
+        return frames
+
+
 class TestFilterOld(unittest.TestCase):
     """Old doesn't mean invalid, just that it was written before some features that would have made these tests simpler
      and different if written today. Many of these are only 99.9% deterministic because of network entropy so if they
@@ -335,12 +371,6 @@ class TestFilterOld(unittest.TestCase):
 
 
     def test_topo_balance_step(self):
-        class MyFilter(Filter):
-            def process(self, frames):
-                self.config.queue.put(frames)
-
-                return frames
-
         runner = Filter.Runner([
             (FilterFromQueue, dict(id='src', outputs='tcp://*:5550, tcp://*:5552, tcp://*:5554', outputs_balance=True, queue=(qout := Queue()), start_sleep=0.1)),
             (MyFilter,        dict(id='worker1', sources='tcp://localhost:5550', outputs='tcp://*:5560', queue=(qworker1 := Queue()))),
@@ -534,18 +564,6 @@ class TestFilter(unittest.TestCase):
 
 
     def test_process_return_none(self):
-        class SendCountOrNone(Filter):
-            def setup(self, config):
-                self.count = -1
-
-            def process(self, frames):
-                if (count := self.count + 1) == 4:
-                    self.exit()
-
-                self.count = count
-
-                return None if count & 1 else Frame({'count': count})
-
         with RunnerContext([
             (SendCountOrNone, dict(
                 outputs = 'ipc://test-filter',
@@ -563,18 +581,6 @@ class TestFilter(unittest.TestCase):
 
 
     def test_process_return_none_callback(self):
-        class SendCountOrNoneCB(Filter):
-            def setup(self, config):
-                self.count = -1
-
-            def process(self, frames):
-                if (count := self.count + 1) == 4:
-                    self.exit()
-
-                self.count = count
-
-                return lambda: None if count & 1 else Frame({'count': count})
-
         with RunnerContext([
             (SendCountOrNoneCB, dict(
                 outputs = 'ipc://test-filter',
