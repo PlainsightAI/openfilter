@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import gc
 import logging
 import os
 import unittest
@@ -30,6 +31,10 @@ def recv(recvr, *args, **kwargs):
 
 
 class TestZeroMQOld(unittest.TestCase):
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
+
     def test_old_general(self):
         def thread(queue: Queue, queue_oob: Queue):
             sendr = ZMQSender(['tcp://*:5550', 'ipc://./tmp_pipe'], 'server', lambda m: queue_oob.put(m))
@@ -155,6 +160,9 @@ class TestZeroMQTCP(unittest.TestCase):
     CLIENT2 = 'tcp://127.0.0.1:5552'
     CLIENT3 = 'tcp://127.0.0.1:5554'
 
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
 
     def test_send_recv(self):
         sendr = ZMQSender(self.SERVER1, 'server')
