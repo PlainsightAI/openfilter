@@ -1,0 +1,48 @@
+name: Security Scan
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+    branches: [main, release]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly
+
+jobs:
+  grype:
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Create virtual environment and install dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          make install
+
+      - name: Verify venv contents
+        run: |
+          echo "Checking venv structure..."
+          ls -la venv/
+          echo "Checking root directory structure..."
+          ls -la .
+          echo "Checking opencv installation..."
+          find venv -name "*cv*" -type d | head -5
+
+      - name: Download Grype
+        uses: anchore/scan-action/download-grype@v3
+        id: grype
+        with:
+          grype-version: v0.103.0
+
+      - name: Run Grype security scan
+        run: ${{steps.grype.outputs.cmd}} --name openfilter -o table --fail-on critical --only-fixed dir:.
