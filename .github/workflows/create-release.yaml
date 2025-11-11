@@ -142,7 +142,7 @@ jobs:
 
           echo "package_name=$name" >> $GITHUB_OUTPUT
           echo "package_version=$version" >> $GITHUB_OUTPUT
-          
+
           rm -f METADATA
       - name: Check if version already on PyPI
         id: check_pypi
@@ -216,7 +216,7 @@ jobs:
         run: pip install twine
 
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: wheel-dist
           path: dist/
