@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import gc
 import logging
 import multiprocessing as mp
 import os
@@ -91,6 +92,25 @@ class TestFilterOld(unittest.TestCase):
     """Old doesn't mean invalid, just that it was written before some features that would have made these tests simpler
      and different if written today. Many of these are only 99.9% deterministic because of network entropy so if they
      fail treat them as a screen rather than definitive invalidation and try again."""
+
+    def setUp(self):
+        self._queues = []
+
+    def tearDown(self):
+        # Clean up all queues to prevent file descriptor leaks
+        for queue in self._queues:
+            try:
+                queue.close()
+                queue.join_thread()
+            except:
+                pass
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
+
+    def _track_queue(self, queue):
+        """Track a queue for cleanup in tearDown."""
+        self._queues.append(queue)
+        return queue
 
     def test_topo_simple(self):
         qout = Queue(); [qout.put({'main': {'count': i}}) for i in range(5)]; qout.put(None)
@@ -511,6 +531,10 @@ class TestFilterOld(unittest.TestCase):
 
 
 class TestFilter(unittest.TestCase):
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
+
     def test_normalize_config(self):
         scfg = dict(
             id                  = 'filter',

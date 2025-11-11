@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import gc
 import logging
 import multiprocessing as mp
 import os
@@ -43,6 +44,10 @@ GRAYFRAME      = FRAME.gray
 
 
 class TestUtil(unittest.TestCase):
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
+
     def test_normalize_config(self):
         scfg  = dict(id='util', sources='tcp://localhost', sleep=1.23, exit_after=4.56, xforms=''
             'flipx, flipy, flipboth, rotcw, rotccw, swaprgb, fmtrgb, fmtbgr, fmtgray, '
