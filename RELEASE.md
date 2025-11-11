@@ -1,6 +1,17 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.16 - 2025-12-09
+
+### Added
+- feat: add security-scan GH workflow
+### Fixed
+- dependencies updated to fix CVEs
+- CVE: update GitHub actions/download-artifact
+- tests: prevent flaky failures
+- tests: prevent file descriptor leaks
+- tests: Python 3.12 Multiprocessing Pickling Issues
+
 ## v0.1.15 - 2025-12-01
 
 ### Added
@@ -12,7 +23,7 @@ OpenFilter Library release notes
 
 ### Updated
 - **Documentation**: Updated documentation
- 
+
 ## v0.1.13 - 2025-09-24
 
 ### Added
@@ -127,9 +138,9 @@ OpenFilter Library release notes
 - `OpenTelemetry` support to the `OpenFilter`.
   - For `OpenTelemetry` usage:
     - `TELEMETRY_EXPORTER_TYPE`- OpenTelemetry exporter (eg:console,gcm,OTLP_GRPC,OTLP_HTTP)
-    - `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT` - If the client is OTLP_GRPC           
+    - `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT` - If the client is OTLP_GRPC
     - `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT` - If the client is OTLP_HTTP
-    - `OTLP_GRPC_ENDPOINT_SECURITY` - Sets OpenTelemtry GRPC client endpoint security 
+    - `OTLP_GRPC_ENDPOINT_SECURITY` - Sets OpenTelemtry GRPC client endpoint security
     - `TELEMETRY_EXPORTER_ENABLED` - Enable/disable OpenTelemetry
     - `EXPORT_INTERVAL` - OpenTelemetry metrics Export interval
     - `PROJECT_ID` - GCP project
@@ -140,7 +151,7 @@ OpenFilter Library release notes
 - `OpenLineage` support to the `OpenFilter`.
   - For `OpenLineage` usage:
     - `OPENLINEAGE_URL`- OpenLineage client URL
-    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed             
+    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed
     - `OPENLINEAGE_VERIFY_CLIENT_URL` - False by default
     - `OPENLINEAGE_ENDPOINT` - OpenLineage client endpoint
     - `OPENLINEAGE_PRODUCER` - OpenLineage producer
@@ -148,7 +159,7 @@ OpenFilter Library release notes
 
 ### Updated
 - `OpenLineage` support to the `OpenFilter`.
-  - `run_id` updated the code so that events have the same run_id            
+  - `run_id` updated the code so that events have the same run_id
 
 ## v0.1.4 - 2025-07-07
 
@@ -156,7 +167,7 @@ OpenFilter Library release notes
 - `OpenLineage` support to the `OpenFilter`.
   - For `OpenLineage` usage:
     - `OPENLINEAGE_URL`- OpenLineage client URL
-    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed             
+    - `OPENLINEAGE_API_KEY` - OpenLineage client API key if needed
     - `OPENLINEAGE_VERIFY_CLIENT_URL` - False by default
     - `OPENLINEAGE_ENDPOINT` - OpenLineage client endpoint
     - `OPENLINEAGE_PRODUCER` - OpenLineage producer
@@ -168,7 +179,7 @@ OpenFilter Library release notes
 - `s3://` support to the `VideoIn` base filter (Thanks to @Ninad-Bhangui)
   - For `s3://` sources, AWS credentials are required. Set these environment variables:
     - `AWS_ACCESS_KEY_ID` - Your AWS access key ID
-    - `AWS_SECRET_ACCESS_KEY` - Your AWS secret access key  
+    - `AWS_SECRET_ACCESS_KEY` - Your AWS secret access key
     - `AWS_DEFAULT_REGION` - Default AWS region (optional, can be overridden per source)
     - `AWS_PROFILE` - AWS credentials profile to use (alternative to access keys)
 - `examples/hello-ocr` example demonstrating an OCR filter use case on a simple hello world video (Thanks to @kitmerker)
