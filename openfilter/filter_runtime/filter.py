@@ -30,9 +30,15 @@ from uuid import uuid4
 from openfilter.observability import OpenFilterLineage, TelemetryRegistry, MetricSpec
 from openfilter.observability.client import OpenTelemetryClient
 from openfilter.filter_runtime.utils import strtobool
+from scarf import ScarfEventLogger
+
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
 logger = logging.getLogger(__name__)
+
+scarf_elogger = ScarfEventLogger(
+    endpoint_url=f"https://python.openfilter.io/openfilter"
+)
 
 LOG_LEVEL  = (os.getenv('LOG_LEVEL') or 'INFO').upper()
 LOG_FORMAT = os.getenv('LOG_FORMAT') or None
@@ -562,6 +568,11 @@ class Filter:
             logger.info("[Filter] Raw subject data export is DISABLED (set OPENLINEAGE_EXPORT_RAW_DATA=true to enable)")
     
 
+        scarf_metric_name = type(self).__name__.lower()
+        scarf_elogger.log_event(
+            properties={"filter_initialized": f"{scarf_metric_name}"}
+        )
+
         try:
             try:
                 self.config = config = self.normalize_config(config)
@@ -865,7 +876,7 @@ class Filter:
     
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
-        
+
         # Prepare facets with config and version information
         facets = dict(config)
 
