@@ -7,8 +7,8 @@ If you're submitting a pull request or issue and aren't sure who to tag, start h
 ## Core Maintainers
 
 *Core maintainers have final say on design decisions and are responsible for overall code quality and release readiness.*
-* @asmith-plainsight
-* @malmenshad
+
+* @abhijit10m
 
 ## Regular Maintainers
 
@@ -20,4 +20,5 @@ If you're submitting a pull request or issue and aren't sure who to tag, start h
 
 *People who previously maintained the project and whose contributions are deeply appreciated.*
 
-* (add names here as needed)
+* @asmith-plainsight
+* @malmenshad

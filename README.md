@@ -28,6 +28,21 @@ Jump to:
 
 ---
 
+## User Consent & Privacy
+
+OpenFilter may collect usage metrics and telemetry data to help improve the project. We respect user privacy and provide multiple ways to manage consent:
+
+**Opt out of tracking:**
+- Set the `DO_NOT_TRACK` environment variable:
+  ```bash
+  export DO_NOT_TRACK=true
+  ```
+- Or use project-specific configuration options if available in your setup
+
+Users can easily opt in or out through environment variables or configuration settings. Please refer to your project's specific configuration documentation for additional privacy options.
+
+---
+
 ## Installation
 
 Install OpenFilter with all utility filter dependencies:
