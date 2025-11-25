@@ -3,6 +3,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+- Created the webvis example showing how to run in python, cli and docker.
+
 ## v0.1.14 - 2025-09-29
 
 ### Updated
