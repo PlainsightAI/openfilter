@@ -56,4 +56,42 @@ def read_openlineage_config() -> Optional[Dict[str, str]]:
         except Exception as e:
             print(f"Warning: Failed to read OpenLineage config from {path}: {e}")
     
+    return None
+
+
+def read_otel_config() -> Optional[Dict[str, str]]:
+    """Read OpenTelemetry configuration from YAML file or environment.
+    
+    Returns:
+        Dictionary with OTEL configuration or None if not found
+    """
+    # Try YAML file first
+    path = os.getenv("OF_SAFE_METRICS_FILE")
+    if path:
+        try:
+            with open(path, 'r') as f:
+                config = yaml.safe_load(f)
+                otel_config = config.get("opentelemetry", {})
+                if otel_config:
+                    return {
+                        "endpoint": otel_config.get("endpoint") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                        "headers": otel_config.get("headers") or os.getenv("OTEL_EXPORTER_OTLP_HEADERS"),
+                        "protocol": otel_config.get("protocol", "grpc"),
+                        "export_interval": otel_config.get("export_interval", 30),
+                        "enabled": otel_config.get("enabled", True)
+                    }
+        except Exception as e:
+            print(f"Warning: Failed to read OTEL config from {path}: {e}")
+    
+    # Fallback to environment variables
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if endpoint:
+        return {
+            "endpoint": endpoint,
+            "headers": os.getenv("OTEL_EXPORTER_OTLP_HEADERS"),
+            "protocol": os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
+            "export_interval": int(os.getenv("OTEL_EXPORT_INTERVAL", "30")),
+            "enabled": os.getenv("OTEL_ENABLED", "true").lower() in ("true", "1", "yes")
+        }
+    
     return None 

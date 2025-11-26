@@ -1,6 +1,6 @@
 # OpenFilter Observability System
 
-This document describes the comprehensive observability system in OpenFilter that provides safe, aggregated metrics without PII leakage, automatic histogram bucket generation, and optional raw data export.
+This document describes the comprehensive observability system in OpenFilter that provides safe, aggregated metrics, supports both OpenLineage and OTEL-only deployment modes, automatic histogram bucket generation, and optional raw data export.
 
 ## Architecture Overview
 
@@ -35,22 +35,73 @@ graph TB
 
 ## High-Level Flow
 
+### OTEL-Only Mode
+
+OpenFilter now supports **OTEL-only mode** for cloud deployments where you want to send metrics directly to OTEL collectors without OpenLineage:
+
+```mermaid
+graph LR
+    A[Filter with MetricSpecs] --> B[TelemetryRegistry]
+    B --> C[OpenTelemetry SDK]
+    C --> D[OTLP Exporter]
+    D --> E[Cloud OTEL Collector]
+    E --> F[GCP/AWS/Azure Monitoring]
+    
+    style A fill:#e1f5fe
+    style D fill:#fff3e0
+    style E fill:#f3e5f5
+```
+
+**Key Features:**
+- **Direct cloud integration** - Connect to GCP, AWS, Azure OTEL endpoints
+- **Raw vs aggregated export** - Control processing via `export_mode`
+- **Target selection** - Send to OTEL, OpenLineage, or both via `target`
+- **Safe metrics** - Same allowlist security as OpenLineage mode
+
 ### 1. Filter Declaration
+
+**Standard Mode (OpenLineage):**
 ```python
 class MyFilter(Filter):
-    metric_specs = [
-        MetricSpec(
-            name="frames_processed",
-            instrument="counter",
-            value_fn=lambda d: 1
-        ),
-        MetricSpec(
-            name="detection_confidence",
-            instrument="histogram",
-            value_fn=lambda d: d.get("confidence", 0.0),
-            num_buckets=8  # Auto-generate 8 buckets
-        )
-    ]
+    def setup(self, config):
+        super().setup(config)
+        self.metric_specs = [
+            MetricSpec(
+                name="frames_processed",
+                instrument="counter",
+                value_fn=lambda d: 1
+            ),
+            MetricSpec(
+                name="detection_confidence",
+                instrument="histogram",
+                value_fn=lambda d: d.get("confidence", 0.0),
+                num_buckets=8  # Auto-generate 8 buckets
+            )
+        ]
+```
+
+**OTEL-Only Mode:**
+```python
+class MyFilter(Filter):
+    def setup(self, config):
+        super().setup(config)
+        self.metric_specs = [
+            MetricSpec(
+                name="frames_processed",
+                instrument="counter",
+                value_fn=lambda d: 1,
+                export_mode="raw",      # Send raw values directly
+                target="otel"           # Only to OTEL collectors
+            ),
+            MetricSpec(
+                name="detection_confidence",
+                instrument="histogram",
+                value_fn=lambda d: d.get("confidence", 0.0),
+                export_mode="aggregated", # Let OTel SDK aggregate
+                target="otel",           # Only to OTEL collectors
+                num_buckets=10
+            )
+        ]
 ```
 
 ### 2. Frame Processing
@@ -109,8 +160,22 @@ class MetricSpec:
     value_fn: Callable[[dict], Union[int, float, None]]  # Value extraction
     boundaries: Optional[List[Union[int, float]]] = None  # Custom histogram buckets
     num_buckets: int = 10                       # Auto-generated buckets
+    export_mode: str = "aggregated"             # 'raw', 'aggregated', 'both'
+    target: str = "both"                        # 'otel', 'openlineage', 'both'
     _otel_inst: Optional[Instrument] = None     # Internal OpenTelemetry instrument
 ```
+
+#### New Fields (v0.2.0+)
+
+**`export_mode`**: Controls how metrics are processed before export:
+- `"raw"`: Send raw values directly to destination (useful for cloud aggregation)
+- `"aggregated"`: Let OpenTelemetry SDK aggregate values first (default)
+- `"both"`: Send both raw and aggregated values
+
+**`target`**: Controls where metrics are sent:
+- `"otel"`: Only to OpenTelemetry collectors (OTLP endpoints)
+- `"openlineage"`: Only to OpenLineage systems (Oleander/Marquez)
+- `"both"`: To both destinations (default)
 
 #### Value Extraction Functions
 
@@ -169,35 +234,59 @@ The `TelemetryRegistry` manages metric recording:
 
 ```python
 class TelemetryRegistry:
-    def __init__(self, metric_specs: List[MetricSpec]):
-        self.meter = get_meter(__name__)
+    def __init__(self, metric_specs: List[MetricSpec], meter=None, otel_meter=None):
+        # Primary meter for OpenLineage bridge
+        self.meter = meter or get_meter(f"{__name__}_lineage")
+        # Secondary meter for direct OTEL export
+        self.otel_meter = otel_meter or get_meter(f"{__name__}_otel")
         self.specs = {}
         
         for spec in metric_specs:
-            # Create OpenTelemetry instrument
-            if spec.instrument == "counter":
-                inst = self.meter.create_counter(spec.name)
-            elif spec.instrument == "histogram":
-                # Use provided boundaries or auto-generate
-                boundaries = spec.boundaries or self._generate_buckets(spec)
-                inst = self.meter.create_histogram(spec.name, boundaries=boundaries)
-            elif spec.instrument == "gauge":
-                inst = self.meter.create_observable_gauge(spec.name)
-            
-            spec._otel_inst = inst
+            self._create_instruments(spec)
             self.specs[spec.name] = spec
     
-    def record_metrics(self, frames: Dict[str, Frame]):
-        """Record metrics for all frames."""
-        for frame_id, frame in frames.items():
-            if hasattr(frame, 'data') and isinstance(frame.data, dict):
-                for spec in self.specs.values():
-                    value = spec.value_fn(frame.data)
-                    if value is not None:
-                        if spec.instrument == "counter":
-                            spec._otel_inst.add(value)
-                        elif spec.instrument == "histogram":
-                            spec._otel_inst.record(value)
+    def _create_instruments(self, spec: MetricSpec):
+        """Create instruments based on target configuration."""
+        if spec.target in ["openlineage", "both"]:
+            # Create instrument for OpenLineage bridge
+            if spec.instrument == "counter":
+                spec._lineage_inst = self.meter.create_counter(spec.name)
+            elif spec.instrument == "histogram":
+                boundaries = spec.boundaries or self._generate_buckets(spec)
+                spec._lineage_inst = self.meter.create_histogram(
+                    spec.name, explicit_bucket_boundaries_advisory=boundaries
+                )
+        
+        if spec.target in ["otel", "both"]:
+            # Create instrument for direct OTEL export
+            if spec.instrument == "counter":
+                spec._otel_inst = self.otel_meter.create_counter(spec.name)
+            elif spec.instrument == "histogram":
+                boundaries = spec.boundaries or self._generate_buckets(spec)
+                spec._otel_inst = self.otel_meter.create_histogram(
+                    spec.name, explicit_bucket_boundaries_advisory=boundaries
+                )
+    
+    def record_metrics(self, frame_data_dict: dict):
+        """Record metrics for frame data."""
+        for spec in self.specs.values():
+            value = spec.value_fn(frame_data_dict)
+            if value is not None:
+                self._record_to_instrument(spec, value)
+    
+    def _record_to_instrument(self, spec: MetricSpec, value: float):
+        """Record value to appropriate instruments based on target."""
+        if spec.target in ["openlineage", "both"] and hasattr(spec, '_lineage_inst'):
+            if spec.instrument == "counter":
+                spec._lineage_inst.add(value)
+            elif spec.instrument == "histogram":
+                spec._lineage_inst.record(value)
+        
+        if spec.target in ["otel", "both"] and hasattr(spec, '_otel_inst'):
+            if spec.instrument == "counter":
+                spec._otel_inst.add(value)
+            elif spec.instrument == "histogram":
+                spec._otel_inst.record(value)
 ```
 
 ### Raw Data Export Flow
@@ -269,26 +358,47 @@ The allowlist system controls exactly which metrics are exported to OpenLineage,
 safe_metrics:
   - frames_processed           # Counter
   - frames_with_detections     # Counter  
-  - detection_confidence       # Histogram (becomes detection_confidence_histogram)
-  - processing_time_ms         # Histogram (becomes processing_time_ms_histogram)
+  - detection_confidence       # Histogram (bridge adds _histogram suffix)
+  - processing_time_ms         # Histogram (bridge adds _histogram suffix)
 ```
 
-#### Wildcard Patterns
+#### Wildcard Patterns for System Metrics
 ```yaml
 safe_metrics:
-  - customprocessor_*          # All metrics starting with customprocessor_
-  - "*_fps"                    # All metrics ending with _fps
-  - "*_histogram"              # All histogram metrics
-  - "detection_*"              # All detection-related metrics
+  # Business metrics (exact names)
+  - "frames_processed"
+  - "detections_per_frame"
+  - "detection_confidence"
+  
+  # System metrics (filter-specific)
+  - "customprocessor_fps"      # Specific filter FPS
+  - "customprocessor_cpu"      # Specific filter CPU
+  - "customprocessor_mem"      # Specific filter memory
+  
+  # Or use wildcards for all filters
+  - "*_fps"                    # All filter FPS metrics
+  - "*_cpu"                    # All filter CPU metrics  
+  - "*_mem"                    # All filter memory metrics
+  
+  # All metrics from specific filter
+  - "customprocessor_*"        # All CustomProcessor metrics
 ```
 
 #### All-in-One Configuration
 ```yaml
-# OpenLineage Configuration
+# OpenLineage Configuration (optional)
 openlineage:
   url: "https://oleander.dev"
   api_key: "your_api_key"
   heartbeat_interval: 10
+
+# OpenTelemetry Configuration (optional)
+opentelemetry:
+  endpoint: "https://otel-collector-prod.tail2a17c.ts.net/v1/metrics"
+  protocol: "http/protobuf"  # or "grpc"
+  headers: "authorization=Bearer YOUR_TOKEN"
+  export_interval: 3000
+  enabled: true
 
 # Safe Metrics
 safe_metrics:
@@ -298,6 +408,89 @@ safe_metrics:
 ```
 
 ## Configuration Options
+
+### OTEL-Only Configuration
+
+For cloud deployments using OTEL collectors only:
+
+#### Environment Variables
+```bash
+# Enable telemetry export
+export TELEMETRY_EXPORTER_ENABLED=true
+export TELEMETRY_EXPORTER_TYPE=console  # For local testing
+# export TELEMETRY_EXPORTER_TYPE=otlp  # For cloud deployment
+
+# Standard OTEL environment variables (used by OTEL SDK)
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector-prod.tail2a17c.ts.net/v1/metrics"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"  # or "grpc"
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer YOUR_TOKEN"
+
+# Export settings
+export EXPORT_INTERVAL=3000  # milliseconds
+
+# Safe metrics allowlist (YAML file recommended for OTEL mode)
+export OF_SAFE_METRICS_FILE=safe_metrics_otel.yaml
+
+# Disable OpenLineage for OTEL-only mode
+# export OPENLINEAGE_URL=""  # Leave unset or empty
+```
+
+#### YAML Configuration
+```yaml
+# safe_metrics_otel.yaml
+opentelemetry:
+  endpoint: "https://otel-collector-prod.tail2a17c.ts.net/v1/metrics"
+  protocol: "http/protobuf"  # or "grpc"
+  headers: "authorization=Bearer YOUR_TOKEN"
+  export_interval: 3000  # milliseconds
+  enabled: true
+
+safe_metrics:
+  # Business metrics
+  - "frames_processed"
+  - "detections_per_frame"
+  - "detection_confidence"
+  
+  # System metrics (use wildcards or specific filter names)
+  - "*_fps"      # All filter FPS metrics
+  - "*_cpu"      # All filter CPU metrics
+  - "*_mem"      # All filter memory metrics
+  
+  # Or specify exact filter metrics
+  - "customprocessor_fps"
+  - "customprocessor_cpu"
+  - "customprocessor_mem"
+```
+
+#### Cloud Provider Examples
+
+**Google Cloud Platform:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://cloudtrace.googleapis.com/v1/projects/YOUR_PROJECT/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer $(gcloud auth print-access-token)"
+```
+
+**AWS X-Ray:**
+```bash 
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://api.awsxray.us-east-1.amazonaws.com/traces"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="x-aws-access-key-id=KEY,x-aws-secret-access-key=SECRET"
+```
+
+**Azure Monitor:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://YOUR_WORKSPACE.monitor.azure.com/"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=YOUR_API_KEY"
+```
+
+**Custom OTEL Collector:**
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector-prod.tail2a17c.ts.net/v1/metrics"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer YOUR_TOKEN"
+```
 
 ### Environment Variables
 
@@ -521,8 +714,40 @@ class OCRProcessor(Filter):
     ]
 ```
 
+## Usage Modes Summary
+
+### 1. OpenLineage Only (Original)
+- **Purpose**: Data lineage and metadata tracking
+- **Configuration**: Set `OPENLINEAGE_URL` and `OPENLINEAGE_API_KEY`
+- **MetricSpec**: Use default `target="both"` (routes to OpenLineage when OTEL disabled)
+- **Output**: Aggregated metrics in OpenLineage heartbeat events
+- **Use Case**: Data governance, pipeline monitoring, audit trails
+
+### 2. OTEL Only (New)
+- **Purpose**: Cloud monitoring and alerting  
+- **Configuration**: Set `OTEL_EXPORTER_OTLP_ENDPOINT`, leave `OPENLINEAGE_URL` unset
+- **MetricSpec**: Use `target="otel"` and `export_mode="raw|aggregated|both"`
+- **Output**: Metrics sent directly to cloud OTEL collectors (GCP, AWS, Azure)
+- **Use Case**: Production monitoring, alerting, cloud dashboards, cost optimization
+
+### 3. Hybrid Mode  
+- **Purpose**: Full observability stack
+- **Configuration**: Set both OpenLineage and OTEL endpoints
+- **MetricSpec**: Use `target="both"` with appropriate `export_mode`
+- **Output**: Raw/aggregated to OTEL + aggregated to OpenLineage
+- **Use Case**: Complete observability with lineage tracking and real-time monitoring
+
+### 4. System Metrics Only
+- **Purpose**: Basic infrastructure monitoring
+- **Configuration**: Enable telemetry, use allowlist for system metrics
+- **MetricSpec**: Not required (automatic system metrics: fps, cpu, mem, etc.)
+- **Output**: FPS, CPU, memory, latency metrics to configured destinations
+- **Use Case**: Infrastructure monitoring without custom business metrics
+- **Allowlist Example**: `["*_fps", "*_cpu", "*_mem", "customprocessor_*"]`
+
 ## Expected Timeline
 
+### OpenLineage Mode
 With default settings (`OPENLINEAGE__HEART__BEAT__INTERVAL=10`):
 
 - **0-10 seconds**: Empty or minimal payloads (system warming up)
@@ -531,55 +756,106 @@ With default settings (`OPENLINEAGE__HEART__BEAT__INTERVAL=10`):
 
 This is normal behavior and ensures that metrics are properly aggregated before being sent to Oleander.
 
+### OTEL-Only Mode
+With default settings (`EXPORT_INTERVAL=3000`):
+
+- **0-3 seconds**: Console logging starts immediately
+- **3+ seconds**: Regular metric exports to OTEL collector
+- **Cloud monitoring**: Metrics appear in dashboards within 1-2 minutes
+
+OTEL-only mode provides faster feedback for development and testing.
+
 ## Troubleshooting
 
 ### Common Issues
 
-1. **No metrics appearing in Oleander**
+1. **No metrics appearing in Oleander/OTEL**
    - Check `TELEMETRY_EXPORTER_ENABLED=true`
-   - Verify `OF_SAFE_METRICS` includes your metric names
-   - Ensure `OPENLINEAGE_URL` is set correctly
+   - Verify `OF_SAFE_METRICS` or `OF_SAFE_METRICS_FILE` includes your metric names
+   - For OpenLineage: Ensure `OPENLINEAGE_URL` is set correctly
+   - For OTEL: Verify `OTEL_EXPORTER_OTLP_ENDPOINT` and protocol settings
 
-2. **Histogram bucket mismatch**
+2. **System metrics not appearing**
+   - System metrics are prefixed with filter names (e.g., `customprocessor_fps`)
+   - Use wildcards in allowlist: `["*_fps", "*_cpu", "*_mem"]`
+   - Or specify exact names: `["customprocessor_fps", "customprocessor_cpu"]`
+
+3. **Histogram bucket mismatch**
    - Verify `len(counts) = len(boundaries) + 1`
    - Check automatic bucket generation logic
    - Use `num_buckets` for auto-generation or `boundaries` for custom
 
-3. **Raw data not appearing**
+4. **Raw data not appearing**
    - Set `OPENLINEAGE_EXPORT_RAW_DATA=true`
    - Check that frames have data in `frame.data`
-   - Verify memory limits aren't exceeded
+   - Verify memory limits aren't exceeded (max 100 frames stored)
 
-4. **OpenLineage not starting**
-   - Ensure `OPENLINEAGE_URL` is set
+5. **OpenLineage not starting**
+   - Ensure `OPENLINEAGE_URL` is set (required for initialization)
    - Check API key and endpoint configuration
    - Verify network connectivity
+
+6. **OTEL connection issues**
+   - Verify endpoint URL format and protocol (`http/protobuf` vs `grpc`)
+   - Check authentication headers and tokens
+   - Test with `TELEMETRY_EXPORTER_TYPE=console` first
+   - Use `curl` to test OTEL endpoint connectivity
 
 ### Debug Logging
 
 Enable debug logging to trace metric flow:
 
 ```bash
+# General debugging
 export FILTER_DEBUG=true
+
+# OTEL-only mode debugging
+export TELEMETRY_EXPORTER_TYPE=console
+export EXPORT_INTERVAL=3000
+
+# OpenLineage debugging
 export OPENLINEAGE_EXPORT_RAW_DATA=true
+export OPENLINEAGE__HEART__BEAT__INTERVAL=5
 ```
 
 This will show:
-- Metric recording events
-- Raw data accumulation
+- Metric recording events in console
+- Raw data accumulation (OpenLineage only)
 - Bridge export operations
+- OTEL SDK export operations
 - OpenLineage heartbeat emissions
+
+### Testing OTEL Endpoints
+
+Test connectivity to your OTEL collector:
+
+```bash
+# Test HTTP/protobuf endpoint
+curl -X POST "https://otel-collector-prod.tail2a17c.ts.net/v1/metrics" \
+  -H "Content-Type: application/x-protobuf" \
+  -H "authorization: Bearer YOUR_TOKEN" \
+  --data-binary "test"
+
+# Should return 400 (bad request) if endpoint is reachable
+# Should return 401/403 if authentication fails
+# Should timeout/fail if endpoint is unreachable
+```
 
 ## Benefits
 
-- **Standards compliance**: Uses OpenTelemetry for aggregation
+- **Standards compliance**: Uses OpenTelemetry for aggregation and OTLP for export
+- **Multi-deployment**: Supports OpenLineage, OTEL-only, and hybrid modes
+- **Cloud ready**: Direct integration with GCP, AWS, Azure monitoring
 - **Reusable**: Same declaration mechanism works for all filters
 - **Safe**: Zero PII risk through allowlist and numeric-only export
 - **Flexible**: Easy to add new metrics without code changes
+- **Export control**: Choose raw, aggregated, or both export modes
+- **Target selection**: Route metrics to appropriate destinations
 - **Automatic**: Smart bucket generation and optimization
 - **Optional**: Raw data export for debugging when needed
 - **Conditional**: OpenLineage only starts when configured
-- **Backward compatible**: Existing filters work without changes 
+- **System metrics**: Automatic FPS, CPU, memory monitoring
+- **Backward compatible**: Existing filters work without changes
 
 
 

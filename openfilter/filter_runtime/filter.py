@@ -948,12 +948,16 @@ class Filter:
                     lineage_emitter=self.emitter
                 )
                 
-                # Initialize telemetry registry if metric specs are declared
+                # Initialize telemetry registry if metric specs are declared at init time
+                # (for filters that set metric_specs as class attributes)
                 if hasattr(self, 'metric_specs') and self.metric_specs:
-                    # Use business meter for business metrics (goes only to OpenLineage)
-                    meter = getattr(self.otel, 'business_meter', self.otel.meter)
-                    self._telemetry = TelemetryRegistry(meter, self.metric_specs)
+                    # Use business meter for OpenLineage, main meter for OTEL
+                    business_meter = getattr(self.otel, 'business_meter', self.otel.meter)
+                    otel_meter = getattr(self.otel, 'meter', self.otel.meter)
+                    self._telemetry = TelemetryRegistry(business_meter, self.metric_specs, otel_meter)
+                    logger.info(f"Initialized TelemetryRegistry at init() with {len(self.metric_specs)} MetricSpecs")
                 else:
+                    # Will be initialized after setup() if metric_specs are set there
                     self._telemetry = None
                     
             except Exception as e:
@@ -1149,6 +1153,14 @@ class Filter:
                 try:
                     try:
                         filter.setup(filter.config)
+                        
+                        # Initialize telemetry registry after setup() in case metric_specs were set there
+                        if hasattr(filter, 'metric_specs') and filter.metric_specs and hasattr(filter, '_telemetry') and filter._telemetry is None:
+                            if hasattr(filter, 'otel') and filter.otel:
+                                business_meter = getattr(filter.otel, 'business_meter', filter.otel.meter)
+                                otel_meter = getattr(filter.otel, 'meter', filter.otel.meter)
+                                filter._telemetry = TelemetryRegistry(business_meter, filter.metric_specs, otel_meter)
+                                logger.info(f"Initialized TelemetryRegistry after setup() with {len(filter.metric_specs)} MetricSpecs")
 
                         try:
                             while not stop_evt.is_set():

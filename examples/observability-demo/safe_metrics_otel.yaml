@@ -1,0 +1,73 @@
+# OTEL-Only Safe Metrics Configuration
+# This file defines which metrics are safe to export to OTEL collectors
+# without containing PII (Personally Identifiable Information)
+
+# =============================================================================
+# OpenTelemetry Configuration (NEW)
+# =============================================================================
+opentelemetry:
+  # OTEL Collector endpoint
+  endpoint: "https://otel-collector-prod.tail2a17c.ts.net/v1/metrics"
+  
+  # Authentication headers (if required)
+  headers: ""
+  
+  # Protocol: grpc or http/protobuf
+  protocol: "http/protobuf"
+  
+  # Export interval in seconds
+  export_interval: 3
+  
+  # Enable OTEL export
+  enabled: true
+
+# =============================================================================
+# Safe Metrics Allowlist
+# =============================================================================
+safe_metrics:
+  # Business metrics from custom processors (exact names from MetricSpec)
+  # - "test_counter"
+  - "frames_processed"
+  - "detections_per_frame"
+  - "detection_confidence"  
+  # - "processing_time_ms"
+  # - "object_size_ratio"
+  
+  # System metrics (automatically collected) - note: these are prefixed with filter names
+  - "*_fps"      # VideoIn_fps, CustomProcessor_fps, etc.
+  - "*_cpu"      # VideoIn_cpu, CustomProcessor_cpu, etc.  
+  - "*_mem"      # VideoIn_mem, CustomProcessor_mem, etc. (note: "mem" not "memory")
+  - "*_uptime_count"
+  - "*_frame_count"
+  - "*_megapx_count"
+  - "*_lat_in"
+  - "*_lat_out"
+  - "*_ts"
+  
+  # Histogram metrics (OpenTelemetry will add _bucket, _count, _sum suffixes)
+  # - "detections_per_frame_bucket"
+  # - "detections_per_frame_count" 
+  # - "detections_per_frame_sum"
+  # - "detection_confidence_bucket"
+  # - "detection_confidence_count"
+  # - "detection_confidence_sum"
+  # - "processing_time_ms_bucket"
+  # - "processing_time_ms_count"
+  # - "processing_time_ms_sum"
+  
+  # Wildcard patterns for dynamic metrics
+  - "CustomProcessor_*"
+  # - "CustomVisualizer_*" 
+  # - "*_count"
+  # - "*_total"
+  # - "*_avg"
+  # - "*_histogram"
+
+# =============================================================================
+# Notes
+# =============================================================================
+# 1. Use base metric names for histograms (without _histogram suffix)
+# 2. Wildcard patterns (*) match any characters
+# 3. System metrics (fps, cpu, memory) are always available if allowlisted
+# 4. Custom MetricSpec metrics must be explicitly listed or match patterns
+# 5. This configuration is for OTEL-only export (no OpenLineage)
