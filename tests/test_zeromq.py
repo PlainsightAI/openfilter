@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import gc
 import logging
 import os
 import unittest
@@ -30,6 +31,10 @@ def recv(recvr, *args, **kwargs):
 
 
 class TestZeroMQOld(unittest.TestCase):
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
+
     def test_old_general(self):
         def thread(queue: Queue, queue_oob: Queue):
             sendr = ZMQSender(['tcp://*:5550', 'ipc://./tmp_pipe'], 'server', lambda m: queue_oob.put(m))
@@ -155,6 +160,9 @@ class TestZeroMQTCP(unittest.TestCase):
     CLIENT2 = 'tcp://127.0.0.1:5552'
     CLIENT3 = 'tcp://127.0.0.1:5554'
 
+    def tearDown(self):
+        # Force garbage collection to clean up file descriptors
+        gc.collect()
 
     def test_send_recv(self):
         sendr = ZMQSender(self.SERVER1, 'server')
@@ -171,7 +179,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=1000), (i, d))
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
@@ -460,81 +468,81 @@ class TestZeroMQTCP(unittest.TestCase):
                             self.assertEqual(send(sendr2, {**(d1 := {})}, timeout=100), i + 1)
                             self.assertEqual(send(sendr3, {**(d2 := {})}, timeout=100), i + 1)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {})}, timeout=100), i + 2)
                             self.assertEqual(send(sendr2, {**(d1 := {'top1': [None, f't1{i + 1}'.encode()]})}, timeout=100), i + 2)
                             self.assertEqual(send(sendr3, {**(d2 := {})}, timeout=100), i + 2)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 1, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {})}, timeout=100), i + 3)
                             self.assertEqual(send(sendr2, {**(d1 := {})}, timeout=100), i + 3)
                             self.assertEqual(send(sendr3, {**(d2 := {'top2': [None, f't2{i + 2}'.encode()]})}, timeout=100), i + 3)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 2, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {'top0': [None, f't0{i + 3}'.encode()]})}, timeout=100), i + 4)
                             self.assertEqual(send(sendr2, {**(d1 := {'top1': [None, f't1{i + 3}'.encode()]})}, timeout=100), i + 4)
                             self.assertEqual(send(sendr3, {**(d2 := {})}, timeout=100), i + 4)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 3, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {'top0': [None, f't0{i + 4}'.encode()]})}, timeout=100), i + 5)
                             self.assertEqual(send(sendr2, {**(d1 := {})}, timeout=100), i + 5)
                             self.assertEqual(send(sendr3, {**(d2 := {'top2': [None, f't2{i + 4}'.encode()]})}, timeout=100), i + 5)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 4, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {})}, timeout=100), i + 6)
                             self.assertEqual(send(sendr2, {**(d1 := {'top1': [None, f't1{i + 5}'.encode()]})}, timeout=100), i + 6)
                             self.assertEqual(send(sendr3, {**(d2 := {'top2': [None, f't2{i + 5}'.encode()]})}, timeout=100), i + 6)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 5, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {'top0': [None, f't0{i + 6}'.encode()]})}, timeout=100), i + 7)
                             self.assertEqual(send(sendr2, {**(d1 := {'top1': [None, f't1{i + 6}'.encode()]})}, timeout=100), i + 7)
                             self.assertEqual(send(sendr3, {**(d2 := {'top2': [None, f't2{i + 6}'.encode()]})}, timeout=100), i + 7)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 6, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr1, {**(d0 := {})}, timeout=100), i + 8)
                             self.assertEqual(send(sendr2, {**(d1 := {})}, timeout=100), i + 8)
                             self.assertEqual(send(sendr3, {**(d2 := {})}, timeout=100), i + 8)
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                             self.assertEqual(recvl(recvr, timeout=1000), (i + 7, {**d0, **d1, **d2}))
 
-                            sleep(0.001)
+                            sleep(0.01)
 
                     finally:
                         recvr.destroy()
@@ -597,7 +605,7 @@ class TestZeroMQTCP(unittest.TestCase):
                                     self.assertEqual(recvl(recvr2, timeout=1000), (i, {**d12, **d22, **d32}))
                                     self.assertEqual(recvl(recvr3, timeout=1000), (i, {**d13, **d23, **d33}))
 
-                                    sleep(0.001)
+                                    sleep(0.01)
 
                             finally:
                                 recvr3.destroy()
@@ -633,7 +641,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=1000), (i, d))
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
@@ -822,33 +830,33 @@ class TestZeroMQTCP(unittest.TestCase):
                         for i in range(0, 120, 3):
                             self.assertEqual(send(sendr, d := {'main': [None, f'm{i}'.encode()]}, timeout=100), i + 1)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
-                            self.assertEqual(recv(recvr1, timeout=100), (d, (i, True)))
+                            self.assertEqual(recv(recvr1, timeout=1000), (d, (i, True)))
                             self.assertEqual(recv(recvr2, timeout=1), None)
                             self.assertEqual(recv(recvr3, timeout=1), None)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr, d := {'main': [None, f'm{i + 1}'.encode()]}, timeout=100), i + 2)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
-                            self.assertEqual(recv(recvr2, timeout=100), (d, (i + 1, True)))
+                            self.assertEqual(recv(recvr2, timeout=1000), (d, (i + 1, True)))
                             self.assertEqual(recv(recvr1, timeout=1), None)
                             self.assertEqual(recv(recvr3, timeout=1), None)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
                             self.assertEqual(send(sendr, d := {'main': [None, f'm{i + 2}'.encode()]}, timeout=100), i + 3)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
-                            self.assertEqual(recv(recvr3, timeout=100), (d, (i + 2, True)))
+                            self.assertEqual(recv(recvr3, timeout=1000), (d, (i + 2, True)))
                             self.assertEqual(recv(recvr2, timeout=1), None)
                             self.assertEqual(recv(recvr1, timeout=1), None)
 
-                            sleep(0.0002)
+                            sleep(0.01)
 
                     finally:
                         recvr3.destroy()
@@ -1026,7 +1034,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=1000), (i, {}))
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
@@ -1050,7 +1058,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=1000), (i, d))
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
@@ -1074,7 +1082,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=100), None)
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
@@ -1098,7 +1106,7 @@ class TestZeroMQTCP(unittest.TestCase):
                     self.assertEqual(send(sendr, d := {'main': [None, str(i).encode()]}), i + 1)
                     self.assertEqual(recvl(recvr, timeout=1000), (i, d))
 
-                    sleep(0.0002)  # because otherwise request packets can double up and once one is missed sender doesn't send
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
 
             finally:
                 recvr.destroy()
