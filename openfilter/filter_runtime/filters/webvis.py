@@ -106,8 +106,6 @@ class Webvis(Filter):
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
-        for key, expected_type in env_mapping.items():
-            env_key = f"FILTER_{key.upper()}"
             env_val = os.getenv(env_key)
             if env_val is not None:
                 if expected_type is bool:
@@ -124,6 +122,9 @@ class Webvis(Filter):
 
         if not config.sources:
             raise ValueError('must specify at least one source')
+
+        if config.sleep_interval <= 0:
+            raise ValueError('sleep interval must be greater than 0, got:{config.sleep_interval}')
 
         if outputs:  # convenience output "http://host:port" -> config.host / config.port
             if len(outputs) != 1:
