@@ -1,7 +1,12 @@
 # Changelog
 OpenFilter Library release notes
 
-## [Unreleased]
+## v0.1.15 - 2025-12-01
+
+### Added
+- **Scarf Analytics Opt-Out**: Added support for disabling Scarf usage metrics
+  - Set `DO_NOT_TRACK=true` environment variable to opt out
+  - CI workflows now disable Scarf analytics by default
 
 ## v0.1.14 - 2025-09-29
 
