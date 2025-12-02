@@ -55,6 +55,8 @@ Filter.run_multi([
         outputs='tcp://*:5552',
         port=8000,
         host='0.0.0.0',        # Listen on all interfaces
+        enable_json=True,      # Subject data in JSON format
+        sleep_interval=0.1,    # Sleep in seconds before sending subject data
     )),
 ])
 ```
@@ -68,6 +70,8 @@ export FILTER_SOURCES="tcp://localhost:5550"
 export FILTER_OUTPUTS="tcp://*:5552"
 export FILTER_PORT="8000"
 export FILTER_HOST="0.0.0.0"
+export FILTER_ENABLE_JSON="true"
+export FILTER_SLEEP_INTERVAL="0.1"
 ```
 
 ## Web Interface
