@@ -1,9 +1,9 @@
 {
-  "label": "OpenFilter",
+  "label": "Filter Runtime",
   "link": {
     "type": "generated-index",
-    "title": "OpenFilter Guides",
-    "description": "Guides and walkthroughs for building and running OpenFilter pipelines.",
-    "slug": "/openfilter"
+    "title": "Filter Runtime",
+    "description": "Documentation for the base filter-runtime library.",
+    "slug": "/library-filter-runtime"
   }
 }
