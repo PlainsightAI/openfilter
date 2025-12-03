@@ -1,3 +1,8 @@
+---
+title: Building your first pipeline
+sidebar_position: 2
+---
+
 # OpenFilter Onboarding Guide: First Two Pipelines  
 ## With Visualization & JSON Outputs
 
