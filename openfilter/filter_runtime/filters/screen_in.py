@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 import cv2
+import numpy as np
 
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, Deque
 
@@ -279,13 +280,9 @@ class ScreenReader:
                 elif len(shape) == 3:
                     channels = shape[2]
                     if channels == 4:
-                        # ScreenGear returns RGBA on macOS, need to convert to BGR/RGB
-                        if self.as_bgr:
-                            # Convert RGBA to BGR (swap R and B, drop alpha)
-                            image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-                        else:
-                            # Convert RGBA to RGB (keep order, drop alpha)
-                            image = image[:, :, :3]  # Simply drop alpha channel
+                        # Just drop the alpha channel - NO color conversion
+                        # ScreenGear might already be in the right format
+                        image = np.ascontiguousarray(image[:, :, :3])
                     elif channels == 3 and not self.as_bgr:
                         # Convert RGB to BGR
                         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
