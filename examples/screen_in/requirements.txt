@@ -1,0 +1,19 @@
+# ScreenIn Filter Example Requirements
+
+# Core dependencies
+vidgear[core]>=0.3.0    # Video processing with ScreenGear for screen capture
+opencv-python>=4.5.0     # Image processing
+numpy>=1.21.0            # Array operations
+
+# Screen capture backends
+mss>=6.0.0               # Cross-platform screen capture (most compatible)
+
+# Optional: Platform-specific backends for better performance
+# dxcam>=0.0.5           # Windows only - hardware accelerated (fastest on Windows)
+
+# OpenFilter framework (should already be installed)
+# openfilter
+
+# Web visualization
+fastapi>=0.68.0          # Web framework for Webvis
+uvicorn>=0.15.0          # ASGI server for Webvis
