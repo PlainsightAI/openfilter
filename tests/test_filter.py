@@ -369,19 +369,19 @@ class TestFilterOld(unittest.TestCase):
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(d := {'main': {'val': 1}})
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(d := {'main': {'val': 2}})
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(None)  # tell it nicely to stop
             self.assertEqual(runner.step(), [0, 0])
@@ -726,7 +726,7 @@ class TestFilter(unittest.TestCase):
             frames1 = qout1.get()
             frames2 = qout2.get()
 
-            self.assertEqual(list(frames1), ['main'])
+            self.assertEqual(set(frames1), {'main', '_filter'})
             self.assertEqual(list(frames2), ['_metrics'])
 
             keys = set(frames2['_metrics'].data.keys())
