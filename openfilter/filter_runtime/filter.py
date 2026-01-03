@@ -123,6 +123,7 @@ class FilterConfig(adict):  # types are informative to you as in the end they're
     outputs_timeout:     int | None
     outputs_required:    str | None
     outputs_metrics:     str | bool | None
+    outputs_filter:      bool | None  # If True, emit _filter topic with frame IDs
     outputs_jpg:         bool | None
 
     exit_after:          float | str | None  # '[[[days:]hrs:]mins:]secs[.subsecs]' or '@date/time/datetime'
@@ -326,6 +327,12 @@ class Filter:
             process() as such, None uses env var default which is normally to pass them on as they are returned from
             process(). Global env var default ZMQ_LOW_LATENCY. Gloval env var default OUTPUTS_JPG.
 
+        outputs_filter:
+            If True, emit a '_filter' hidden topic with frame ID information on every output. The '_filter' topic
+            contains a data-only Frame with 'id' (from input frames' meta.id or generated sequentially).
+            This enables golden truth comparison by frame range for testing infrastructure.
+            Global env var default OUTPUTS_FILTER (default True).
+
         exit_after:
             Exit after this amount of time in seconds or as a formatted string '[[[days[d]:]hrs:]mins:]secs[.subsecs]'.
             If the `exit_after` string starts with '@' then this sets an actual clock date/time to exit at (in local
@@ -405,6 +412,11 @@ class Filter:
 
         METRICS_INTERVAL:
             Number of seconds between metrics samples written to metrics file (base metrics averaged in this time).
+
+    From mq.py:
+        OUTPUTS_FILTER:
+            If 'true'ish then emit '_filter' hidden topic with frame ID information on every output. The '_filter'
+            topic contains frame IDs (from input meta.id or generated locally). Enabled by default.
 
     From mq.py:
         OUTPUTS_JPG:
@@ -827,9 +839,9 @@ class Filter:
 
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
-       
+
         #self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
-        
+
         # Process the frames first, so the filter can add its own results
         if (processed_frames := self.process(frames)) is None:
             return None
@@ -837,7 +849,7 @@ class Filter:
         # Now emit heartbeat with the processed frames that include this filter's results
         if processed_frames and not callable(processed_frames):
             final_frames = {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
-            
+
             proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(final_frames, self.emitter))
             proces_frames_data.start()
 
@@ -984,6 +996,7 @@ class Filter:
             outs_required = config.outputs_required,
             outs_jpg      = config.outputs_jpg,
             outs_metrics  = config.outputs_metrics,
+            outs_filter   = config.outputs_filter,
             metrics_cb    = self.logger.write_metrics if self.logger.enabled else None,
             on_exit_msg   = on_exit_msg,
             mq_log        = config.mq_log,

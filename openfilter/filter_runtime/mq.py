@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 OUTPUTS_JPG          = None if (_ := json_getval((os.getenv('OUTPUTS_JPG') or 'true').lower())) is None else bool(_)
 OUTPUTS_METRICS      = _ if isinstance(_ := json_getval((os.getenv('OUTPUTS_METRICS') or 'true').lower()), bool) else str(_)
 OUTPUTS_METRICS_PUSH = bool(json_getval((os.getenv('OUTPUTS_METRICS_PUSH') or 'true').lower()))
+OUTPUTS_FILTER       = bool(json_getval((os.getenv('OUTPUTS_FILTER') or 'true').lower()))
 
 MQ_LOG               = json_getval((os.getenv('MQ_LOG') or 'false').lower())
 MQ_MSGID_SYNC        = bool(json_getval((os.getenv('MQ_MSGID_SYNC') or 'true').lower()))
@@ -65,6 +66,7 @@ class MQ:
         outs_required: list[str] | None = None,
         outs_jpg:      bool | None = None,
         outs_metrics:  str | bool | None = None,
+        outs_filter:   bool | None = None,
         metrics_cb:    Callable[[dict], None] | None = None,
         on_exit_msg:   Callable[[str], None] | None = None,
         mq_log:        str | bool | None = None,
@@ -78,7 +80,9 @@ class MQ:
             if srcs_n_topics else None
         self.outs_jpg      = OUTPUTS_JPG if outs_jpg is None else outs_jpg
         self.outs_metrics  = outs_metrics = OUTPUTS_METRICS if outs_metrics is None else outs_metrics
+        self.outs_filter   = OUTPUTS_FILTER if outs_filter is None else outs_filter
         self.metrics_cb    = metrics_cb
+        self._frame_id     = -1  # frame ID counter for _filter topic
         self.mq_log        = MQ.LOG_MAP.get(MQ_LOG if mq_log is None else mq_log, False)
         self.mq_msgid_sync = MQ_MSGID_SYNC if mq_msgid_sync is None else mq_msgid_sync
         self.send_state    = None
@@ -91,6 +95,21 @@ class MQ:
 
         self.metrics_ = Metrics() if outs_metrics or metrics_cb else DummyMetrics()
         self.metrics  = {'ts': time(), 'fps': 15.0, 'cpu': 0.0, 'mem': 0.0, 'uptime_count': 0}  # initial guaranteed-to-be-present metrics, for outside querying, not used here
+
+    def _get_filter_data(self, frames: dict[str, Frame]) -> dict:
+        """Extract frame IDs from frames or generate one. Returns data for _filter topic."""
+        frame_ids = []
+        for topic, frame in frames.items():
+            if topic.startswith('_'):  # skip hidden topics
+                continue
+            if frame and frame.data and isinstance(frame.data, dict):
+                if (meta := frame.data.get('meta')) and isinstance(meta, dict):
+                    if (frame_id := meta.get('id')) is not None:
+                        frame_ids.append(frame_id)
+        if not frame_ids:
+            self._frame_id += 1
+            frame_ids = [self._frame_id]
+        return {'id': frame_ids[0] if len(frame_ids) == 1 else frame_ids}
 
     def destroy(self):
         self.metrics_.destroy()
@@ -153,6 +172,9 @@ class MQ:
 
             if self.outs_metrics is True:
                 frames = {**frames, '_metrics': Frame(metrics)}
+
+            if self.outs_filter is True:
+                frames = {**frames, '_filter': Frame(self._get_filter_data(frames))}
 
             return MQ.frames2topicmsgs(frames, self.outs_jpg)
 
