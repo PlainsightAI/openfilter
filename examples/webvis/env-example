@@ -1,0 +1,18 @@
+# Webvis Example Environment Variables
+# Copy this file to .env and modify as needed
+
+# Video input configuration
+VIDEO_INPUT=./data/sample-video-with-timestamp.mp4
+WEBVIS_PORT=8000
+
+# RTSP configuration
+RTSP_URL=rtsp://localhost:8554/stream0
+
+# Docker configuration
+LOG_LEVEL=INFO
+JFROG_API_KEY=your_jfrog_api_key_here
+
+# Optional: Custom video paths
+# VIDEO1_PATH=./data/01.mp4
+# VIDEO2_PATH=./data/02.mp4
+# VIDEO3_PATH=./data/03.mp4

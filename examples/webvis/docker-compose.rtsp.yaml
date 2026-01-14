@@ -1,0 +1,41 @@
+services:
+
+  rtsp-streamer:
+    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:v1.1.0
+    environment:
+      - RTSP_PORT=8554
+      - WEB_PORT=8888
+    ports:
+      - 8554:8554  # RTSP port
+      - 8888:8888  # Web interface port
+    volumes:
+      - ./data:/data/videos
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8554 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  vidin:
+    image: plainsightai/openfilter-video-in
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: vidin
+      # RTSP stream source
+      FILTER_SOURCES: rtsp://rtsp-streamer:8554/stream0
+      FILTER_OUTPUTS: tcp://*
+    depends_on:
+      rtsp-streamer:
+        condition: service_healthy
+
+  webvis:
+    image: plainsightai/openfilter-webvis
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: webvis
+      FILTER_SOURCES: tcp://vidin
+      FILTER_PORT: ${WEBVIS_PORT:-8000}
+    ports:
+      - ${WEBVIS_PORT:-8000}:${WEBVIS_PORT:-8000}
