@@ -1,6 +1,15 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.17 - 2026-01-15
+
+### Added
+- default filters docker images
+### Fixed
+- dependencies updated to fix CVEs
+- tests: prevent flaky failures
+- add missing filter dependencies
+
 ## v0.1.16 - 2025-12-09
 
 ### Added
