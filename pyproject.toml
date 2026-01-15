@@ -73,6 +73,13 @@ mqtt_out = [
 
 recorder = []
 
+image_in = [
+  "boto3>=1.26.0",
+  "google-cloud-storage==3.5.0",
+]
+
+image_out = []
+
 rest = [
   "fastapi==0.121.0",
   "uvicorn==0.38.0",
