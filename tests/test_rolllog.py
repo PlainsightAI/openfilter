@@ -671,29 +671,32 @@ class TestRollLog(unittest.TestCase):
         try:
             NSTRS = 10_000
             NLOOP = 10
+            EXPECTED_COUNT = NLOOP * NSTRS
 
-            def thread_func(queue, stop_evt):
-                while not stop_evt.is_set():
+            def thread_func(queue, stop_evt, expected_count):
+                count = 0
+                while count < expected_count:
+                    if stop_evt.is_set():
+                        break
                     if data := rl.read():
                         queue.put(data)
+                        count += 1
 
                 queue.put(None)
-                stop_evt.set()
 
             strs     = rndstrs(count=NSTRS, min_len=50, max_len=150)
             queue    = Queue()
             stop_evt = Event()
-            thread   = Thread(target=thread_func, args=(queue, stop_evt), daemon=True)
+            thread   = Thread(target=thread_func, args=(queue, stop_evt, EXPECTED_COUNT), daemon=True)
 
             try:
                 thread.start()
 
-                for i in range(NLOOP * NSTRS):
+                for i in range(EXPECTED_COUNT):
                     rl.write(strs[i % NSTRS])
 
-                stop_evt.wait(10)
-                stop_evt.set()
-                thread.join()
+                # Wait for reader to finish (with timeout to avoid hanging)
+                thread.join(timeout=60)
 
                 i = 0
 
@@ -702,11 +705,11 @@ class TestRollLog(unittest.TestCase):
 
                     i += 1
 
-                self.assertEqual(i, NLOOP * NSTRS)
+                self.assertEqual(i, EXPECTED_COUNT)
 
             finally:
                 stop_evt.set()
-                thread.join()
+                thread.join(timeout=5)
 
         finally:
             rl.close()

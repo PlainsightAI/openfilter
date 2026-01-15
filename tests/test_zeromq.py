@@ -960,7 +960,7 @@ class TestZeroMQTCP(unittest.TestCase):
                                     for i in range(0, 120, 3):
                                         self.assertEqual(send(sendr, d := {'main': [None, f'm{i}'.encode()]}, timeout=100), i + 1)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                         self.assertEqual(recv(recvr1, timeout=1000), (d, (i, True)))
                                         self.assertEqual(recv(recvr2, timeout=1), None)
@@ -969,11 +969,11 @@ class TestZeroMQTCP(unittest.TestCase):
                                         self.assertEqual(recv(recvr5, timeout=1), None)
                                         self.assertEqual(recv(recvr6, timeout=1), None)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                         self.assertEqual(send(sendr, d := {'main': [None, f'm{i + 1}'.encode()]}, timeout=100), i + 2)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                         self.assertEqual(recv(recvr2, timeout=1000), (d, (i + 1, True)))
                                         self.assertEqual(recv(recvr1, timeout=1), None)
@@ -982,11 +982,11 @@ class TestZeroMQTCP(unittest.TestCase):
                                         self.assertEqual(recv(recvr4, timeout=1), None)
                                         self.assertEqual(recv(recvr6, timeout=1), None)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                         self.assertEqual(send(sendr, d := {'main': [None, f'm{i + 2}'.encode()]}, timeout=100), i + 3)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                         self.assertEqual(recv(recvr3, timeout=1000), (d, (i + 2, True)))
                                         self.assertEqual(recv(recvr2, timeout=1), None)
@@ -995,7 +995,7 @@ class TestZeroMQTCP(unittest.TestCase):
                                         self.assertEqual(recv(recvr5, timeout=1), None)
                                         self.assertEqual(recv(recvr4, timeout=1), None)
 
-                                        sleep(0.0002)
+                                        sleep(0.01)
 
                                 finally:
                                     recvr6.destroy()
