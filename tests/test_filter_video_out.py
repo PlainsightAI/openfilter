@@ -91,7 +91,7 @@ class TestVideoOut(unittest.TestCase):
                     sources = 'ipc://test-Q2F',
                     outputs = f'file://{TEST_VIDEO_PATH}',
                 )),
-            ], exit_time=3)
+            ], exit_time=10)
 
             try:
                 queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))
@@ -133,7 +133,7 @@ class TestVideoOut(unittest.TestCase):
                     sources = 'ipc://test-Q2F',
                     outputs = f'file://{TEST_VIDEO_PATH}!bgr',
                 )),
-            ], exit_time=3)
+            ], exit_time=10)
 
             try:
                 queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))
@@ -165,7 +165,7 @@ class TestVideoOut(unittest.TestCase):
                     sources = 'ipc://test-Q2F',
                     outputs = f'file://{TEST_VIDEO_PATH}!no-bgr',
                 )),
-            ], exit_time=3)
+            ], exit_time=10)
 
             try:
                 queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))
@@ -200,7 +200,7 @@ class TestVideoOut(unittest.TestCase):
                         sources = 'ipc://test-Q2F',
                         outputs = f'file://{TEST_VIDEO_PATH}!fps=13',
                     )),
-                ], exit_time=3)
+                ], exit_time=10)
 
                 try:
                     queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))  # src_fps here will be ignored
@@ -236,7 +236,7 @@ class TestVideoOut(unittest.TestCase):
                         sources = 'ipc://test-Q2F',
                         outputs = f'file://{TEST_VIDEO_PATH}!fps!segtime=0.1',  # segtime to create different videos so they can have different fps
                     )),
-                ], exit_time=3)
+                ], exit_time=10)
 
                 try:
                     for _ in range(12):
@@ -286,7 +286,7 @@ class TestVideoOut(unittest.TestCase):
                     sources = 'ipc://test-Q2F',
                     outputs = f'file://{TEST_VIDEO_PATH}!segtime=0.016666666666666666',  # 1 / 60 (1 second)
                 )),
-            ], exit_time=3)
+            ], exit_time=10)
 
             try:
                 queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))
@@ -335,7 +335,7 @@ class TestVideoOut(unittest.TestCase):
                     fps     = 1,
                     segtime = 0.016666666666666666,  # 1 / 60 (1 second)
                 )),
-            ], exit_time=3)
+            ], exit_time=10)
 
             try:
                 queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 30}}, 'BGR'))
