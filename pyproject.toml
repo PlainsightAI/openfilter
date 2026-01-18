@@ -121,5 +121,10 @@ all = [
   "boto3>=1.42.28",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+]
+
 [tool.pytest.ini_options]
 pythonpath = "src"

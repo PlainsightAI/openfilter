@@ -369,19 +369,19 @@ class TestFilterOld(unittest.TestCase):
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(d := {'main': {'val': 1}})
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(d := {'main': {'val': 2}})
             self.assertIs(runner.step(), False)
             r = getdatas(qin)
             self.assertEqual(r['main'], d['main'])
-            self.assertEqual(set(r), set(('main', '_metrics')))
+            self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(None)  # tell it nicely to stop
             self.assertEqual(runner.step(), [0, 0])
@@ -726,7 +726,7 @@ class TestFilter(unittest.TestCase):
             frames1 = qout1.get()
             frames2 = qout2.get()
 
-            self.assertEqual(list(frames1), ['main'])
+            self.assertEqual(set(frames1), {'main', '_filter'})
             self.assertEqual(list(frames2), ['_metrics'])
 
             keys = set(frames2['_metrics'].data.keys())
@@ -995,13 +995,155 @@ invalid_field = "value"
     def test_filter_context_get_context_classmethod(self):
         """Test Filter.get_context() class method."""
         context_data = Filter.get_context()
-        
+
         self.assertIsInstance(context_data, dict)
         self.assertIn('filter_version', context_data)
         self.assertIn('resource_bundle_version', context_data)
         self.assertIn('version_sha', context_data)
         self.assertIn('models', context_data)
         self.assertIn('openfilter_version', context_data)
+
+
+    def test_filter_topic_with_frame_id_from_meta(self):
+        """Test _filter topic is emitted with frame IDs extracted from meta.id."""
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs = 'ipc://test-Q2F-filter',
+                queue   = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources        = 'ipc://test-Q2F-filter',
+                outputs        = 'ipc://test-util-filter',
+                outputs_filter = True,  # enable _filter topic
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util-filter;*',  # wildcard to get _filter topic
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            # Send frame with meta.id
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {'meta': {'id': 42, 'ts': time()}}, 'BGR')})
+            qin.put(False)
+
+            frames = qout.get()
+
+            # Verify _filter topic is present
+            self.assertTrue(filter_frame := frames.get('_filter'))
+            self.assertIsNotNone(filter_frame.data)
+
+            # Verify id contains the input frame ID
+            self.assertIn('id', filter_frame.data)
+            self.assertEqual(filter_frame.data['id'], 42)
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
+    def test_filter_topic_generates_frame_id_when_no_meta(self):
+        """Test _filter topic generates frame IDs when input has no meta.id."""
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs = 'ipc://test-Q2F-filter2',
+                queue   = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources        = 'ipc://test-Q2F-filter2',
+                outputs        = 'ipc://test-util-filter2',
+                outputs_filter = True,  # enable _filter topic
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util-filter2;*',  # wildcard to get _filter topic
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            # Send frames without meta.id - should generate sequential IDs
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {}, 'BGR')})
+            frames1 = qout.get()
+
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {}, 'BGR')})
+            frames2 = qout.get()
+
+            qin.put(False)
+
+            # Verify both frames have _filter topic with sequential IDs
+            self.assertTrue(filter1 := frames1.get('_filter'))
+            self.assertTrue(filter2 := frames2.get('_filter'))
+
+            self.assertEqual(filter1.data['id'], 0)
+            self.assertEqual(filter2.data['id'], 1)
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
+    def test_filter_topic_enabled_by_default(self):
+        """Test _filter topic is emitted by default when outputs_filter is not set."""
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs = 'ipc://test-Q2F-filter3',
+                queue   = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources = 'ipc://test-Q2F-filter3',
+                outputs = 'ipc://test-util-filter3',
+                # outputs_filter not set - should be enabled by default
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util-filter3;*',  # wildcard to get all topics
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {'meta': {'id': 1, 'ts': time()}}, 'BGR')})
+            qin.put(False)
+
+            frames = qout.get()
+
+            # Verify _filter topic IS present (enabled by default)
+            self.assertIsNotNone(frames.get('_filter'))
+            self.assertEqual(frames.get('_filter').data['id'], 1)
+
+            # _metrics should also be present
+            self.assertIsNotNone(frames.get('_metrics'))
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
+    def test_filter_topic_subscribe_explicit(self):
+        """Test subscribing explicitly to _filter topic."""
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs = 'ipc://test-Q2F-filter4',
+                queue   = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources        = 'ipc://test-Q2F-filter4',
+                outputs        = 'ipc://test-util-filter4',
+                outputs_filter = True,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util-filter4;_filter',  # explicit _filter subscription
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {'meta': {'id': 99, 'ts': time()}}, 'BGR')})
+            qin.put(False)
+
+            frames = qout.get()
+
+            # Should only have _filter topic (explicit subscription)
+            self.assertTrue(filter_frame := frames.get('_filter'))
+            self.assertEqual(filter_frame.data['id'], 99)
+
+            # Should NOT have main or _metrics (not subscribed)
+            self.assertIsNone(frames.get('main'))
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
 
 
 if __name__ == '__main__':
