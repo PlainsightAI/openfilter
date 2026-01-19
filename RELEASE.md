@@ -28,6 +28,8 @@ OpenFilter Library release notes
   - Set `DO_NOT_TRACK=true` environment variable to opt out
   - CI workflows now disable Scarf analytics by default
 
+- Created the webvis example showing how to run in python, cli and docker.
+
 ## v0.1.14 - 2025-09-29
 
 ### Updated
