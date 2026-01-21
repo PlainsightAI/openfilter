@@ -1,6 +1,16 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.18 - 2026-01-21
+
+### Fixed
+- CVE: update `opencv-python-headless` to 4.13.0 (fixes ffmpeg security vulnerability)
+
+### Changed
+- Relax version pins from exact (`==`) to compatible release (`~=`) specifiers
+  - Allows downstream filters to receive patch-level updates without dependency conflicts
+  - Applies to all core and optional dependencies
+
 ## v0.1.17 - 2026-01-15
 
 ### Added
