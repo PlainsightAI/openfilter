@@ -1,6 +1,13 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.19 - 2026-01-23
+
+### Added
+- `pipeline_instance_id` to `_filter` hidden topic for downstream event correlation
+  - Enables filter-event-sink and other consumers to access pipeline instance ID
+  - Automatically included when `OUTPUTS_FILTER` is enabled and `pipeline_id` is set
+
 ## v0.1.18 - 2026-01-21
 
 ### Fixed
