@@ -997,6 +997,7 @@ class Filter:
             outs_jpg      = config.outputs_jpg,
             outs_metrics  = config.outputs_metrics,
             outs_filter   = config.outputs_filter,
+            pipeline_id   = self.pipeline_id,
             metrics_cb    = self.logger.write_metrics if self.logger.enabled else None,
             on_exit_msg   = on_exit_msg,
             mq_log        = config.mq_log,

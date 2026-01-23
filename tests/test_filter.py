@@ -1146,5 +1146,51 @@ invalid_field = "value"
             self.assertEqual(runner.wait(), [0, 0, 0])
 
 
+    def test_filter_topic_includes_pipeline_instance_id(self):
+        """Test _filter topic includes pipeline_instance_id when pipeline_id is set.
+
+        Note: RunnerContext auto-generates and sets pipeline_id for all filters,
+        so we just verify the field is present and non-empty.
+        """
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs = 'ipc://test-Q2F-pipeline-id',
+                queue   = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources        = 'ipc://test-Q2F-pipeline-id',
+                outputs        = 'ipc://test-util-pipeline-id',
+                outputs_filter = True,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util-pipeline-id;*',
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            # Send frame with meta.id
+            qin.put({'main': Frame(np.zeros((100, 160, 3)), {'meta': {'id': 99, 'ts': time()}}, 'BGR')})
+            qin.put(False)
+
+            frames = qout.get()
+
+            # Verify _filter topic is present
+            self.assertTrue(filter_frame := frames.get('_filter'))
+            self.assertIsNotNone(filter_frame.data)
+
+            # Verify id is present
+            self.assertIn('id', filter_frame.data)
+            self.assertEqual(filter_frame.data['id'], 99)
+
+            # Verify pipeline_instance_id is present and non-empty
+            # (Runner auto-generates pipeline_id for multi-filter runs)
+            self.assertIn('pipeline_instance_id', filter_frame.data)
+            self.assertTrue(filter_frame.data['pipeline_instance_id'])
+            self.assertIsInstance(filter_frame.data['pipeline_instance_id'], str)
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
 if __name__ == '__main__':
     unittest.main()
