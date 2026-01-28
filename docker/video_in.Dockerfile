@@ -12,9 +12,11 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -ms /bin/bash appuser
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libxcb1 libxcb-shm0 libxcb-render0 libx11-6 libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -ms /bin/bash appuser
 
 WORKDIR /app
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app

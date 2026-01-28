@@ -1,6 +1,16 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.19 - 2026-01-28
+
+### Fixed
+- Fix `UnboundLocalError` in filter error handling when filter initialization fails
+  - The `filter` variable is now properly initialized before the try block
+  - Exception handlers and finally blocks now check if `filter is not None`
+- Add missing X11/OpenCV runtime libraries to all Dockerfiles
+  - Fixes `ImportError: libxcb.so.1: cannot open shared object file` error
+  - Added `libxcb1`, `libxcb-shm0`, `libxcb-render0`, `libx11-6`, `libgl1`, `libglib2.0-0` to all filter images
+
 ## v0.1.18 - 2026-01-21
 
 ### Fixed
