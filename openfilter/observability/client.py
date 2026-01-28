@@ -24,8 +24,22 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
-from distutils.util import strtobool
 from .bridge import OTelLineageExporter
+
+
+def strtobool(val: str) -> bool:
+    """Convert a string representation of truth to True/False.
+
+    Accepts 'y', 'yes', 't', 'true', 'on', '1' as true values and
+    'n', 'no', 'f', 'false', 'off', '0' as false values.
+    Raises ValueError on anything else.
+    """
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    if val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    raise ValueError(f"invalid truth value {val!r}")
 from .config import read_allowlist
 
 # Simple exporter factory for basic exporters

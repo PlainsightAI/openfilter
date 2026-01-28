@@ -1,6 +1,12 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.20 - 2026-01-28
+
+### Fixed
+- Replace deprecated `distutils.util.strtobool` with local implementation for Python 3.12+ compatibility
+  - Fixes `ModuleNotFoundError: No module named 'distutils'` in webvis and other filters
+
 ## v0.1.19 - 2026-01-28
 
 ### Fixed
