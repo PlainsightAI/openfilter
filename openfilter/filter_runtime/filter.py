@@ -1136,6 +1136,7 @@ class Filter:
         elif stop_evt is None:
             stop_evt = threading.Event()
 
+        filter = None  # Initialize filter to None to avoid UnboundLocalError in exception handlers
         try:
             if config is None:
                 config = cls.get_config()
@@ -1186,7 +1187,7 @@ class Filter:
                     filter.fini()
 
             except Exception as exc:
-                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                if filter is not None and hasattr(filter, 'emitter') and filter.emitter is not None:
                     filter.emitter.stop_lineage_heart_beat()
                     filter.emitter.emit_stop()
                 logger.error(exc)
@@ -1194,18 +1195,19 @@ class Filter:
                 raise
 
             except Filter.Exit:
-                if hasattr(filter, 'emitter') and filter.emitter is not None:
+                if filter is not None and hasattr(filter, 'emitter') and filter.emitter is not None:
                     filter.emitter.stop_lineage_heart_beat()
                     filter.emitter.emit_stop()
                 pass
 
             finally:
-                filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
-                if hasattr(filter, 'emitter') and filter.emitter is not None:
-                    filter.emitter.stop_lineage_heart_beat()
-                    filter.emitter.emit_stop()
+                if filter is not None:
+                    filter.stop_logging()  # the very lastest standalone thing we do to make sure we log everything including errors in filter.fini()
+                    if hasattr(filter, 'emitter') and filter.emitter is not None:
+                        filter.emitter.stop_lineage_heart_beat()
+                        filter.emitter.emit_stop()
         finally:
-            if hasattr(filter, 'emitter') and filter.emitter is not None:
+            if filter is not None and hasattr(filter, 'emitter') and filter.emitter is not None:
                 filter.emitter.stop_lineage_heart_beat()
                 filter.emitter.emit_stop()
             stop_evt.set()
