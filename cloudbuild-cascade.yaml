@@ -1,0 +1,286 @@
+# cloudbuild-cascade.yaml
+#
+# Cascades an openfilter release to all downstream filter images.
+# Triggered on openfilter version tags (v*).
+#
+# For each compatible filter:
+#   1. Clone the filter repo
+#   2. Check if openfilter constraint allows the new version
+#   3. Rebuild Docker image (which pulls new openfilter via pip)
+#   4. Push based on repo visibility:
+#      - Public repos:   DockerHub + GAR
+#      - Internal repos:  GAR only
+#
+# Filters with their own cloudbuild.yaml (sam3-detector, openfilter-mcp)
+# are triggered separately via Cloud Build triggers, not rebuilt here.
+#
+# FILTER-306: https://plainsight-ai.atlassian.net/browse/FILTER-306
+# FILTER-314: https://plainsight-ai.atlassian.net/browse/FILTER-314
+
+substitutions:
+  _GAR_REGION: us-west1
+  _GAR_PROJECT: plainsightai-prod
+  _GAR_REPO: oci
+  _DOCKERHUB_ORG: plainsightai
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 7200s
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/${PROJECT_ID}/secrets/dockerhub-username/versions/latest
+      env: 'DOCKERHUB_USERNAME'
+    - versionName: projects/${PROJECT_ID}/secrets/dockerhub-token/versions/latest
+      env: 'DOCKERHUB_TOKEN'
+    - versionName: projects/${PROJECT_ID}/secrets/github-token/versions/latest
+      env: 'GITHUB_TOKEN'
+
+steps:
+  # ============================================================
+  # Step 0: Setup - get openfilter version and configure auth
+  # ============================================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'setup'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        # Get openfilter version from tag or VERSION file
+        if [[ -n "${TAG_NAME}" ]]; then
+          OF_VERSION=$(echo "${TAG_NAME}" | sed 's/^v//')
+        else
+          OF_VERSION=$(cat VERSION | tr -d '[:space:]' | sed 's/^v//')
+        fi
+        echo "OpenFilter version: $${OF_VERSION}"
+        echo "$${OF_VERSION}" > /workspace/openfilter_version
+
+        # Configure GAR auth
+        gcloud auth configure-docker ${_GAR_REGION}-docker.pkg.dev --quiet
+        gcloud auth print-access-token > /workspace/.gar_token
+
+        # Create workspace directories
+        mkdir -p /workspace/filters
+        mkdir -p /workspace/results
+
+        echo "Setup complete"
+
+  # ============================================================
+  # Step 1: DockerHub login
+  # ============================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'dockerhub-login'
+    waitFor: ['setup']
+    entrypoint: 'bash'
+    secretEnv: ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
+    args:
+      - '-c'
+      - |
+        echo "$${DOCKERHUB_TOKEN}" | docker login -u "$${DOCKERHUB_USERNAME}" --password-stdin
+        echo "DockerHub login successful"
+
+  # ============================================================
+  # Step 2: Setup QEMU for multi-platform builds
+  # ============================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'qemu-setup'
+    waitFor: ['setup']
+    args: ['run', '--privileged', 'multiarch/qemu-user-static', '--reset', '-p', 'yes']
+
+  # ============================================================
+  # Step 3: Create buildx builder
+  # ============================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'buildx-setup'
+    waitFor: ['qemu-setup']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker buildx create --name multiarch --driver docker-container --use || true
+        docker buildx inspect --bootstrap
+
+  # ============================================================
+  # Step 4: Build and push filter images
+  # Each filter is built in sequence to manage resources.
+  # Filters with own cloudbuild.yaml are skipped (triggered separately).
+  # ============================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-filters'
+    waitFor: ['dockerhub-login', 'buildx-setup']
+    entrypoint: 'bash'
+    secretEnv: ['GITHUB_TOKEN']
+    args:
+      - '-c'
+      - |
+        set -e
+
+        OF_VERSION=$(cat /workspace/openfilter_version)
+        echo "Building filters for openfilter $${OF_VERSION}"
+
+        # GAR auth for pulling filter_base
+        GAR_TOKEN=$(cat /workspace/.gar_token)
+        echo "$${GAR_TOKEN}" | docker login -u oauth2accesstoken --password-stdin https://${_GAR_REGION}-docker.pkg.dev
+
+        # Filter definitions: repo:dockerhub_image:build_type
+        #
+        # build_type:
+        #   standard    - builds from local source, resolves openfilter at build time
+        #   filter_base - uses filter_base GAR image (openfilter baked into base)
+        #   skip        - has own cloudbuild.yaml, triggered separately
+        #   template    - unrendered cookiecutter template, not buildable
+        #
+        # Excluded (installs published package from PyPI, rebuild is a no-op
+        # unless filter-event-sink is also republished):
+        #   filter-event-sink
+        FILTERS="
+          filter-json-transform:openfilter-json-transform:standard
+          filter-facedetector:openfilter-facedetector:filter_base
+          filter-florence:openfilter-florence:filter_base
+          filter-frame-selector:openfilter-frame-selector:filter_base
+          filter-hugging-face:openfilter-hugging-face:filter_base
+          filter-huggingface-vision:openfilter-huggingface-vision:filter_base
+          filter-pytorch:openfilter-pytorch:filter_base
+          filter-pytorch-model:openfilter-pytorch-model:filter_base
+          filter-rt-detr:openfilter-rt-detr:filter_base
+          filter-bowl-sg:openfilter-bowl-sg:filter_base
+          filter-protege-model:openfilter-protege-model:filter_base
+          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base
+          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base
+          filter-quality-gates:openfilter-quality-gates:filter_base
+          filter-sam3-detector:openfilter-sam3-detector:skip
+        "
+
+        for FILTER_DEF in $${FILTERS}; do
+          # Skip empty lines
+          [[ -z "$${FILTER_DEF}" ]] && continue
+
+          REPO=$(echo "$${FILTER_DEF}" | cut -d: -f1)
+          IMAGE=$(echo "$${FILTER_DEF}" | cut -d: -f2)
+          BUILD_TYPE=$(echo "$${FILTER_DEF}" | cut -d: -f3)
+
+          echo ""
+          echo "============================================"
+          echo "Processing: $${REPO} ($${BUILD_TYPE})"
+          echo "============================================"
+
+          # Skip filters with their own cloudbuild
+          if [[ "$${BUILD_TYPE}" == "skip" ]]; then
+            echo "Skipping $${REPO} - has own Cloud Build trigger"
+            continue
+          fi
+
+          # Clone the filter repo
+          cd /workspace/filters
+          if [[ -d "$${REPO}" ]]; then
+            rm -rf "$${REPO}"
+          fi
+
+          git clone --depth 1 "https://x-access-token:$${GITHUB_TOKEN}@github.com/PlainsightAI/$${REPO}.git" "$${REPO}" || {
+            echo "Failed to clone $${REPO}, skipping"
+            continue
+          }
+          cd "$${REPO}"
+
+          # Get filter version
+          FILTER_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]' | sed 's/^v//' || echo "unknown")
+          echo "Filter version: $${FILTER_VERSION}"
+
+          # Check openfilter constraint compatibility
+          CONSTRAINT=$(grep -E 'openfilter\[all\]' pyproject.toml | head -1 | sed 's/.*"\(openfilter\[all\][^"]*\)".*/\1/' || echo "")
+          echo "Constraint: $${CONSTRAINT}"
+
+          # Simple constraint check (could be enhanced with Python packaging lib)
+          if echo "$${CONSTRAINT}" | grep -qE "==[0-9]"; then
+            PINNED_VERSION=$(echo "$${CONSTRAINT}" | sed 's/.*==\([0-9.]*\).*/\1/')
+            if [[ "$${PINNED_VERSION}" != "$${OF_VERSION}" ]]; then
+              echo "WARNING: $${REPO} is pinned to $${PINNED_VERSION}, not $${OF_VERSION}"
+              echo "Skipping - constraint not compatible"
+              echo "$${REPO}: SKIPPED (pinned to $${PINNED_VERSION})" >> /workspace/results/summary.txt
+              continue
+            fi
+          fi
+
+          # Determine push targets based on repo visibility
+          # Public repos (200) -> DockerHub + GAR; internal/private (404) -> GAR only
+          HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://github.com/PlainsightAI/$${REPO}")
+          GAR_IMAGE="${_GAR_REGION}-docker.pkg.dev/${_GAR_PROJECT}/${_GAR_REPO}/$${REPO}"
+          DOCKERHUB_IMAGE="${_DOCKERHUB_ORG}/$${IMAGE}"
+
+          TAGS="-t $${GAR_IMAGE}:$${FILTER_VERSION} -t $${GAR_IMAGE}:latest"
+          if [[ "$${HTTP_CODE}" == "200" ]]; then
+            echo "Public repo - pushing to DockerHub + GAR"
+            TAGS="$${TAGS} -t $${DOCKERHUB_IMAGE}:$${FILTER_VERSION} -t $${DOCKERHUB_IMAGE}:latest"
+          else
+            echo "Internal repo - pushing to GAR only"
+          fi
+
+          echo "Building $${REPO}:$${FILTER_VERSION}"
+
+          # Build based on type
+          BUILD_ARGS=""
+          if [[ "$${BUILD_TYPE}" == "filter_base" ]]; then
+            # Get RESOURCE_BUNDLE_VERSION if exists
+            RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
+            BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=$${RBV}"
+          fi
+
+          # Build and push (overwrites existing version tag with new openfilter runtime)
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            $${BUILD_ARGS} \
+            $${TAGS} \
+            --push \
+            . || {
+              echo "Build failed for $${REPO}"
+              echo "$${REPO}: FAILED" >> /workspace/results/summary.txt
+              continue
+            }
+
+          echo "$${REPO}: SUCCESS ($${FILTER_VERSION})" >> /workspace/results/summary.txt
+          echo "Successfully built and pushed $${REPO}:$${FILTER_VERSION}"
+        done
+
+        echo ""
+        echo "============================================"
+        echo "Build Summary"
+        echo "============================================"
+        cat /workspace/results/summary.txt || echo "No results recorded"
+
+  # ============================================================
+  # Step 5: Trigger downstream Cloud Builds (for repos with own cloudbuild.yaml)
+  # ============================================================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'trigger-downstream'
+    waitFor: ['build-filters']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+
+        OF_VERSION=$(cat /workspace/openfilter_version)
+        echo "Triggering downstream builds for openfilter $${OF_VERSION}"
+
+        # Trigger filter-sam3-detector build
+        # Note: This requires the trigger to be set up to accept substitutions
+        # or to rebuild on the current HEAD of main
+        echo "Triggering filter-sam3-detector..."
+        gcloud builds triggers run filter-sam3-detector-tag \
+          --region=${_GAR_REGION} \
+          --branch=main \
+          2>/dev/null || echo "Trigger not found or failed - may need manual trigger"
+
+        # Trigger openfilter-mcp build
+        echo "Triggering openfilter-mcp..."
+        gcloud builds triggers run openfilter-mcp-tag \
+          --region=${_GAR_REGION} \
+          --branch=main \
+          2>/dev/null || echo "Trigger not found or failed - may need manual trigger"
+
+        echo "Downstream triggers complete"
