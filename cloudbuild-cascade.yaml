@@ -13,6 +13,7 @@
 #
 # Filters with their own cloudbuild.yaml (sam3-detector, openfilter-mcp)
 # are triggered separately via Cloud Build triggers, not rebuilt here.
+# They appear in the FILTERS list as build_type=skip for documentation.
 #
 # FILTER-306: https://plainsight-ai.atlassian.net/browse/FILTER-306
 # FILTER-314: https://plainsight-ai.atlassian.net/browse/FILTER-314
@@ -51,7 +52,9 @@ steps:
       - |
         set -e
 
-        # Get openfilter version from tag or VERSION file
+        # Get openfilter version from tag or VERSION file.
+        # The v prefix is stripped intentionally: VERSION and git tags use
+        # "v1.2.3" by convention, but pip/Docker tags use bare "1.2.3".
         if [[ -n "${TAG_NAME}" ]]; then
           OF_VERSION=$(echo "${TAG_NAME}" | sed 's/^v//')
         else
@@ -60,9 +63,8 @@ steps:
         echo "OpenFilter version: $${OF_VERSION}"
         echo "$${OF_VERSION}" > /workspace/openfilter_version
 
-        # Configure GAR auth
+        # Configure GAR auth (Docker credential helper only, no token file)
         gcloud auth configure-docker ${_GAR_REGION}-docker.pkg.dev --quiet
-        gcloud auth print-access-token > /workspace/.gar_token
 
         # Create workspace directories
         mkdir -p /workspace/filters
@@ -108,9 +110,11 @@ steps:
   # ============================================================
   # Step 4: Build and push filter images
   # Each filter is built in sequence to manage resources.
+  # Each filter runs in its own subshell so one failure does not
+  # abort the remaining builds.
   # Filters with own cloudbuild.yaml are skipped (triggered separately).
   # ============================================================
-  - name: 'gcr.io/cloud-builders/docker'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'build-filters'
     waitFor: ['dockerhub-login', 'buildx-setup']
     entrypoint: 'bash'
@@ -118,16 +122,16 @@ steps:
     args:
       - '-c'
       - |
-        set -e
-
         OF_VERSION=$(cat /workspace/openfilter_version)
         echo "Building filters for openfilter $${OF_VERSION}"
 
         # GAR auth for pulling filter_base
-        GAR_TOKEN=$(cat /workspace/.gar_token)
-        echo "$${GAR_TOKEN}" | docker login -u oauth2accesstoken --password-stdin https://${_GAR_REGION}-docker.pkg.dev
+        gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://${_GAR_REGION}-docker.pkg.dev
 
-        # Filter definitions: repo:dockerhub_image:build_type
+        # Configure git credential helper (avoids embedding token in clone URLs)
+        git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$${GITHUB_TOKEN}"; }; f'
+
+        # Filter definitions: repo:dockerhub_image:build_type:visibility
         #
         # build_type:
         #   standard    - builds from local source, resolves openfilter at build time
@@ -135,34 +139,40 @@ steps:
         #   skip        - has own cloudbuild.yaml, triggered separately
         #   template    - unrendered cookiecutter template, not buildable
         #
+        # visibility:
+        #   public      - pushed to DockerHub + GAR
+        #   internal    - pushed to GAR only
+        #   skip        - not built (used with build_type=skip)
+        #
         # Excluded (installs published package from PyPI, rebuild is a no-op
         # unless filter-event-sink is also republished):
         #   filter-event-sink
         FILTERS="
-          filter-json-transform:openfilter-json-transform:standard
-          filter-facedetector:openfilter-facedetector:filter_base
-          filter-florence:openfilter-florence:filter_base
-          filter-frame-selector:openfilter-frame-selector:filter_base
-          filter-hugging-face:openfilter-hugging-face:filter_base
-          filter-huggingface-vision:openfilter-huggingface-vision:filter_base
-          filter-pytorch:openfilter-pytorch:filter_base
-          filter-pytorch-model:openfilter-pytorch-model:filter_base
-          filter-rt-detr:openfilter-rt-detr:filter_base
-          filter-bowl-sg:openfilter-bowl-sg:filter_base
-          filter-protege-model:openfilter-protege-model:filter_base
-          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base
-          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base
-          filter-quality-gates:openfilter-quality-gates:filter_base
-          filter-sam3-detector:openfilter-sam3-detector:skip
+          filter-json-transform:openfilter-json-transform:standard:public
+          filter-facedetector:openfilter-facedetector:filter_base:public
+          filter-florence:openfilter-florence:filter_base:public
+          filter-frame-selector:openfilter-frame-selector:filter_base:public
+          filter-hugging-face:openfilter-hugging-face:filter_base:public
+          filter-huggingface-vision:openfilter-huggingface-vision:filter_base:public
+          filter-pytorch:openfilter-pytorch:filter_base:public
+          filter-pytorch-model:openfilter-pytorch-model:filter_base:public
+          filter-rt-detr:openfilter-rt-detr:filter_base:public
+          filter-bowl-sg:openfilter-bowl-sg:filter_base:internal
+          filter-protege-model:openfilter-protege-model:filter_base:internal
+          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base:internal
+          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base:internal
+          filter-quality-gates:openfilter-quality-gates:filter_base:internal
+          filter-sam3-detector:openfilter-sam3-detector:skip:skip
+          openfilter-mcp:openfilter-mcp:skip:skip
         "
 
         for FILTER_DEF in $${FILTERS}; do
-          # Skip empty lines
           [[ -z "$${FILTER_DEF}" ]] && continue
 
           REPO=$(echo "$${FILTER_DEF}" | cut -d: -f1)
           IMAGE=$(echo "$${FILTER_DEF}" | cut -d: -f2)
           BUILD_TYPE=$(echo "$${FILTER_DEF}" | cut -d: -f3)
+          VISIBILITY=$(echo "$${FILTER_DEF}" | cut -d: -f4)
 
           echo ""
           echo "============================================"
@@ -175,75 +185,86 @@ steps:
             continue
           fi
 
-          # Clone the filter repo
-          cd /workspace/filters
-          if [[ -d "$${REPO}" ]]; then
-            rm -rf "$${REPO}"
-          fi
+          (
+            set -euo pipefail
 
-          git clone --depth 1 "https://x-access-token:$${GITHUB_TOKEN}@github.com/PlainsightAI/$${REPO}.git" "$${REPO}" || {
-            echo "Failed to clone $${REPO}, skipping"
-            continue
-          }
-          cd "$${REPO}"
-
-          # Get filter version
-          FILTER_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]' | sed 's/^v//' || echo "unknown")
-          echo "Filter version: $${FILTER_VERSION}"
-
-          # Check openfilter constraint compatibility
-          CONSTRAINT=$(grep -E 'openfilter\[all\]' pyproject.toml | head -1 | sed 's/.*"\(openfilter\[all\][^"]*\)".*/\1/' || echo "")
-          echo "Constraint: $${CONSTRAINT}"
-
-          # Simple constraint check (could be enhanced with Python packaging lib)
-          if echo "$${CONSTRAINT}" | grep -qE "==[0-9]"; then
-            PINNED_VERSION=$(echo "$${CONSTRAINT}" | sed 's/.*==\([0-9.]*\).*/\1/')
-            if [[ "$${PINNED_VERSION}" != "$${OF_VERSION}" ]]; then
-              echo "WARNING: $${REPO} is pinned to $${PINNED_VERSION}, not $${OF_VERSION}"
-              echo "Skipping - constraint not compatible"
-              echo "$${REPO}: SKIPPED (pinned to $${PINNED_VERSION})" >> /workspace/results/summary.txt
-              continue
+            # Clone the filter repo
+            cd /workspace/filters
+            if [[ -d "$${REPO}" ]]; then
+              rm -rf "$${REPO}"
             fi
+
+            git clone --depth 1 "https://github.com/PlainsightAI/$${REPO}.git" "$${REPO}"
+            cd "$${REPO}"
+
+            # Get filter version
+            FILTER_VERSION=$(cat VERSION 2>/dev/null | tr -d '[:space:]' | sed 's/^v//' || echo "unknown")
+            echo "Filter version: $${FILTER_VERSION}"
+
+            # Check openfilter constraint compatibility using Python packaging lib.
+            # Exit code 2 signals "skip this filter" to the outer loop.
+            CONSTRAINT=$(grep -oP 'openfilter\[all\]\K[^"]+' pyproject.toml 2>/dev/null | head -1 || echo "")
+            if [[ -n "$${CONSTRAINT}" ]]; then
+              printf '%s\n' \
+                "from packaging.specifiers import SpecifierSet" \
+                "from packaging.version import Version" \
+                "import sys" \
+                "s = SpecifierSet('$${CONSTRAINT}')" \
+                "v = Version('$${OF_VERSION}')" \
+                "if v not in s:" \
+                "    print(f'Version {v} does not satisfy {s}')" \
+                "    sys.exit(1)" \
+              | python3 || {
+                echo "Constraint $${CONSTRAINT} does not allow $${OF_VERSION}, skipping"
+                echo "$${REPO}: SKIPPED (constraint: $${CONSTRAINT})" >> /workspace/results/summary.txt
+                exit 2
+              }
+            fi
+
+            # Determine push targets based on visibility field
+            GAR_IMAGE="${_GAR_REGION}-docker.pkg.dev/${_GAR_PROJECT}/${_GAR_REPO}/$${REPO}"
+            DOCKERHUB_IMAGE="${_DOCKERHUB_ORG}/$${IMAGE}"
+
+            TAGS="-t $${GAR_IMAGE}:$${FILTER_VERSION} -t $${GAR_IMAGE}:latest"
+            # Compound tag for openfilter traceability
+            TAGS="$${TAGS} -t $${GAR_IMAGE}:$${FILTER_VERSION}-of$${OF_VERSION}"
+            if [[ "$${VISIBILITY}" == "public" ]]; then
+              echo "Public repo - pushing to DockerHub + GAR"
+              TAGS="$${TAGS} -t $${DOCKERHUB_IMAGE}:$${FILTER_VERSION} -t $${DOCKERHUB_IMAGE}:latest"
+            else
+              echo "Internal repo - pushing to GAR only"
+            fi
+
+            echo "Building $${REPO}:$${FILTER_VERSION}"
+
+            # Build based on type
+            BUILD_ARGS=""
+            if [[ "$${BUILD_TYPE}" == "filter_base" ]]; then
+              # Get RESOURCE_BUNDLE_VERSION if exists
+              RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
+              BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=$${RBV}"
+            fi
+
+            # Build and push (overwrites existing version tag with new openfilter runtime)
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              $${BUILD_ARGS} \
+              $${TAGS} \
+              --cache-from type=registry,ref=$${GAR_IMAGE}:buildcache \
+              --cache-to type=registry,ref=$${GAR_IMAGE}:buildcache,mode=max \
+              --push \
+              .
+
+            echo "$${REPO}: SUCCESS ($${FILTER_VERSION})" >> /workspace/results/summary.txt
+            echo "Successfully built and pushed $${REPO}:$${FILTER_VERSION}"
+          )
+          EXIT_CODE=$?
+          if [[ $EXIT_CODE -eq 2 ]]; then
+            # Skip was requested (constraint mismatch)
+            continue
+          elif [[ $EXIT_CODE -ne 0 ]]; then
+            echo "$${REPO}: FAILED (see error above)" >> /workspace/results/summary.txt
           fi
-
-          # Determine push targets based on repo visibility
-          # Public repos (200) -> DockerHub + GAR; internal/private (404) -> GAR only
-          HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://github.com/PlainsightAI/$${REPO}")
-          GAR_IMAGE="${_GAR_REGION}-docker.pkg.dev/${_GAR_PROJECT}/${_GAR_REPO}/$${REPO}"
-          DOCKERHUB_IMAGE="${_DOCKERHUB_ORG}/$${IMAGE}"
-
-          TAGS="-t $${GAR_IMAGE}:$${FILTER_VERSION} -t $${GAR_IMAGE}:latest"
-          if [[ "$${HTTP_CODE}" == "200" ]]; then
-            echo "Public repo - pushing to DockerHub + GAR"
-            TAGS="$${TAGS} -t $${DOCKERHUB_IMAGE}:$${FILTER_VERSION} -t $${DOCKERHUB_IMAGE}:latest"
-          else
-            echo "Internal repo - pushing to GAR only"
-          fi
-
-          echo "Building $${REPO}:$${FILTER_VERSION}"
-
-          # Build based on type
-          BUILD_ARGS=""
-          if [[ "$${BUILD_TYPE}" == "filter_base" ]]; then
-            # Get RESOURCE_BUNDLE_VERSION if exists
-            RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
-            BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=$${RBV}"
-          fi
-
-          # Build and push (overwrites existing version tag with new openfilter runtime)
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            $${BUILD_ARGS} \
-            $${TAGS} \
-            --push \
-            . || {
-              echo "Build failed for $${REPO}"
-              echo "$${REPO}: FAILED" >> /workspace/results/summary.txt
-              continue
-            }
-
-          echo "$${REPO}: SUCCESS ($${FILTER_VERSION})" >> /workspace/results/summary.txt
-          echo "Successfully built and pushed $${REPO}:$${FILTER_VERSION}"
         done
 
         echo ""
@@ -262,8 +283,6 @@ steps:
     args:
       - '-c'
       - |
-        set -e
-
         OF_VERSION=$(cat /workspace/openfilter_version)
         echo "Triggering downstream builds for openfilter $${OF_VERSION}"
 
@@ -274,13 +293,13 @@ steps:
         gcloud builds triggers run filter-sam3-detector-tag \
           --region=${_GAR_REGION} \
           --branch=main \
-          2>/dev/null || echo "Trigger not found or failed - may need manual trigger"
+          || echo "Trigger not found or failed - see error above"
 
         # Trigger openfilter-mcp build
         echo "Triggering openfilter-mcp..."
         gcloud builds triggers run openfilter-mcp-tag \
           --region=${_GAR_REGION} \
           --branch=main \
-          2>/dev/null || echo "Trigger not found or failed - may need manual trigger"
+          || echo "Trigger not found or failed - see error above"
 
         echo "Downstream triggers complete"
