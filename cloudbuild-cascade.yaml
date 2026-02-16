@@ -11,9 +11,10 @@
 #      - Public repos:   DockerHub + GAR
 #      - Internal repos:  GAR only
 #
-# Filters with their own cloudbuild.yaml (sam3-detector, openfilter-mcp)
-# are triggered separately via Cloud Build triggers, not rebuilt here.
-# They appear in the FILTERS list with build_type=skip for documentation.
+# filter-sam3-detector has its own cloudbuild.yaml and is triggered
+# separately (listed as skip in FILTERS for documentation).
+# openfilter-mcp has no openfilter Python dependency (it indexes repos
+# as data) and is triggered downstream to refresh its code search index.
 #
 # FILTER-306: https://plainsight-ai.atlassian.net/browse/FILTER-306
 # FILTER-314: https://plainsight-ai.atlassian.net/browse/FILTER-314
@@ -166,7 +167,6 @@ steps:
           filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base:internal
           filter-quality-gates:openfilter-quality-gates:filter_base:internal
           filter-sam3-detector:openfilter-sam3-detector:skip:public
-          openfilter-mcp:openfilter-mcp:skip:internal
         "
 
         for FILTER_DEF in $${FILTERS}; do
