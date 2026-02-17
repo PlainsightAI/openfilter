@@ -136,7 +136,38 @@ steps:
         # Ensure packaging library is available for constraint checking
         pip install --quiet packaging 2>/dev/null || true
 
-        # Filter definitions: repo:dockerhub_image:build_type:visibility
+        # Fetch repo visibility from GitHub API (one paginated call for all
+        # filter-* repos). Builds a lookup file: "repo_name visibility" per line.
+        # Retries up to 3 times; fails the build if it never succeeds.
+        VISIBILITY_FILE=/workspace/results/repo_visibility.txt
+        for ATTEMPT in 1 2 3; do
+          echo "Fetching repo visibility from GitHub API (attempt $${ATTEMPT}/3)..."
+          NEXT_URL="https://api.github.com/orgs/PlainsightAI/repos?per_page=100"
+          > "$${VISIBILITY_FILE}"
+          FETCH_OK=true
+          while [[ -n "$${NEXT_URL}" ]]; do
+            RESPONSE=$(curl -sf \
+              -H "Authorization: token $${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -D /tmp/gh_headers \
+              "$${NEXT_URL}") || { FETCH_OK=false; break; }
+            echo "$${RESPONSE}" | python3 -c "import json,sys; [print(r['name'],r.get('visibility','internal')) for r in json.load(sys.stdin)]" >> "$${VISIBILITY_FILE}" || { FETCH_OK=false; break; }
+            # Follow pagination Link header
+            NEXT_URL=$(grep -oi '<[^>]*>; rel="next"' /tmp/gh_headers | sed 's/<\(.*\)>; rel="next"/\1/' || true)
+          done
+          if [[ "$${FETCH_OK}" == "true" ]] && [[ -s "$${VISIBILITY_FILE}" ]]; then
+            echo "Fetched visibility for $(wc -l < "$${VISIBILITY_FILE}") repos"
+            break
+          fi
+          echo "WARNING: GitHub API fetch failed (attempt $${ATTEMPT})"
+          sleep 5
+        done
+        if [[ ! -s "$${VISIBILITY_FILE}" ]]; then
+          echo "ERROR: Failed to fetch repo visibility after 3 attempts"
+          exit 1
+        fi
+
+        # Filter definitions: repo:dockerhub_image:build_type
         #
         # build_type:
         #   standard    - builds from local source, resolves openfilter at build time
@@ -144,29 +175,29 @@ steps:
         #   skip        - has own cloudbuild.yaml, triggered separately
         #   template    - unrendered cookiecutter template, not buildable
         #
-        # visibility:
-        #   public   - push to DockerHub + GAR
-        #   internal - push to GAR only
+        # Visibility (public/internal/private) is looked up from the GitHub
+        # API at runtime. Public repos push to DockerHub + GAR; all others
+        # push to GAR only.
         #
         # Excluded (installs published package from PyPI, rebuild is a no-op
         # unless filter-event-sink is also republished):
         #   filter-event-sink
         FILTERS="
-          filter-json-transform:openfilter-json-transform:standard:public
-          filter-facedetector:openfilter-facedetector:filter_base:public
-          filter-florence:openfilter-florence:filter_base:public
-          filter-frame-selector:openfilter-frame-selector:filter_base:public
-          filter-hugging-face:openfilter-hugging-face:filter_base:public
-          filter-huggingface-vision:openfilter-huggingface-vision:filter_base:public
-          filter-pytorch:openfilter-pytorch:filter_base:public
-          filter-pytorch-model:openfilter-pytorch-model:filter_base:public
-          filter-rt-detr:openfilter-rt-detr:filter_base:public
-          filter-bowl-sg:openfilter-bowl-sg:filter_base:internal
-          filter-protege-model:openfilter-protege-model:filter_base:internal
-          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base:internal
-          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base:internal
-          filter-quality-gates:openfilter-quality-gates:filter_base:internal
-          filter-sam3-detector:openfilter-sam3-detector:skip:public
+          filter-json-transform:openfilter-json-transform:standard
+          filter-facedetector:openfilter-facedetector:filter_base
+          filter-florence:openfilter-florence:filter_base
+          filter-frame-selector:openfilter-frame-selector:filter_base
+          filter-hugging-face:openfilter-hugging-face:filter_base
+          filter-huggingface-vision:openfilter-huggingface-vision:filter_base
+          filter-pytorch:openfilter-pytorch:filter_base
+          filter-pytorch-model:openfilter-pytorch-model:filter_base
+          filter-rt-detr:openfilter-rt-detr:filter_base
+          filter-bowl-sg:openfilter-bowl-sg:filter_base
+          filter-protege-model:openfilter-protege-model:filter_base
+          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base
+          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base
+          filter-quality-gates:openfilter-quality-gates:filter_base
+          filter-sam3-detector:openfilter-sam3-detector:skip
         "
 
         for FILTER_DEF in $${FILTERS}; do
@@ -176,7 +207,8 @@ steps:
           REPO=$(echo "$${FILTER_DEF}" | cut -d: -f1)
           IMAGE=$(echo "$${FILTER_DEF}" | cut -d: -f2)
           BUILD_TYPE=$(echo "$${FILTER_DEF}" | cut -d: -f3)
-          VISIBILITY=$(echo "$${FILTER_DEF}" | cut -d: -f4)
+          VISIBILITY=$(grep "^$${REPO} " "$${VISIBILITY_FILE}" | awk '{print $2}')
+          VISIBILITY=$${VISIBILITY:-internal}
 
           echo ""
           echo "============================================"
@@ -235,7 +267,7 @@ steps:
               exit 0
             fi
 
-            # Determine push targets based on visibility field
+            # Determine push targets based on GitHub API visibility lookup
             GAR_IMAGE="${_GAR_REGION}-docker.pkg.dev/${_GAR_PROJECT}/${_GAR_REPO}/$${REPO}"
             DOCKERHUB_IMAGE="${_DOCKERHUB_ORG}/$${IMAGE}"
 
