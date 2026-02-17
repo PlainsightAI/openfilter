@@ -76,7 +76,7 @@ steps:
 
         # Write constraint-check helper script. Reads OF_VERSION from env,
         # outputs: none | ok:<spec> | skip:<spec> | error:<msg>
-        printf '%s\n' 'import tomllib,re,sys,os' 'try:' '  with open("pyproject.toml","rb") as f: data=tomllib.load(f)' '  deps=data.get("project",{}).get("dependencies",[])' '  c=""' '  for d in deps:' '    if d.strip().startswith("openfilter"):' '      m=re.match(r"openfilter(?:\[[^\]]*\])?\s*(.*)",d.strip())' '      if m and m.group(1): c=m.group(1)' '      break' '  if not c: print("none"); sys.exit(0)' '  from packaging.specifiers import SpecifierSet' '  from packaging.version import Version' '  v_str=os.environ.get("OF_VERSION","")' '  if not v_str: print("error:OF_VERSION not set"); sys.exit(0)' '  s=SpecifierSet(c); v=Version(v_str)' '  print(("ok:" if v in s else "skip:")+str(c))' 'except Exception as e: print("error:"+str(e))' > /workspace/check_constraint.py
+        printf '%s\n' 'import tomllib,re,sys,os' 'try:' '  with open("pyproject.toml","rb") as f: data=tomllib.load(f)' '  deps=list(data.get("project",{}).get("dependencies",[]))' '  for g in data.get("project",{}).get("optional-dependencies",{}).values(): deps.extend(g)' '  c=""' '  for d in deps:' '    if d.strip().startswith("openfilter"):' '      m=re.match(r"openfilter(?:\[[^\]]*\])?\s*(.*)",d.strip())' '      if m and m.group(1): c=m.group(1)' '      break' '  if not c: print("none"); sys.exit(0)' '  from packaging.specifiers import SpecifierSet' '  from packaging.version import Version' '  v_str=os.environ.get("OF_VERSION","")' '  if not v_str: print("error:OF_VERSION not set"); sys.exit(0)' '  s=SpecifierSet(c); v=Version(v_str)' '  print(("ok:" if v in s else "skip:")+str(c))' 'except Exception as e: print("error:"+str(e))' > /workspace/check_constraint.py
 
         echo "Setup complete"
 
@@ -136,11 +136,21 @@ steps:
         # from prior steps are not persisted across Cloud Build containers.
         gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://${_GAR_REGION}-docker.pkg.dev
 
+        # Recreate buildx builder (builder state in ~/.docker/buildx/ is not
+        # shared across Cloud Build step containers, only the Docker daemon is)
+        docker buildx create --name multiarch --driver docker-container --use || true
+        docker buildx inspect --bootstrap
+
         # Configure git credential helper scoped to github.com only
         git config --global credential.https://github.com.helper '!f() { echo "username=x-access-token"; echo "password=$${GITHUB_TOKEN}"; }; f'
 
-        # Ensure packaging library is available for constraint checking
-        pip install --quiet packaging 2>/dev/null || true
+        # Validate Python 3.11+ (required for tomllib) and install packaging
+        python3 -c "import tomllib" 2>/dev/null || {
+          echo "ERROR: Python 3.11+ required for tomllib (constraint checking)"
+          python3 --version
+          exit 1
+        }
+        python3 -m pip install --quiet packaging
 
         # Fetch repo visibility from GitHub API (one paginated call for all
         # filter-* repos). Builds a lookup file: "repo_name visibility" per line.
@@ -152,7 +162,7 @@ steps:
           > "$${VISIBILITY_FILE}"
           FETCH_OK=true
           while [[ -n "$${NEXT_URL}" ]]; do
-            RESPONSE=$(curl -sf \
+            RESPONSE=$(curl -sf --http1.1 \
               -H "Authorization: token $${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               -D /tmp/gh_headers \
@@ -182,15 +192,16 @@ steps:
         #   -old suffix  - superseded by newer version
         #   -template    - cookiecutter templates, not buildable
         #   filter-event-sink - installs published package from PyPI
-        EXCLUDE_PATTERNS="-old filter-template filter-event-sink"
         FILTER_REPOS=$(awk '{print $1}' "$${VISIBILITY_FILE}" | grep '^filter-' | sort)
 
         for REPO in $${FILTER_REPOS}; do
-          # Check sparse exclude list
+          # Sparse exclude list: suffix-anchored or exact matches only
           SKIP_REPO=false
-          for PATTERN in $${EXCLUDE_PATTERNS}; do
-            case "$${REPO}" in *$${PATTERN}*) SKIP_REPO=true; break;; esac
-          done
+          case "$${REPO}" in
+            *-old) SKIP_REPO=true ;;
+            filter-template) SKIP_REPO=true ;;
+            filter-event-sink) SKIP_REPO=true ;;
+          esac
           if [[ "$${SKIP_REPO}" == "true" ]]; then
             echo "Excluding $${REPO} (matches exclude pattern)"
             continue
@@ -323,7 +334,10 @@ steps:
             rm -f "/workspace/results/.skip_$${REPO}"
             continue
           elif [[ $EXIT_CODE -ne 0 ]]; then
-            echo "$${REPO}: FAILED (see error above)" >> /workspace/results/summary.txt || echo "WARNING: Could not write summary for $${REPO}" >&2
+            # Only write if subshell didn't already record a result
+            if ! grep -q "^$${REPO}:" /workspace/results/summary.txt 2>/dev/null; then
+              echo "$${REPO}: FAILED (see error above)" >> /workspace/results/summary.txt || echo "WARNING: Could not write summary for $${REPO}" >&2
+            fi
           fi
         done
 
