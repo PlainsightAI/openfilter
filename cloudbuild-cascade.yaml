@@ -3,16 +3,22 @@
 # Cascades an openfilter release to all downstream filter images.
 # Triggered on openfilter version tags (v*).
 #
-# For each compatible filter:
-#   1. Clone the filter repo
-#   2. Check if openfilter constraint allows the new version
-#   3. Rebuild Docker image (which pulls new openfilter via pip)
-#   4. Push based on repo visibility (configured per-filter):
+# Auto-discovers filter-* repos in the PlainsightAI org and for each:
+#   1. Clone the repo
+#   2. Skip if: no Dockerfile, no VERSION, own cloudbuild.yaml,
+#      no openfilter dependency, or constraint incompatible
+#   3. Detect build type from Dockerfile (filter_base vs standard)
+#   4. Rebuild Docker image (which pulls new openfilter via pip)
+#   5. Push based on repo visibility (GitHub API):
 #      - Public repos:   DockerHub + GAR
 #      - Internal repos:  GAR only
 #
-# filter-sam3-detector has its own cloudbuild.yaml and is triggered
-# separately (listed as skip in FILTERS for documentation).
+# Adding a new filter requires no changes here — just ensure the repo
+# follows conventions: filter-* name, Dockerfile, VERSION, openfilter dep.
+# DockerHub image name is derived as: openfilter-${repo#filter-}
+#
+# Repos with their own cloudbuild.yaml (e.g. filter-sam3-detector) are
+# auto-skipped and triggered separately in Step 5.
 # openfilter-mcp has no openfilter Python dependency (it indexes repos
 # as data) and is triggered downstream to refresh its code search index.
 #
@@ -167,62 +173,39 @@ steps:
           exit 1
         fi
 
-        # Filter definitions: repo:dockerhub_image:build_type
+        # Auto-discover filter-* repos from the visibility API response.
+        # DockerHub image name: openfilter-${repo#filter-} (enforced convention).
+        # Build type is detected from repo contents after cloning.
+        # Visibility is looked up from the API response above.
         #
-        # build_type:
-        #   standard    - builds from local source, resolves openfilter at build time
-        #   filter_base - uses filter_base GAR image (openfilter baked into base)
-        #   skip        - has own cloudbuild.yaml, triggered separately
-        #   template    - unrendered cookiecutter template, not buildable
-        #
-        # Visibility (public/internal/private) is looked up from the GitHub
-        # API at runtime. Public repos push to DockerHub + GAR; all others
-        # push to GAR only.
-        #
-        # Excluded (installs published package from PyPI, rebuild is a no-op
-        # unless filter-event-sink is also republished):
-        #   filter-event-sink
-        FILTERS="
-          filter-json-transform:openfilter-json-transform:standard
-          filter-facedetector:openfilter-facedetector:filter_base
-          filter-florence:openfilter-florence:filter_base
-          filter-frame-selector:openfilter-frame-selector:filter_base
-          filter-hugging-face:openfilter-hugging-face:filter_base
-          filter-huggingface-vision:openfilter-huggingface-vision:filter_base
-          filter-pytorch:openfilter-pytorch:filter_base
-          filter-pytorch-model:openfilter-pytorch-model:filter_base
-          filter-rt-detr:openfilter-rt-detr:filter_base
-          filter-bowl-sg:openfilter-bowl-sg:filter_base
-          filter-protege-model:openfilter-protege-model:filter_base
-          filter-sweet-green-ocr:openfilter-sweet-green-ocr:filter_base
-          filter-sweet-green-subject-data-aggregator:openfilter-sweet-green-subject-data-aggregator:filter_base
-          filter-quality-gates:openfilter-quality-gates:filter_base
-          filter-sam3-detector:openfilter-sam3-detector:skip
-        "
+        # Sparse exclude list for repos that should never be rebuilt here:
+        #   -old suffix  - superseded by newer version
+        #   -template    - cookiecutter templates, not buildable
+        #   filter-event-sink - installs published package from PyPI
+        EXCLUDE_PATTERNS="-old filter-template filter-event-sink"
+        FILTER_REPOS=$(awk '{print $1}' "$${VISIBILITY_FILE}" | grep '^filter-' | sort)
 
-        for FILTER_DEF in $${FILTERS}; do
-          # Skip empty lines
-          [[ -z "$${FILTER_DEF}" ]] && continue
+        for REPO in $${FILTER_REPOS}; do
+          # Check sparse exclude list
+          SKIP_REPO=false
+          for PATTERN in $${EXCLUDE_PATTERNS}; do
+            case "$${REPO}" in *$${PATTERN}*) SKIP_REPO=true; break;; esac
+          done
+          if [[ "$${SKIP_REPO}" == "true" ]]; then
+            echo "Excluding $${REPO} (matches exclude pattern)"
+            continue
+          fi
 
-          REPO=$(echo "$${FILTER_DEF}" | cut -d: -f1)
-          IMAGE=$(echo "$${FILTER_DEF}" | cut -d: -f2)
-          BUILD_TYPE=$(echo "$${FILTER_DEF}" | cut -d: -f3)
+          IMAGE="openfilter-$${REPO#filter-}"
           VISIBILITY=$(grep "^$${REPO} " "$${VISIBILITY_FILE}" | awk '{print $2}')
           VISIBILITY=$${VISIBILITY:-internal}
 
           echo ""
           echo "============================================"
-          echo "Processing: $${REPO} ($${BUILD_TYPE})"
+          echo "Processing: $${REPO}"
           echo "============================================"
 
-          # Skip filters with their own cloudbuild or unbuildable templates
-          if [[ "$${BUILD_TYPE}" == "skip" || "$${BUILD_TYPE}" == "template" ]]; then
-            echo "Skipping $${REPO} - $${BUILD_TYPE}"
-            continue
-          fi
-
           # Run each filter build in a subshell for error isolation.
-          # Exit codes: 0=success, 2=skip (constraint mismatch), other=failure
           (
             set -euo pipefail
 
@@ -235,26 +218,46 @@ steps:
             git clone --depth 1 "https://github.com/PlainsightAI/$${REPO}.git" "$${REPO}"
             cd "$${REPO}"
 
-            # Get filter version
+            # --- Auto-detect: skip repos with their own Cloud Build pipeline ---
+            if [[ -f cloudbuild.yaml ]]; then
+              echo "Skipping $${REPO} - has own cloudbuild.yaml"
+              echo "$${REPO}: SKIPPED (own cloudbuild)" >> /workspace/results/summary.txt
+              touch "/workspace/results/.skip_$${REPO}"
+              exit 0
+            fi
+
+            # --- Auto-detect: skip repos without a Dockerfile ---
+            if [[ ! -f Dockerfile ]]; then
+              echo "Skipping $${REPO} - no Dockerfile"
+              echo "$${REPO}: SKIPPED (no Dockerfile)" >> /workspace/results/summary.txt
+              touch "/workspace/results/.skip_$${REPO}"
+              exit 0
+            fi
+
+            # --- Auto-detect: skip repos without a version ---
             FILTER_VERSION=""
             if [[ -f VERSION ]]; then
               FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
             fi
             if [[ -z "$${FILTER_VERSION}" ]]; then
-              echo "WARNING: No VERSION file found in $${REPO}, skipping"
+              echo "Skipping $${REPO} - no VERSION file"
               echo "$${REPO}: SKIPPED (no VERSION)" >> /workspace/results/summary.txt
               touch "/workspace/results/.skip_$${REPO}"
               exit 0
             fi
             echo "Filter version: $${FILTER_VERSION}"
 
-            # Check openfilter constraint compatibility using Python packaging lib.
-            # Uses tomllib to parse pyproject.toml properly instead of fragile regex.
+            # --- Constraint check: skip repos without openfilter dep or incompatible ---
             export OF_VERSION
             COMPAT_RESULT=$(python3 /workspace/check_constraint.py 2>/dev/null || echo "error:python-failed")
             echo "Constraint check: $${COMPAT_RESULT}"
 
-            if [[ "$${COMPAT_RESULT}" == error:* ]]; then
+            if [[ "$${COMPAT_RESULT}" == "none" ]]; then
+              echo "Skipping $${REPO} - no openfilter dependency"
+              echo "$${REPO}: SKIPPED (no openfilter dep)" >> /workspace/results/summary.txt
+              touch "/workspace/results/.skip_$${REPO}"
+              exit 0
+            elif [[ "$${COMPAT_RESULT}" == error:* ]]; then
               ERROR_MSG=$${COMPAT_RESULT#error:}
               echo "ERROR: Constraint check failed for $${REPO}: $${ERROR_MSG}"
               echo "$${REPO}: FAILED (constraint check error: $${ERROR_MSG})" >> /workspace/results/summary.txt
@@ -266,6 +269,15 @@ steps:
               touch "/workspace/results/.skip_$${REPO}"
               exit 0
             fi
+
+            # --- Auto-detect build type from Dockerfile ---
+            # filter_base: Dockerfile references the filter_base GAR image
+            # standard: everything else
+            BUILD_TYPE="standard"
+            if grep -q 'filter_base' Dockerfile 2>/dev/null; then
+              BUILD_TYPE="filter_base"
+            fi
+            echo "Build type: $${BUILD_TYPE}"
 
             # Determine push targets based on GitHub API visibility lookup
             GAR_IMAGE="${_GAR_REGION}-docker.pkg.dev/${_GAR_PROJECT}/${_GAR_REPO}/$${REPO}"
@@ -282,10 +294,9 @@ steps:
 
             echo "Building $${REPO}:$${FILTER_VERSION}"
 
-            # Build based on type
+            # Build args based on detected type
             BUILD_ARGS=""
             if [[ "$${BUILD_TYPE}" == "filter_base" ]]; then
-              # Get RESOURCE_BUNDLE_VERSION if exists
               RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
               BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=$${RBV}"
             fi
