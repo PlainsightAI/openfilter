@@ -191,7 +191,6 @@ steps:
         # Sparse exclude list for repos that should never be rebuilt here:
         #   -old suffix  - superseded by newer version
         #   -template    - cookiecutter templates, not buildable
-        #   filter-event-sink - installs published package from PyPI
         FILTER_REPOS=$(awk '{print $1}' "$${VISIBILITY_FILE}" | grep '^filter-' | sort)
 
         for REPO in $${FILTER_REPOS}; do
@@ -200,7 +199,6 @@ steps:
           case "$${REPO}" in
             *-old) SKIP_REPO=true ;;
             filter-template) SKIP_REPO=true ;;
-            filter-event-sink) SKIP_REPO=true ;;
           esac
           if [[ "$${SKIP_REPO}" == "true" ]]; then
             echo "Excluding $${REPO} (matches exclude pattern)"
