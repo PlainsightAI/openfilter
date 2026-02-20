@@ -22,10 +22,11 @@
 # openfilter-mcp has no openfilter Python dependency (it indexes repos
 # as data) and is triggered downstream to refresh its code search index.
 #
-# Dry-run mode: set _DRY_RUN=true to build without pushing or triggering.
+# Dry-run by default: builds run without pushing or triggering downstream.
+# The Terraform trigger sets _DRY_RUN=false for automated tag-triggered runs.
+# Manual runs are safe out of the box:
 #   gcloud builds triggers run openfilter-cascade \
-#     --project=plainsightai-dev --region=global --branch=main \
-#     --substitutions=_DRY_RUN=true
+#     --project=plainsightai-dev --region=global --branch=main
 #
 # FILTER-306: https://plainsight-ai.atlassian.net/browse/FILTER-306
 # FILTER-314: https://plainsight-ai.atlassian.net/browse/FILTER-314
@@ -35,7 +36,7 @@ substitutions:
   _GAR_PROJECT: plainsightai-prod
   _GAR_REPO: oci
   _DOCKERHUB_ORG: plainsightai
-  _DRY_RUN: "false"
+  _DRY_RUN: "true"
 
 options:
   machineType: 'E2_HIGHCPU_8'
