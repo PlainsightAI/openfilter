@@ -642,12 +642,18 @@ class Filter:
         def loop():
             while not self.stop_evt.is_set():
                 try:
+                    metrics = dict(self.metrics)
+
+                    # Include camera_connected from input filters (VideoIn, ImageIn)
+                    if hasattr(self, '_camera_connected'):
+                        metrics['camera_connected'] = self._camera_connected
+
                     # Send system metrics to OpenTelemetry (raw, not aggregated)
-                    self.otel.update_metrics(self.metrics, filter_name=self.filter_name)
-                    
+                    self.otel.update_metrics(metrics, filter_name=self.filter_name)
+
                     # System metrics are automatically aggregated by OTel SDK and sent to OpenLineage
                     # via the OTelLineageExporter bridge - no need to send them directly
-                            
+
                 except Exception as e:
                     logger.error(f"[metrics_updater] Error updating metrics: {e}")
                 self.stop_evt.wait(interval)  

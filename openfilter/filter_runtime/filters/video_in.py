@@ -730,11 +730,12 @@ class VideoIn(Filter):
             topics.append(source.topic or 'main')
             optionss.append(source.options or {})
 
-        default_options  = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
+        default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
             'maxsize': config.maxsize, 'resize': config.resize}
-        self.mvreader    = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
-        self.tops_n_vids = tuple(zip(topics, self.mvreader.videos))
-        self.id          = -1  # frame id
+        self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
+        self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
+        self.id              = -1  # frame id
+        self._camera_connected = 0
 
         self.mvreader.start()
 
@@ -744,8 +745,10 @@ class VideoIn(Filter):
     def process(self, frames):
         def get():
             if (image_n_tframes := self.mvreader.read(True)) is None:
+                self._camera_connected = 0
                 self.exit('video ended')
 
+            self._camera_connected = 1
             self.id = id = self.id + 1
 
             return {topic: Frame(img,

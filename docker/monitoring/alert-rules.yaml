@@ -1,0 +1,44 @@
+groups:
+  - name: openfilter_pipeline_health
+    rules:
+      # Pipeline DOWN - no metrics received in 60s
+      - alert: PipelineDown
+        expr: |
+          time() - max(timestamp(openfilter_disk_usage_percent)) by (pipeline_instance_id) > 60
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline {{ $labels.pipeline_instance_id }} is DOWN"
+          description: "No metrics received for 60+ seconds. Check if pipeline container is running. Check OTEL Collector health."
+          runbook_url: "https://docs.plainsight.ai/runbooks/pipeline-down"
+
+      # Camera disconnected
+      - alert: CameraDisconnected
+        expr: openfilter_camera_connected == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Camera disconnected on pipeline {{ $labels.pipeline_instance_id }}"
+          description: "Video source is not delivering frames. Check physical camera connection and source URL."
+
+      # Disk critical (>90%)
+      - alert: DiskCritical
+        expr: openfilter_disk_usage_percent > 90
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk usage {{ $value | humanizePercentage }} on pipeline {{ $labels.pipeline_instance_id }}"
+          description: "Disk usage above 90%. Free disk space or check for runaway log files."
+
+      # GPU unavailable
+      - alert: GPUUnavailable
+        expr: openfilter_gpu_accessible == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU unavailable on pipeline {{ $labels.pipeline_instance_id }}"
+          description: "GPU is not accessible for inference. Run nvidia-smi on host. Check GPU driver status."
