@@ -393,8 +393,9 @@ steps:
       - '-c'
       - |
         OF_VERSION=$(cat /workspace/openfilter_version)
+        DRY_RUN="${_DRY_RUN}"
 
-        if [[ "${_DRY_RUN}" == "true" ]]; then
+        if [[ "$${DRY_RUN}" == "true" ]]; then
           echo "DRY RUN - skipping downstream triggers"
           exit 0
         fi
