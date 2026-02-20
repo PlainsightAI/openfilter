@@ -22,6 +22,11 @@
 # openfilter-mcp has no openfilter Python dependency (it indexes repos
 # as data) and is triggered downstream to refresh its code search index.
 #
+# Dry-run mode: set _DRY_RUN=true to build without pushing or triggering.
+#   gcloud builds triggers run openfilter-cascade \
+#     --project=plainsightai-dev --region=global --branch=main \
+#     --substitutions=_DRY_RUN=true
+#
 # FILTER-306: https://plainsight-ai.atlassian.net/browse/FILTER-306
 # FILTER-314: https://plainsight-ai.atlassian.net/browse/FILTER-314
 
@@ -30,6 +35,7 @@ substitutions:
   _GAR_PROJECT: plainsightai-prod
   _GAR_REPO: oci
   _DOCKERHUB_ORG: plainsightai
+  _DRY_RUN: "false"
 
 options:
   machineType: 'E2_HIGHCPU_8'
@@ -130,6 +136,12 @@ steps:
       - '-c'
       - |
         OF_VERSION=$(cat /workspace/openfilter_version)
+        DRY_RUN="${_DRY_RUN}"
+        if [[ "$${DRY_RUN}" == "true" ]]; then
+          echo "============================================"
+          echo "DRY RUN MODE - builds will NOT be pushed"
+          echo "============================================"
+        fi
         echo "Building filters for openfilter $${OF_VERSION}"
 
         # GAR auth must be configured in this step; Docker credentials
@@ -313,18 +325,29 @@ steps:
             # Refresh GAR auth before build (tokens expire after 1 hour)
             gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://${_GAR_REGION}-docker.pkg.dev
 
-            # Build and push with registry-based cache for faster rebuilds
+            # Build (and push unless dry-run) with registry-based cache
+            PUSH_FLAG="--push"
+            CACHE_TO="--cache-to type=registry,ref=$${GAR_IMAGE}:buildcache"
+            if [[ "$${DRY_RUN}" == "true" ]]; then
+              PUSH_FLAG=""
+              CACHE_TO=""
+            fi
             docker buildx build \
               --platform linux/amd64,linux/arm64 \
               --cache-from type=registry,ref=$${GAR_IMAGE}:buildcache \
-              --cache-to type=registry,ref=$${GAR_IMAGE}:buildcache \
+              $${CACHE_TO} \
               $${BUILD_ARGS} \
               $${TAGS} \
-              --push \
+              $${PUSH_FLAG} \
               .
 
-            echo "$${REPO}: SUCCESS ($${FILTER_VERSION})" >> /workspace/results/summary.txt
-            echo "Successfully built and pushed $${REPO}:$${FILTER_VERSION}"
+            if [[ "$${DRY_RUN}" == "true" ]]; then
+              echo "$${REPO}: SUCCESS/DRY-RUN ($${FILTER_VERSION})" >> /workspace/results/summary.txt
+              echo "Dry-run build succeeded for $${REPO}:$${FILTER_VERSION} (not pushed)"
+            else
+              echo "$${REPO}: SUCCESS ($${FILTER_VERSION})" >> /workspace/results/summary.txt
+              echo "Successfully built and pushed $${REPO}:$${FILTER_VERSION}"
+            fi
           )
           EXIT_CODE=$?
           if [[ -f "/workspace/results/.skip_$${REPO}" ]]; then
@@ -348,7 +371,11 @@ steps:
         # Fail the step if any filter builds failed
         FAIL_COUNT=$(grep -c ': FAILED' /workspace/results/summary.txt 2>/dev/null || echo 0)
         SUCCESS_COUNT=$(grep -c ': SUCCESS' /workspace/results/summary.txt 2>/dev/null || echo 0)
-        echo "Results: $${SUCCESS_COUNT} succeeded, $${FAIL_COUNT} failed"
+        if [[ "$${DRY_RUN}" == "true" ]]; then
+          echo "DRY RUN complete: $${SUCCESS_COUNT} built (not pushed), $${FAIL_COUNT} failed"
+        else
+          echo "Results: $${SUCCESS_COUNT} succeeded, $${FAIL_COUNT} failed"
+        fi
         if [[ "$${FAIL_COUNT}" -gt 0 ]]; then
           echo "ERROR: $${FAIL_COUNT} filter(s) failed to build"
           exit 1
@@ -365,6 +392,12 @@ steps:
       - '-c'
       - |
         OF_VERSION=$(cat /workspace/openfilter_version)
+
+        if [[ "${_DRY_RUN}" == "true" ]]; then
+          echo "DRY RUN - skipping downstream triggers"
+          exit 0
+        fi
+
         echo "Triggering downstream builds for openfilter $${OF_VERSION}"
 
         # Trigger filter-sam3-detector build
