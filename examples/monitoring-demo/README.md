@@ -13,6 +13,12 @@ A minimal `VideoIn` pipeline reads a looping video file and exports five health 
 | `openfilter_ram_usage_percent` | Gauge (0-100) | Host RAM usage |
 | `openfilter_gpu_accessible` | Gauge (0/1) | CUDA GPU available |
 | `openfilter_gpu_usage_percent` | Gauge (0-100) | GPU utilization (nvidia-smi) |
+| `openfilter_filter_time_in` | Gauge (epoch s) | Timestamp when filter started processing (per filter) |
+| `openfilter_filter_time_out` | Gauge (epoch s) | Timestamp when filter finished processing (per filter) |
+| `openfilter_process_time_ms` | Gauge (EMA ms) | Per-filter processing time (per filter) |
+| `openfilter_frame_total_time_ms` | Gauge (EMA ms) | Sum of all filters' durations (last filter only) |
+| `openfilter_frame_avg_time_ms` | Gauge (EMA ms) | Average duration across filters (last filter only) |
+| `openfilter_frame_std_time_ms` | Gauge (EMA ms) | Std dev of durations across filters (last filter only) |
 
 ```
 Pipeline (Python)              Docker Monitoring Stack
@@ -151,6 +157,10 @@ Results: 11/11 passed, 0 failed
 | GPU Status | `openfilter_gpu_accessible` |
 | GPU Utilization | `openfilter_gpu_usage_percent` |
 | Pipeline FPS | `videoin_fps` |
+| Filter Process Time | `openfilter_process_time_ms` |
+| Frame Total Time | `openfilter_frame_total_time_ms` |
+| Frame Avg Time | `openfilter_frame_avg_time_ms` |
+| Frame Std Dev | `openfilter_frame_std_time_ms` |
 
 ### 5. Tear down
 

@@ -18,6 +18,12 @@ HEALTH_METRICS = [
     "openfilter_ram_usage_percent",
     "openfilter_gpu_accessible",
     "openfilter_gpu_usage_percent",
+    "openfilter_filter_time_in",
+    "openfilter_filter_time_out",
+    "openfilter_process_time_ms",
+    "openfilter_frame_total_time_ms",
+    "openfilter_frame_avg_time_ms",
+    "openfilter_frame_std_time_ms",
 ]
 
 ALERT_NAMES = ["PipelineDown", "CameraDisconnected", "DiskCritical", "GPUUnavailable"]

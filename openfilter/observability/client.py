@@ -240,9 +240,18 @@ class OpenTelemetryClient:
         )
 
     # System health metrics that should be exported as openfilter_ prefixed gauges
-    _SYSTEM_HEALTH_METRICS = {'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent'}
+    _SYSTEM_HEALTH_METRICS = {
+        'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent',
+        'filter_time_in', 'filter_time_out', 'process_time_ms',
+        'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
+    }
     # Metrics that should use observable gauges (current point-in-time values)
-    _GAUGE_METRICS = {'fps', 'cpu', 'mem', 'lat_in', 'lat_out', 'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent'}
+    _GAUGE_METRICS = {
+        'fps', 'cpu', 'mem', 'lat_in', 'lat_out',
+        'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent',
+        'filter_time_in', 'filter_time_out', 'process_time_ms',
+        'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
+    }
 
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
         """Update metrics for a specific filter.

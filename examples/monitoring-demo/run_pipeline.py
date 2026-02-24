@@ -5,11 +5,17 @@ Run a minimal OpenFilter pipeline that exports health metrics to the monitoring 
 Pipeline: VideoIn -> FiltersToQueue (sink)
 
 Metrics exported:
-  - openfilter_camera_connected   (gauge, 0 or 1)
-  - openfilter_disk_usage_percent (gauge, 0-100)
-  - openfilter_ram_usage_percent  (gauge, 0-100)
-  - openfilter_gpu_accessible     (gauge, 0 or 1)
-  - openfilter_gpu_usage_percent  (gauge, 0-100)
+  - openfilter_camera_connected    (gauge, 0 or 1)
+  - openfilter_disk_usage_percent  (gauge, 0-100)
+  - openfilter_ram_usage_percent   (gauge, 0-100)
+  - openfilter_gpu_accessible      (gauge, 0 or 1)
+  - openfilter_gpu_usage_percent   (gauge, 0-100)
+  - openfilter_filter_time_in      (gauge, epoch seconds — per filter)
+  - openfilter_filter_time_out     (gauge, epoch seconds — per filter)
+  - openfilter_process_time_ms     (gauge, EMA ms — per filter)
+  - openfilter_frame_total_time_ms (gauge, EMA ms — last filter only)
+  - openfilter_frame_avg_time_ms   (gauge, EMA ms — last filter only)
+  - openfilter_frame_std_time_ms   (gauge, EMA ms — last filter only)
 
 Usage:
     # With defaults (OTLP to localhost:4317, 120s runtime)

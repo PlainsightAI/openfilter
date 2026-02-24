@@ -566,6 +566,13 @@ class Filter:
 
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         self._metrics_updater_thread = None
+        self._filter_time_in = 0.0
+        self._filter_time_out = 0.0
+        self._process_time_ema = 0.0
+        self._frame_total_time_ema = 0.0
+        self._frame_avg_time_ema = 0.0
+        self._frame_std_time_ema = 0.0
+        self._is_last_filter = False
         try:
              self.telemetry_enabled: bool = bool(strtobool(TELEMETRY_EXPORTER_ENABLED)) if TELEMETRY_EXPORTER_ENABLED is not None else False
         except ValueError:
@@ -647,6 +654,17 @@ class Filter:
                     # Include camera_connected from input filters (VideoIn, ImageIn)
                     if hasattr(self, '_camera_connected'):
                         metrics['camera_connected'] = self._camera_connected
+
+                    # Per-filter timing metrics
+                    metrics['filter_time_in'] = self._filter_time_in
+                    metrics['filter_time_out'] = self._filter_time_out
+                    metrics['process_time_ms'] = self._process_time_ema
+
+                    # Aggregate timing metrics (last filter only)
+                    if self._is_last_filter:
+                        metrics['frame_total_time_ms'] = self._frame_total_time_ema
+                        metrics['frame_avg_time_ms'] = self._frame_avg_time_ema
+                        metrics['frame_std_time_ms'] = self._frame_std_time_ema
 
                     # Send system metrics to OpenTelemetry (raw, not aggregated)
                     self.otel.update_metrics(metrics, filter_name=self.filter_name)
@@ -843,24 +861,87 @@ class Filter:
             for k, v in metrics.items()
         }
 
+    def _update_process_time_ema(self, duration_ms: float) -> None:
+        """Update EMA for this filter's processing time."""
+        alpha = 0.05
+        self._process_time_ema = (1 - alpha) * self._process_time_ema + alpha * duration_ms
+
+    def _inject_timings(self, frames: dict[str, Frame], t_in: float, t_out: float, duration_ms: float) -> None:
+        """Append this filter's timing entry to each frame's meta['filter_timings'] and compute aggregates if last filter."""
+        this_entry = {
+            'filter_name': self.filter_name or self.__class__.__name__,
+            'pipeline_id': self.pipeline_id or '',
+            'time_in': t_in,
+            'time_out': t_out,
+            'duration_ms': duration_ms,
+        }
+
+        alpha = 0.05
+        for topic, frame in frames.items():
+            if topic.startswith('_'):
+                continue
+            if not hasattr(frame, 'data') or not isinstance(frame.data, dict):
+                continue
+
+            meta = frame.data.setdefault('meta', {})
+            all_timings = list(meta.get('filter_timings', []))
+            all_timings.append(this_entry)
+            meta['filter_timings'] = all_timings
+
+            if self._is_last_filter and len(all_timings) > 0:
+                durations = [t['duration_ms'] for t in all_timings]
+                total = sum(durations)
+                avg = total / len(durations)
+                std = (sum((d - avg) ** 2 for d in durations) / len(durations)) ** 0.5
+                self._frame_total_time_ema = (1 - alpha) * self._frame_total_time_ema + alpha * total
+                self._frame_avg_time_ema = (1 - alpha) * self._frame_avg_time_ema + alpha * avg
+                self._frame_std_time_ema = (1 - alpha) * self._frame_std_time_ema + alpha * std
+
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
 
-        #self.otel.update_metrics(self.metrics,filter_name= self.filter_name)
+        # Wrap process() with timing
+        t_in = time.time()
+        processed_frames = self.process(frames)
+        t_out = time.time()
 
-        # Process the frames first, so the filter can add its own results
-        if (processed_frames := self.process(frames)) is None:
+        # Always update per-filter timing (even for sink filters that return None)
+        process_time_ms = (t_out - t_in) * 1000
+        self._filter_time_in = t_in
+        self._filter_time_out = t_out
+        self._update_process_time_ema(process_time_ms)
+
+        if processed_frames is None:
+            # Sink filter — still inject aggregate timing for last-filter metrics
+            if self._is_last_filter and frames:
+                self._inject_timings(frames, t_in, t_out, process_time_ms)
             return None
 
         # Now emit heartbeat with the processed frames that include this filter's results
         if processed_frames and not callable(processed_frames):
             final_frames = {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
 
+            # Inject timing metadata into output frames
+            self._inject_timings(final_frames, t_in, t_out, process_time_ms)
+
             proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(final_frames, self.emitter))
             proces_frames_data.start()
 
         if callable(processed_frames):
-            return lambda: None if (f := processed_frames()) is None else {'main': f} if isinstance(f, Frame) else f
+            def _timed_callable():
+                ct_in = time.time()
+                f = processed_frames()
+                ct_out = time.time()
+                if f is None:
+                    return None
+                result = {'main': f} if isinstance(f, Frame) else f
+                ct_ms = (ct_out - ct_in) * 1000
+                self._filter_time_in = ct_in
+                self._filter_time_out = ct_out
+                self._update_process_time_ema(ct_ms)
+                self._inject_timings(result, ct_in, ct_out, ct_ms)
+                return result
+            return _timed_callable
         else:
             return {'main': processed_frames} if isinstance(processed_frames, Frame) else processed_frames
 
@@ -1009,6 +1090,9 @@ class Filter:
             mq_msgid_sync = config.mq_msgid_sync,
         )
         
+        # Detect last filter in pipeline (no downstream outputs)
+        self._is_last_filter = self.mq.sender is None
+
         # Start metrics upddater thread after MQ is initialized
         if self.telemetry_enabled and hasattr(self, 'otel'):
             self.start_metrics_updater_thread()
