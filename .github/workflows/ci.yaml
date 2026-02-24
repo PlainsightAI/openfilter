@@ -33,3 +33,52 @@ jobs:
 
       - name: Run tests
         run: make test-all
+
+  # Dry-run the cascade build script when its files change.
+  # Uses the default GITHUB_TOKEN which can only see public repos.
+  # To test internal filters, add an ORG_GITHUB_TOKEN repo/org secret
+  # with read:org + repo scope.
+  cascade-dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for cascade changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            cascade:
+              - 'cloudbuild-cascade.yaml'
+              - 'scripts/build-filters.sh'
+              - 'scripts/check_constraint.py'
+
+      - name: Checkout code
+        if: steps.filter.outputs.cascade == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        if: steps.filter.outputs.cascade == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare workspace
+        if: steps.filter.outputs.cascade == 'true'
+        run: |
+          WORKSPACE=$(mktemp -d)
+          echo "WORKSPACE=${WORKSPACE}" >> $GITHUB_ENV
+          mkdir -p "${WORKSPACE}/filters" "${WORKSPACE}/results"
+          OF_VERSION=$(cat VERSION | tr -d '[:space:]' | sed 's/^v//')
+          echo "${OF_VERSION}" > "${WORKSPACE}/openfilter_version"
+          cp scripts/check_constraint.py "${WORKSPACE}/check_constraint.py"
+
+      - name: Run cascade dry-run
+        if: steps.filter.outputs.cascade == 'true'
+        env:
+          WORKSPACE: ${{ env.WORKSPACE }}
+          DRY_RUN: "true"
+          GAR_REGION: us-west1
+          GAR_PROJECT: plainsightai-prod
+          GAR_REPO: oci
+          DOCKERHUB_ORG: plainsightai
+          GITHUB_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          FAIL_IS_ERROR: "false"
+        run: bash scripts/build-filters.sh
