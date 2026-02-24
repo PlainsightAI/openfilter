@@ -37,13 +37,15 @@ fi
 docker version --format 'Docker CLI {{.Client.Version}}'
 docker buildx version
 
-# GAR auth must be configured in this step; the cloud-sdk image
-# does not inherit Docker credentials from prior steps' images.
-gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev"
+# Registry auth is only needed for pushes (non-dry-run).
+if [[ "${DRY_RUN}" != "true" ]]; then
+  # GAR auth — the cloud-sdk image does not inherit Docker credentials from prior steps' images.
+  gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev"
 
-# DockerHub auth (needed for public-repo pushes; cloud-sdk image doesn't inherit prior steps' logins)
-if [[ -n "${DOCKERHUB_TOKEN:-}" && -n "${DOCKERHUB_USERNAME:-}" ]]; then
-  echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+  # DockerHub auth (needed for public-repo pushes)
+  if [[ -n "${DOCKERHUB_TOKEN:-}" && -n "${DOCKERHUB_USERNAME:-}" ]]; then
+    echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+  fi
 fi
 
 # Ensure buildx builder exists (reuse if present from a prior step or local env)
@@ -131,6 +133,9 @@ fi
 #   -old suffix  - superseded by newer version
 #   -template    - cookiecutter templates, not buildable
 FILTER_REPOS=$(awk '{print $1}' "${VISIBILITY_FILE}" | grep '^filter-' | sort)
+TOTAL_REPOS=$(wc -l < "${VISIBILITY_FILE}")
+FILTER_COUNT=$(echo "${FILTER_REPOS}" | wc -w)
+echo "Discovered ${TOTAL_REPOS} repos (${FILTER_COUNT} filters)"
 
 # Optional: limit to a single filter for testing
 if [[ -n "${SINGLE_FILTER:-}" ]]; then
@@ -237,7 +242,7 @@ for REPO in ${FILTER_REPOS}; do
     # filter_base: Dockerfile references the filter_base GAR image
     # standard: everything else
     BUILD_TYPE="standard"
-    if grep -q 'filter_base' Dockerfile 2>/dev/null; then
+    if grep -qE 'FROM.*filter_base' Dockerfile 2>/dev/null; then
       BUILD_TYPE="filter_base"
     fi
     echo "Build type: ${BUILD_TYPE}"

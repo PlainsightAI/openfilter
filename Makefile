@@ -1,5 +1,4 @@
 VERSION ?= $(shell cat VERSION)
-SHA     := $(shell git rev-parse --short HEAD)
 
 GCP_PROJECT    := plainsightai-dev
 CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com

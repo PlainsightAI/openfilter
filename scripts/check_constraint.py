@@ -3,7 +3,11 @@
 Reads OF_VERSION from env, scans pyproject.toml for openfilter dependency.
 Outputs: none | ok:<spec> | skip:<spec> | error:<msg>
 """
-import tomllib, re, sys, os
+import sys, os, tomllib
+
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 try:
     if not os.path.exists("pyproject.toml"):
@@ -14,29 +18,24 @@ try:
     deps = list(data.get("project", {}).get("dependencies", []))
     for g in data.get("project", {}).get("optional-dependencies", {}).values():
         deps.extend(g)
-    found = False
-    c = ""
+    req = None
     for d in deps:
-        if d.strip().startswith("openfilter"):
-            found = True
-            m = re.match(r"openfilter(?:\[[^\]]*\])?\s*(.*)", d.strip())
-            if m and m.group(1):
-                c = m.group(1)
+        r = Requirement(d)
+        if r.name == "openfilter":
+            req = r
             break
-    if not found:
+    if req is None:
         print("none")
         sys.exit(0)
-    if not c:
+    if not req.specifier:
         print("ok:")
         sys.exit(0)
-    from packaging.specifiers import SpecifierSet
-    from packaging.version import Version
     v_str = os.environ.get("OF_VERSION", "")
     if not v_str:
         print("error:OF_VERSION not set")
         sys.exit(0)
-    s = SpecifierSet(c)
     v = Version(v_str)
-    print(("ok:" if v in s else "skip:") + str(c))
+    spec = str(req.specifier)
+    print(("ok:" if v in req.specifier else "skip:") + spec)
 except Exception as e:
     print("error:" + str(e))
