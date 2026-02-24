@@ -34,6 +34,10 @@ jobs:
       - name: Run tests
         run: make test-all
 
+  # Dry-run the cascade build script when its files change.
+  # Uses the default GITHUB_TOKEN which can only see public repos.
+  # To test internal filters, add an ORG_GITHUB_TOKEN repo/org secret
+  # with read:org + repo scope.
   cascade-dry-run:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

@@ -7,10 +7,12 @@
 # Optional: WORKSPACE (defaults to /workspace for Cloud Build)
 #           DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (for public-repo pushes)
 #           SINGLE_FILTER (limit to one filter for testing)
+#           MAX_PARALLEL (concurrent builds, default 4)
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
 OF_VERSION=$(cat "${WORKSPACE}/openfilter_version")
+MAX_PARALLEL="${MAX_PARALLEL:-4}"
 
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo "============================================"
@@ -46,6 +48,17 @@ if [[ "${DRY_RUN}" != "true" ]]; then
   if [[ -n "${DOCKERHUB_TOKEN:-}" && -n "${DOCKERHUB_USERNAME:-}" ]]; then
     echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
   fi
+
+  # Pre-generate ADC credentials for filter_base builds (shared by all workers).
+  # Done once here to avoid concurrent gcloud calls from parallel builds.
+  CRED_FILE="${WORKSPACE}/google_credentials.json"
+  gcloud auth application-default print-access-token &>/dev/null && \
+    cp "$(gcloud info --format='value(config.paths.global_config_dir)')/application_default_credentials.json" "${CRED_FILE}" 2>/dev/null || \
+    python3 -c "
+import json, subprocess, sys
+token = subprocess.check_output(['gcloud','auth','print-access-token'], text=True).strip()
+json.dump({'type':'authorized_user','token':token}, sys.stdout)
+" > "${CRED_FILE}"
 fi
 
 # Ensure buildx builder exists (reuse if present from a prior step or local env)
@@ -92,7 +105,7 @@ PYTHON="${VENV}/bin/python"
 
 # Fetch repo visibility from GitHub API (one paginated call for all
 # filter-* repos). Builds a lookup file: "repo_name visibility" per line.
-# Retries up to 3 times; fails the build if it never succeeds.
+# Retries up to 3 times; falls back to hardcoded list if all fail.
 VISIBILITY_FILE="${WORKSPACE}/results/repo_visibility.txt"
 for ATTEMPT in 1 2 3; do
   echo "Fetching repo visibility from GitHub API (attempt ${ATTEMPT}/3)..."
@@ -147,182 +160,271 @@ if [[ -n "${SINGLE_FILTER:-}" ]]; then
   fi
 fi
 
+# Apply exclude list
+ELIGIBLE_REPOS=""
 for REPO in ${FILTER_REPOS}; do
-  # Sparse exclude list: suffix-anchored or exact matches only
-  SKIP_REPO=false
   case "${REPO}" in
-    *-old) SKIP_REPO=true ;;
-    filter-template) SKIP_REPO=true ;;
+    *-old|filter-template)
+      echo "Excluding ${REPO} (matches exclude pattern)"
+      continue ;;
   esac
-  if [[ "${SKIP_REPO}" == "true" ]]; then
-    echo "Excluding ${REPO} (matches exclude pattern)"
+  ELIGIBLE_REPOS="${ELIGIBLE_REPOS:+${ELIGIBLE_REPOS} }${REPO}"
+done
+FILTER_REPOS="${ELIGIBLE_REPOS}"
+echo "Eligible filters: $(echo "${FILTER_REPOS}" | wc -w)"
+
+# ============================================================
+# Phase 1: Parallel clone
+# ============================================================
+echo ""
+echo "============================================"
+echo "Phase 1: Cloning filter repos (parallel)"
+echo "============================================"
+CLONE_PIDS=()
+for REPO in ${FILTER_REPOS}; do
+  (
+    cd "${WORKSPACE}/filters"
+    rm -rf "${REPO}"
+    if [[ -n "${GIT_SSH_COMMAND:-}" ]]; then
+      git clone --depth 1 "git@github.com:PlainsightAI/${REPO}.git" "${REPO}" 2>&1
+    else
+      git clone --depth 1 "https://github.com/PlainsightAI/${REPO}.git" "${REPO}" 2>&1
+    fi
+    echo "Cloned ${REPO}"
+  ) &
+  CLONE_PIDS+=($!)
+done
+# Wait for all clones, note failures
+CLONE_FAILED=""
+for i in "${!CLONE_PIDS[@]}"; do
+  REPO=$(echo "${FILTER_REPOS}" | tr ' ' '\n' | sed -n "$((i+1))p")
+  if ! wait "${CLONE_PIDS[$i]}"; then
+    echo "WARNING: Failed to clone ${REPO}"
+    CLONE_FAILED="${CLONE_FAILED:+${CLONE_FAILED} }${REPO}"
+    echo "${REPO}: FAILED (clone)" >> "${WORKSPACE}/results/summary.txt"
+  fi
+done
+
+# ============================================================
+# Phase 2: Pre-flight checks (fast, sequential — mostly stat/grep)
+# ============================================================
+echo ""
+echo "============================================"
+echo "Phase 2: Pre-flight checks"
+echo "============================================"
+BUILD_LIST=""
+for REPO in ${FILTER_REPOS}; do
+  # Skip repos that failed to clone
+  if echo "${CLONE_FAILED}" | tr ' ' '\n' | grep -qx "${REPO}" 2>/dev/null; then
     continue
   fi
 
-  IMAGE="openfilter-${REPO#filter-}"
-  VISIBILITY=$(grep "^${REPO} " "${VISIBILITY_FILE}" | awk '{print $2}')
-  VISIBILITY=${VISIBILITY:-internal}
+  FILTER_DIR="${WORKSPACE}/filters/${REPO}"
+  if [[ ! -d "${FILTER_DIR}" ]]; then
+    echo "${REPO}: FAILED (clone directory missing)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+  cd "${FILTER_DIR}"
 
+  # Skip repos with their own Cloud Build pipeline
+  if [[ -f cloudbuild.yaml ]]; then
+    echo "  ${REPO}: skip (own cloudbuild.yaml)"
+    echo "${REPO}: SKIPPED (own cloudbuild)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+
+  # Skip repos without a Dockerfile
+  if [[ ! -f Dockerfile ]]; then
+    echo "  ${REPO}: skip (no Dockerfile)"
+    echo "${REPO}: SKIPPED (no Dockerfile)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+
+  # Skip repos without a version
+  FILTER_VERSION=""
+  if [[ -f VERSION ]]; then
+    FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
+  fi
+  if [[ -z "${FILTER_VERSION}" ]]; then
+    echo "  ${REPO}: skip (no VERSION)"
+    echo "${REPO}: SKIPPED (no VERSION)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+
+  # Constraint check
+  export OF_VERSION
+  COMPAT_RESULT=$("${PYTHON}" "${WORKSPACE}/check_constraint.py" 2>/dev/null || echo "error:python-failed")
+
+  if [[ "${COMPAT_RESULT}" == "none" ]]; then
+    echo "  ${REPO}: skip (no openfilter dep)"
+    echo "${REPO}: SKIPPED (no openfilter dep)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  elif [[ "${COMPAT_RESULT}" == error:* ]]; then
+    ERROR_MSG=${COMPAT_RESULT#error:}
+    echo "  ${REPO}: FAILED (constraint: ${ERROR_MSG})"
+    echo "${REPO}: FAILED (constraint check error: ${ERROR_MSG})" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  elif [[ "${COMPAT_RESULT}" == skip:* ]]; then
+    CONSTRAINT=${COMPAT_RESULT#skip:}
+    echo "  ${REPO}: skip (constraint ${CONSTRAINT})"
+    echo "${REPO}: SKIPPED (constraint: ${CONSTRAINT})" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+
+  echo "  ${REPO}: eligible (${FILTER_VERSION}, ${COMPAT_RESULT})"
+  BUILD_LIST="${BUILD_LIST:+${BUILD_LIST} }${REPO}"
+done
+
+BUILD_COUNT=$(echo "${BUILD_LIST}" | wc -w)
+echo "Eligible for build: ${BUILD_COUNT} filters"
+
+if [[ ${BUILD_COUNT} -eq 0 ]]; then
+  echo "No filters to build"
+else
+  # ============================================================
+  # Phase 3: Parallel builds
+  # ============================================================
   echo ""
   echo "============================================"
-  echo "Processing: ${REPO}"
+  echo "Phase 3: Building filters (${MAX_PARALLEL} parallel)"
   echo "============================================"
 
-  # Run each filter build in a subshell for error isolation.
-  (
-    set -euo pipefail
+  # build_one_filter <repo>
+  # Runs in a subshell. Writes result to summary file. Cleans up clone after.
+  build_one_filter() {
+    local REPO="$1"
+    local FILTER_DIR="${WORKSPACE}/filters/${REPO}"
+    local IMAGE="openfilter-${REPO#filter-}"
+    local VISIBILITY
+    VISIBILITY=$(grep "^${REPO} " "${VISIBILITY_FILE}" | awk '{print $2}')
+    VISIBILITY=${VISIBILITY:-internal}
 
-    # Clone the filter repo (token provided via credential helper, not in URL)
-    cd "${WORKSPACE}/filters"
-    if [[ -d "${REPO}" ]]; then
-      rm -rf "${REPO}"
-    fi
+    cd "${FILTER_DIR}"
 
-    if [[ -n "${GIT_SSH_COMMAND:-}" ]]; then
-      git clone --depth 1 "git@github.com:PlainsightAI/${REPO}.git" "${REPO}"
-    else
-      git clone --depth 1 "https://github.com/PlainsightAI/${REPO}.git" "${REPO}"
-    fi
-    cd "${REPO}"
+    local FILTER_VERSION
+    FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
 
-    # --- Auto-detect: skip repos with their own Cloud Build pipeline ---
-    if [[ -f cloudbuild.yaml ]]; then
-      echo "Skipping ${REPO} - has own cloudbuild.yaml"
-      echo "${REPO}: SKIPPED (own cloudbuild)" >> "${WORKSPACE}/results/summary.txt"
-      touch "${WORKSPACE}/results/.skip_${REPO}"
-      exit 0
-    fi
-
-    # --- Auto-detect: skip repos without a Dockerfile ---
-    if [[ ! -f Dockerfile ]]; then
-      echo "Skipping ${REPO} - no Dockerfile"
-      echo "${REPO}: SKIPPED (no Dockerfile)" >> "${WORKSPACE}/results/summary.txt"
-      touch "${WORKSPACE}/results/.skip_${REPO}"
-      exit 0
-    fi
-
-    # --- Auto-detect: skip repos without a version ---
-    FILTER_VERSION=""
-    if [[ -f VERSION ]]; then
-      FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
-    fi
-    if [[ -z "${FILTER_VERSION}" ]]; then
-      echo "Skipping ${REPO} - no VERSION file"
-      echo "${REPO}: SKIPPED (no VERSION)" >> "${WORKSPACE}/results/summary.txt"
-      touch "${WORKSPACE}/results/.skip_${REPO}"
-      exit 0
-    fi
-    echo "Filter version: ${FILTER_VERSION}"
-
-    # --- Constraint check: skip repos without openfilter dep or incompatible ---
-    export OF_VERSION
-    COMPAT_RESULT=$("${PYTHON}" "${WORKSPACE}/check_constraint.py" 2>/dev/null || echo "error:python-failed")
-    echo "Constraint check: ${COMPAT_RESULT}"
-
-    if [[ "${COMPAT_RESULT}" == "none" ]]; then
-      echo "Skipping ${REPO} - no openfilter dependency"
-      echo "${REPO}: SKIPPED (no openfilter dep)" >> "${WORKSPACE}/results/summary.txt"
-      touch "${WORKSPACE}/results/.skip_${REPO}"
-      exit 0
-    elif [[ "${COMPAT_RESULT}" == error:* ]]; then
-      ERROR_MSG=${COMPAT_RESULT#error:}
-      echo "ERROR: Constraint check failed for ${REPO}: ${ERROR_MSG}"
-      echo "${REPO}: FAILED (constraint check error: ${ERROR_MSG})" >> "${WORKSPACE}/results/summary.txt"
-      exit 1
-    elif [[ "${COMPAT_RESULT}" == skip:* ]]; then
-      CONSTRAINT=${COMPAT_RESULT#skip:}
-      echo "Constraint ${CONSTRAINT} does not allow ${OF_VERSION}, skipping"
-      echo "${REPO}: SKIPPED (constraint: ${CONSTRAINT})" >> "${WORKSPACE}/results/summary.txt"
-      touch "${WORKSPACE}/results/.skip_${REPO}"
-      exit 0
-    fi
-
-    # --- Auto-detect build type from Dockerfile ---
-    # filter_base: Dockerfile references the filter_base GAR image
-    # standard: everything else
-    BUILD_TYPE="standard"
+    # Detect build type
+    local BUILD_TYPE="standard"
     if grep -qE 'FROM.*filter_base' Dockerfile 2>/dev/null; then
       BUILD_TYPE="filter_base"
     fi
-    echo "Build type: ${BUILD_TYPE}"
 
-    # Determine push targets based on GitHub API visibility lookup
-    GAR_IMAGE="${GAR_REGION}-docker.pkg.dev/${GAR_PROJECT}/${GAR_REPO}/${REPO}"
-    DOCKERHUB_IMAGE="${DOCKERHUB_ORG}/${IMAGE}"
+    # Determine push targets
+    local GAR_IMAGE="${GAR_REGION}-docker.pkg.dev/${GAR_PROJECT}/${GAR_REPO}/${REPO}"
+    local DOCKERHUB_IMAGE="${DOCKERHUB_ORG}/${IMAGE}"
 
-    TAGS="-t ${GAR_IMAGE}:${FILTER_VERSION} -t ${GAR_IMAGE}:latest"
+    local TAGS="-t ${GAR_IMAGE}:${FILTER_VERSION} -t ${GAR_IMAGE}:latest"
     TAGS="${TAGS} -t ${GAR_IMAGE}:${FILTER_VERSION}-of${OF_VERSION}"
     if [[ "${VISIBILITY}" == "public" ]]; then
-      echo "Public repo - pushing to DockerHub + GAR"
       TAGS="${TAGS} -t ${DOCKERHUB_IMAGE}:${FILTER_VERSION} -t ${DOCKERHUB_IMAGE}:latest"
-    else
-      echo "Internal repo - pushing to GAR only"
     fi
 
-    echo "Building ${REPO}:${FILTER_VERSION}"
-
-    # Build args based on detected type
-    BUILD_ARGS=""
-    BUILD_SECRETS=""
+    # Build args
+    local BUILD_ARGS=""
+    local BUILD_SECRETS=""
     if [[ "${BUILD_TYPE}" == "filter_base" ]]; then
+      local RBV
       RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
       BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
       # filter_base ONBUILD mounts secret id=google_credentials for GAR PyPI auth.
-      # Generate a short-lived ADC JSON from the current gcloud credentials.
-      CRED_FILE="${WORKSPACE}/google_credentials.json"
-      gcloud auth application-default print-access-token &>/dev/null && \
-        cp "$(gcloud info --format='value(config.paths.global_config_dir)')/application_default_credentials.json" "${CRED_FILE}" 2>/dev/null || \
-        python3 -c "
-import json, subprocess, sys
-token = subprocess.check_output(['gcloud','auth','print-access-token'], text=True).strip()
-json.dump({'type':'authorized_user','token':token}, sys.stdout)
-" > "${CRED_FILE}"
-      BUILD_SECRETS="--secret id=google_credentials,src=${CRED_FILE}"
+      local CRED_FILE="${WORKSPACE}/google_credentials.json"
+      if [[ -f "${CRED_FILE}" ]]; then
+        BUILD_SECRETS="--secret id=google_credentials,src=${CRED_FILE}"
+      fi
+    fi
+
+    # Push and cache flags
+    local PUSH_FLAG="--push"
+    local CACHE_FROM="--cache-from type=registry,ref=${GAR_IMAGE}:buildcache"
+    local CACHE_TO="--cache-to type=registry,ref=${GAR_IMAGE}:buildcache"
+    local PLATFORMS="linux/amd64,linux/arm64"
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      PUSH_FLAG=""
+      CACHE_FROM=""
+      CACHE_TO=""
+      PLATFORMS="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
     fi
 
     # Refresh GAR auth before build (tokens expire after 1 hour)
-    GAR_TOKEN=$(gcloud auth print-access-token)
-    echo "${GAR_TOKEN}" | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev"
-
-    # Build (and push unless dry-run) with registry-based cache
-    PUSH_FLAG="--push"
-    CACHE_TO="--cache-to type=registry,ref=${GAR_IMAGE}:buildcache"
-    PLATFORMS="linux/amd64,linux/arm64"
-    if [[ "${DRY_RUN}" == "true" ]]; then
-      PUSH_FLAG=""
-      CACHE_TO=""
-      # Native arch only for dry-run — much faster
-      PLATFORMS="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+    if [[ "${DRY_RUN}" != "true" ]]; then
+      gcloud auth print-access-token \
+        | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev" 2>/dev/null
     fi
+
+    echo "[${REPO}] Building ${BUILD_TYPE} ${FILTER_VERSION} (${VISIBILITY})"
     docker buildx build \
       --platform "${PLATFORMS}" \
-      --cache-from type=registry,ref=${GAR_IMAGE}:buildcache \
+      ${CACHE_FROM} \
       ${BUILD_SECRETS} \
       ${CACHE_TO} \
       ${BUILD_ARGS} \
       ${TAGS} \
       ${PUSH_FLAG} \
-      .
+      . 2>&1 | sed "s/^/[${REPO}] /"
 
     if [[ "${DRY_RUN}" == "true" ]]; then
       echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
-      echo "Dry-run build succeeded for ${REPO}:${FILTER_VERSION} (not pushed)"
+      echo "[${REPO}] Dry-run build succeeded"
     else
       echo "${REPO}: SUCCESS (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
-      echo "Successfully built and pushed ${REPO}:${FILTER_VERSION}"
+      echo "[${REPO}] Built and pushed ${FILTER_VERSION}"
     fi
-  ) && EXIT_CODE=0 || EXIT_CODE=$?
-  if [[ -f "${WORKSPACE}/results/.skip_${REPO}" ]]; then
-    # Skip was requested (constraint mismatch or missing VERSION)
-    rm -f "${WORKSPACE}/results/.skip_${REPO}"
-    continue
-  elif [[ ${EXIT_CODE} -ne 0 ]]; then
-    # Only write if subshell didn't already record a result
-    if ! grep -q "^${REPO}:" "${WORKSPACE}/results/summary.txt" 2>/dev/null; then
-      echo "${REPO}: FAILED (see error above)" >> "${WORKSPACE}/results/summary.txt" || echo "WARNING: Could not write summary for ${REPO}" >&2
-    fi
-  fi
-done
+
+    # Clean up clone to free disk
+    rm -rf "${FILTER_DIR}"
+  }
+  export -f build_one_filter
+  export WORKSPACE VISIBILITY_FILE OF_VERSION GAR_REGION GAR_PROJECT GAR_REPO
+  export DOCKERHUB_ORG DRY_RUN PYTHON
+
+  # Run builds in parallel, capping concurrency
+  ACTIVE_PIDS=()
+  ACTIVE_REPOS=()
+  for REPO in ${BUILD_LIST}; do
+    # If at max concurrency, wait for one to finish
+    while [[ ${#ACTIVE_PIDS[@]} -ge ${MAX_PARALLEL} ]]; do
+      # Wait for any one child
+      DONE=false
+      for i in "${!ACTIVE_PIDS[@]}"; do
+        if ! kill -0 "${ACTIVE_PIDS[$i]}" 2>/dev/null; then
+          wait "${ACTIVE_PIDS[$i]}" || {
+            R="${ACTIVE_REPOS[$i]}"
+            if ! grep -q "^${R}:" "${WORKSPACE}/results/summary.txt" 2>/dev/null; then
+              echo "${R}: FAILED (see error above)" >> "${WORKSPACE}/results/summary.txt"
+            fi
+          }
+          unset 'ACTIVE_PIDS[i]' 'ACTIVE_REPOS[i]'
+          # Re-pack arrays
+          ACTIVE_PIDS=("${ACTIVE_PIDS[@]}")
+          ACTIVE_REPOS=("${ACTIVE_REPOS[@]}")
+          DONE=true
+          break
+        fi
+      done
+      if [[ "${DONE}" != "true" ]]; then
+        sleep 1
+      fi
+    done
+
+    build_one_filter "${REPO}" &
+    ACTIVE_PIDS+=($!)
+    ACTIVE_REPOS+=("${REPO}")
+  done
+
+  # Wait for remaining builds
+  for i in "${!ACTIVE_PIDS[@]}"; do
+    wait "${ACTIVE_PIDS[$i]}" || {
+      R="${ACTIVE_REPOS[$i]}"
+      if ! grep -q "^${R}:" "${WORKSPACE}/results/summary.txt" 2>/dev/null; then
+        echo "${R}: FAILED (see error above)" >> "${WORKSPACE}/results/summary.txt"
+      fi
+    }
+  done
+fi
+
+# Clean up any remaining clones
+rm -rf "${WORKSPACE}/filters"
 
 echo ""
 echo "============================================"

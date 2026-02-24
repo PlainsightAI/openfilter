@@ -38,6 +38,7 @@ substitutions:
   _DOCKERHUB_ORG: plainsightai
   _DRY_RUN: "true"
   _SINGLE_FILTER: ""
+  _MAX_PARALLEL: "4"
 
 options:
   machineType: 'E2_HIGHCPU_8'
@@ -140,6 +141,7 @@ steps:
       - 'GAR_REPO=${_GAR_REPO}'
       - 'DOCKERHUB_ORG=${_DOCKERHUB_ORG}'
       - 'SINGLE_FILTER=${_SINGLE_FILTER}'
+      - 'MAX_PARALLEL=${_MAX_PARALLEL}'
     args: ['/workspace/scripts/build-filters.sh']
 
   # ============================================================
