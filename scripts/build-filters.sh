@@ -5,6 +5,8 @@
 # Required env vars (passed by Cloud Build):
 #   GITHUB_TOKEN, GAR_REGION, GAR_PROJECT, GAR_REPO, DOCKERHUB_ORG, DRY_RUN
 # Optional: WORKSPACE (defaults to /workspace for Cloud Build)
+#           DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (for public-repo pushes)
+#           SINGLE_FILTER (limit to one filter for testing)
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -17,23 +19,32 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 fi
 echo "Building filters for openfilter ${OF_VERSION}"
 
+# Pinned tool versions (bump as needed)
+DOCKER_VERSION="${DOCKER_VERSION:-27.5.1}"
+BUILDX_VERSION="${BUILDX_VERSION:-0.21.1}"
+
 # Install Docker CLI + buildx plugin if not already present (cloud-sdk image does not ship them)
 if ! command -v docker &>/dev/null; then
-  curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+  curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
     | tar xz -C /usr/local/bin --strip-components=1 docker/docker
 fi
 if ! docker buildx version &>/dev/null; then
   mkdir -p /usr/local/lib/docker/cli-plugins
   curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
-    https://github.com/docker/buildx/releases/download/v0.21.1/buildx-v0.21.1.linux-amd64
+    "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-amd64"
   chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 fi
 docker version --format 'Docker CLI {{.Client.Version}}'
 docker buildx version
 
-# GAR auth must be configured in this step; Docker credentials
-# from prior steps are not persisted across Cloud Build containers.
+# GAR auth must be configured in this step; the cloud-sdk image
+# does not inherit Docker credentials from prior steps' images.
 gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev"
+
+# DockerHub auth (needed for public-repo pushes; cloud-sdk image doesn't inherit prior steps' logins)
+if [[ -n "${DOCKERHUB_TOKEN:-}" && -n "${DOCKERHUB_USERNAME:-}" ]]; then
+  echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+fi
 
 # Ensure buildx builder exists (reuse if present from a prior step or local env)
 if docker buildx inspect multiarch &>/dev/null; then
@@ -53,7 +64,7 @@ try:
 except (json.JSONDecodeError, TypeError):
     print(raw)
 ")
-echo "GitHub token: ${#GH_PAT} chars, prefix=${GH_PAT:0:4}..."
+echo "GitHub token: sha256:$(echo -n "${GH_PAT}" | sha256sum | cut -c1-12)..."
 
 # Configure git credential helper scoped to github.com only
 git config --global credential.https://github.com.helper "!f() { echo \"username=x-access-token\"; echo \"password=${GH_PAT}\"; }; f"
@@ -80,7 +91,7 @@ PYTHON="${VENV}/bin/python"
 # Fetch repo visibility from GitHub API (one paginated call for all
 # filter-* repos). Builds a lookup file: "repo_name visibility" per line.
 # Retries up to 3 times; fails the build if it never succeeds.
-VISIBILITY_FILE=${WORKSPACE}/results/repo_visibility.txt
+VISIBILITY_FILE="${WORKSPACE}/results/repo_visibility.txt"
 for ATTEMPT in 1 2 3; do
   echo "Fetching repo visibility from GitHub API (attempt ${ATTEMPT}/3)..."
   NEXT_URL="https://api.github.com/orgs/PlainsightAI/repos?per_page=100"
@@ -121,6 +132,17 @@ fi
 #   -template    - cookiecutter templates, not buildable
 FILTER_REPOS=$(awk '{print $1}' "${VISIBILITY_FILE}" | grep '^filter-' | sort)
 
+# Optional: limit to a single filter for testing
+if [[ -n "${SINGLE_FILTER:-}" ]]; then
+  if echo "${FILTER_REPOS}" | grep -qx "${SINGLE_FILTER}"; then
+    echo "Single-filter mode: ${SINGLE_FILTER}"
+    FILTER_REPOS="${SINGLE_FILTER}"
+  else
+    echo "ERROR: Filter '${SINGLE_FILTER}' not found in discovered repos"
+    exit 1
+  fi
+fi
+
 for REPO in ${FILTER_REPOS}; do
   # Sparse exclude list: suffix-anchored or exact matches only
   SKIP_REPO=false
@@ -147,7 +169,7 @@ for REPO in ${FILTER_REPOS}; do
     set -euo pipefail
 
     # Clone the filter repo (token provided via credential helper, not in URL)
-    cd ${WORKSPACE}/filters
+    cd "${WORKSPACE}/filters"
     if [[ -d "${REPO}" ]]; then
       rm -rf "${REPO}"
     fi
@@ -162,7 +184,7 @@ for REPO in ${FILTER_REPOS}; do
     # --- Auto-detect: skip repos with their own Cloud Build pipeline ---
     if [[ -f cloudbuild.yaml ]]; then
       echo "Skipping ${REPO} - has own cloudbuild.yaml"
-      echo "${REPO}: SKIPPED (own cloudbuild)" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SKIPPED (own cloudbuild)" >> "${WORKSPACE}/results/summary.txt"
       touch "${WORKSPACE}/results/.skip_${REPO}"
       exit 0
     fi
@@ -170,7 +192,7 @@ for REPO in ${FILTER_REPOS}; do
     # --- Auto-detect: skip repos without a Dockerfile ---
     if [[ ! -f Dockerfile ]]; then
       echo "Skipping ${REPO} - no Dockerfile"
-      echo "${REPO}: SKIPPED (no Dockerfile)" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SKIPPED (no Dockerfile)" >> "${WORKSPACE}/results/summary.txt"
       touch "${WORKSPACE}/results/.skip_${REPO}"
       exit 0
     fi
@@ -182,7 +204,7 @@ for REPO in ${FILTER_REPOS}; do
     fi
     if [[ -z "${FILTER_VERSION}" ]]; then
       echo "Skipping ${REPO} - no VERSION file"
-      echo "${REPO}: SKIPPED (no VERSION)" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SKIPPED (no VERSION)" >> "${WORKSPACE}/results/summary.txt"
       touch "${WORKSPACE}/results/.skip_${REPO}"
       exit 0
     fi
@@ -195,18 +217,18 @@ for REPO in ${FILTER_REPOS}; do
 
     if [[ "${COMPAT_RESULT}" == "none" ]]; then
       echo "Skipping ${REPO} - no openfilter dependency"
-      echo "${REPO}: SKIPPED (no openfilter dep)" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SKIPPED (no openfilter dep)" >> "${WORKSPACE}/results/summary.txt"
       touch "${WORKSPACE}/results/.skip_${REPO}"
       exit 0
     elif [[ "${COMPAT_RESULT}" == error:* ]]; then
       ERROR_MSG=${COMPAT_RESULT#error:}
       echo "ERROR: Constraint check failed for ${REPO}: ${ERROR_MSG}"
-      echo "${REPO}: FAILED (constraint check error: ${ERROR_MSG})" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: FAILED (constraint check error: ${ERROR_MSG})" >> "${WORKSPACE}/results/summary.txt"
       exit 1
     elif [[ "${COMPAT_RESULT}" == skip:* ]]; then
       CONSTRAINT=${COMPAT_RESULT#skip:}
       echo "Constraint ${CONSTRAINT} does not allow ${OF_VERSION}, skipping"
-      echo "${REPO}: SKIPPED (constraint: ${CONSTRAINT})" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SKIPPED (constraint: ${CONSTRAINT})" >> "${WORKSPACE}/results/summary.txt"
       touch "${WORKSPACE}/results/.skip_${REPO}"
       exit 0
     fi
@@ -279,10 +301,10 @@ json.dump({'type':'authorized_user','token':token}, sys.stdout)
       .
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-      echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
       echo "Dry-run build succeeded for ${REPO}:${FILTER_VERSION} (not pushed)"
     else
-      echo "${REPO}: SUCCESS (${FILTER_VERSION})" >> ${WORKSPACE}/results/summary.txt
+      echo "${REPO}: SUCCESS (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
       echo "Successfully built and pushed ${REPO}:${FILTER_VERSION}"
     fi
   ) && EXIT_CODE=0 || EXIT_CODE=$?
@@ -292,8 +314,8 @@ json.dump({'type':'authorized_user','token':token}, sys.stdout)
     continue
   elif [[ ${EXIT_CODE} -ne 0 ]]; then
     # Only write if subshell didn't already record a result
-    if ! grep -q "^${REPO}:" ${WORKSPACE}/results/summary.txt 2>/dev/null; then
-      echo "${REPO}: FAILED (see error above)" >> ${WORKSPACE}/results/summary.txt || echo "WARNING: Could not write summary for ${REPO}" >&2
+    if ! grep -q "^${REPO}:" "${WORKSPACE}/results/summary.txt" 2>/dev/null; then
+      echo "${REPO}: FAILED (see error above)" >> "${WORKSPACE}/results/summary.txt" || echo "WARNING: Could not write summary for ${REPO}" >&2
     fi
   fi
 done
@@ -302,7 +324,7 @@ echo ""
 echo "============================================"
 echo "Build Summary"
 echo "============================================"
-cat ${WORKSPACE}/results/summary.txt 2>/dev/null || echo "No results recorded"
+cat "${WORKSPACE}/results/summary.txt" 2>/dev/null || echo "No results recorded"
 
 # Fail the step if any filter builds failed
 FAIL_COUNT=$(grep -c ': FAILED' "${WORKSPACE}/results/summary.txt" 2>/dev/null || true)

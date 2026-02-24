@@ -37,6 +37,7 @@ substitutions:
   _GAR_REPO: oci
   _DOCKERHUB_ORG: plainsightai
   _DRY_RUN: "true"
+  _SINGLE_FILTER: ""
 
 options:
   machineType: 'E2_HIGHCPU_8'
@@ -131,13 +132,14 @@ steps:
     id: 'build-filters'
     waitFor: ['dockerhub-login', 'buildx-setup']
     entrypoint: 'bash'
-    secretEnv: ['GITHUB_TOKEN']
+    secretEnv: ['GITHUB_TOKEN', 'DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']
     env:
       - 'DRY_RUN=${_DRY_RUN}'
       - 'GAR_REGION=${_GAR_REGION}'
       - 'GAR_PROJECT=${_GAR_PROJECT}'
       - 'GAR_REPO=${_GAR_REPO}'
       - 'DOCKERHUB_ORG=${_DOCKERHUB_ORG}'
+      - 'SINGLE_FILTER=${_SINGLE_FILTER}'
     args: ['/workspace/scripts/build-filters.sh']
 
   # ============================================================
@@ -163,6 +165,7 @@ steps:
         # Trigger filter-sam3-detector build
         # Note: This requires the trigger to be set up to accept substitutions
         # or to rebuild on the current HEAD of main
+        # Note: trigger region matches GAR region by convention (both us-west1).
         echo "Triggering filter-sam3-detector..."
         gcloud builds triggers run filter-sam3-detector-tag \
           --region=${_GAR_REGION} \
