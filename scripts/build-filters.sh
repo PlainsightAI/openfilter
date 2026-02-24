@@ -284,8 +284,7 @@ json.dump({'type':'authorized_user','token':token}, sys.stdout)
       echo "${REPO}: SUCCESS (${FILTER_VERSION})" >> ${WORKSPACE}/results/summary.txt
       echo "Successfully built and pushed ${REPO}:${FILTER_VERSION}"
     fi
-  )
-  EXIT_CODE=$?
+  ) && EXIT_CODE=0 || EXIT_CODE=$?
   if [[ -f "${WORKSPACE}/results/.skip_${REPO}" ]]; then
     # Skip was requested (constraint mismatch or missing VERSION)
     rm -f "${WORKSPACE}/results/.skip_${REPO}"
