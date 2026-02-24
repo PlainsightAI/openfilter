@@ -143,8 +143,7 @@ if [[ -n "${SINGLE_FILTER:-}" ]]; then
     echo "Single-filter mode: ${SINGLE_FILTER}"
     FILTER_REPOS="${SINGLE_FILTER}"
   else
-    echo "ERROR: Filter '${SINGLE_FILTER}' not found in discovered repos"
-    exit 1
+    echo "WARNING: Filter '${SINGLE_FILTER}' not found in discovered repos, ignoring"
   fi
 fi
 

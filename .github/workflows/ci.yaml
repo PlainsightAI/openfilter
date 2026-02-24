@@ -66,7 +66,7 @@ jobs:
           echo "${OF_VERSION}" > "${WORKSPACE}/openfilter_version"
           cp scripts/check_constraint.py "${WORKSPACE}/check_constraint.py"
 
-      - name: Run cascade dry-run (filter-json-transform)
+      - name: Run cascade dry-run
         if: steps.filter.outputs.cascade == 'true'
         env:
           WORKSPACE: ${{ env.WORKSPACE }}
@@ -76,5 +76,4 @@ jobs:
           GAR_REPO: oci
           DOCKERHUB_ORG: plainsightai
           GITHUB_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-          SINGLE_FILTER: filter-json-transform
         run: bash scripts/build-filters.sh
