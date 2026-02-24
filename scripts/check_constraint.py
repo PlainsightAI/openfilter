@@ -6,6 +6,9 @@ Outputs: none | ok:<spec> | skip:<spec> | error:<msg>
 import tomllib, re, sys, os
 
 try:
+    if not os.path.exists("pyproject.toml"):
+        print("none")
+        sys.exit(0)
     with open("pyproject.toml", "rb") as f:
         data = tomllib.load(f)
     deps = list(data.get("project", {}).get("dependencies", []))

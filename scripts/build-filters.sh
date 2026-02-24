@@ -64,15 +64,16 @@ python3 -c "import tomllib" 2>/dev/null || {
   python3 --version
   exit 1
 }
+# Install uv if not present (fast, no system deps needed)
+if ! command -v uv &>/dev/null; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 # Create a lightweight venv for packaging dependency
 VENV="${WORKSPACE}/.venv"
-if command -v uv &>/dev/null; then
-  uv venv --quiet "${VENV}"
-  uv pip install --quiet --python "${VENV}/bin/python" packaging
-else
-  python3 -m venv "${VENV}"
-  "${VENV}/bin/pip" install --quiet packaging
-fi
+uv venv --quiet "${VENV}"
+uv pip install --quiet --python "${VENV}/bin/python" packaging
 # Use the venv python for constraint checks
 PYTHON="${VENV}/bin/python"
 
