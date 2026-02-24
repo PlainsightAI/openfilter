@@ -311,6 +311,103 @@ else
       BUILD_TYPE="filter_base"
     fi
 
+    # For standard builds: patch Dockerfile to install from source with uv
+    # instead of fetching a pinned version from private PyPI.
+    # This eliminates the "VERSION bumped but not published" failure class.
+    if [[ "${BUILD_TYPE}" == "standard" ]]; then
+      if grep -q 'astral-sh/uv' Dockerfile 2>/dev/null; then
+        echo "[${REPO}] Already uses uv, skipping patch"
+      elif grep -qi 'pip install' Dockerfile 2>/dev/null; then
+        "${PYTHON}" - Dockerfile <<'PATCH_SCRIPT'
+import sys, re
+
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+lines = content.splitlines(keepends=True)
+
+# Collect RUN blocks as (start_line, end_line, block_text) tuples.
+# A RUN block spans from the RUN keyword through all continuation lines
+# (ending with backslash).  BuildKit (syntax=docker/dockerfile:1.4)
+# strips # comments inside multi-line instructions, so a comment line
+# does NOT break the continuation chain.
+def collect_run_blocks(lines):
+    blocks = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].lstrip()
+        if stripped.startswith('RUN'):
+            start = i
+            continues = lines[i].rstrip().endswith('\\')
+            while continues and i + 1 < len(lines):
+                i += 1
+                s = lines[i].lstrip()
+                if s.startswith('#'):
+                    continue          # comment — skip, keep continuation
+                continues = lines[i].rstrip().endswith('\\')
+            blocks.append((start, i, ''.join(lines[start:i+1])))
+        i += 1
+    return blocks
+
+blocks = collect_run_blocks(lines)
+
+# Find the RUN block that installs the filter package
+target_block = None
+for start, end, text in blocks:
+    if re.search(r'pip install', text, re.IGNORECASE) and re.search(r'filter', text, re.IGNORECASE):
+        target_block = (start, end, text)
+        break
+# Fallback: the pip install and filter name may be in the same block
+# even if 'filter' only appears as a package name
+if target_block is None:
+    for start, end, text in blocks:
+        if re.search(r'pip install', text, re.IGNORECASE):
+            target_block = (start, end, text)
+            break
+
+if target_block is None:
+    print("WARNING: no pip install block found, skipping patch", file=sys.stderr)
+    sys.exit(0)
+
+pip_start, pip_end = target_block[0], target_block[1]
+
+# Find the FROM line that starts the stage containing this block
+from_line_idx = 0
+for i in range(pip_start, -1, -1):
+    if lines[i].strip().startswith('FROM'):
+        from_line_idx = i
+        break
+
+# Rebuild the Dockerfile
+out = []
+uv_injected = False
+i = 0
+while i < len(lines):
+    # Inject uv COPY after the FROM line for the pip install stage
+    if i == from_line_idx and not uv_injected:
+        out.append(lines[i])
+        out.append('COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/\n')
+        uv_injected = True
+        i += 1
+        continue
+
+    # Replace the target pip install block
+    if i == pip_start:
+        out.append('COPY . /src\n')
+        out.append('RUN uv pip install --system --no-cache /src && rm -rf /src\n')
+        i = pip_end + 1
+        continue
+
+    out.append(lines[i])
+    i += 1
+
+with open(path, 'w') as f:
+    f.writelines(out)
+print("Patched Dockerfile: source install with uv")
+PATCH_SCRIPT
+      fi
+    fi
+
     # Determine push targets
     local GAR_IMAGE="${GAR_REGION}-docker.pkg.dev/${GAR_PROJECT}/${GAR_REPO}/${REPO}"
     local DOCKERHUB_IMAGE="${DOCKERHUB_ORG}/${IMAGE}"
