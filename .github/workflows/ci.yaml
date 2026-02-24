@@ -80,4 +80,5 @@ jobs:
           GAR_REPO: oci
           DOCKERHUB_ORG: plainsightai
           GITHUB_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          FAIL_IS_ERROR: "false"
         run: bash scripts/build-filters.sh

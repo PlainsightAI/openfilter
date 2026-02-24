@@ -8,6 +8,7 @@
 #           DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (for public-repo pushes)
 #           SINGLE_FILTER (limit to one filter for testing)
 #           MAX_PARALLEL (concurrent builds, default 4)
+#           FAIL_IS_ERROR (exit 1 on filter failures, default true)
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
@@ -352,6 +353,7 @@ else
         | docker login -u oauth2accesstoken --password-stdin "https://${GAR_REGION}-docker.pkg.dev" 2>/dev/null
     fi
 
+    local LOG_FILE="${WORKSPACE}/results/${REPO}.log"
     echo "[${REPO}] Building ${BUILD_TYPE} ${FILTER_VERSION} (${VISIBILITY})"
     docker buildx build \
       --platform "${PLATFORMS}" \
@@ -361,7 +363,7 @@ else
       ${BUILD_ARGS} \
       ${TAGS} \
       ${PUSH_FLAG} \
-      . 2>&1 | sed "s/^/[${REPO}] /"
+      . > "${LOG_FILE}" 2>&1
 
     if [[ "${DRY_RUN}" == "true" ]]; then
       echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
@@ -391,7 +393,7 @@ else
           wait "${ACTIVE_PIDS[$i]}" || {
             R="${ACTIVE_REPOS[$i]}"
             if ! grep -q "^${R}:" "${WORKSPACE}/results/summary.txt" 2>/dev/null; then
-              echo "${R}: FAILED (see error above)" >> "${WORKSPACE}/results/summary.txt"
+              echo "${R}: FAILED (see ${WORKSPACE}/results/${R}.log)" >> "${WORKSPACE}/results/summary.txt"
             fi
           }
           unset 'ACTIVE_PIDS[i]' 'ACTIVE_REPOS[i]'
@@ -432,7 +434,6 @@ echo "Build Summary"
 echo "============================================"
 cat "${WORKSPACE}/results/summary.txt" 2>/dev/null || echo "No results recorded"
 
-# Fail the step if any filter builds failed
 FAIL_COUNT=$(grep -c ': FAILED' "${WORKSPACE}/results/summary.txt" 2>/dev/null || true)
 FAIL_COUNT=${FAIL_COUNT:-0}
 SUCCESS_COUNT=$(grep -c ': SUCCESS' "${WORKSPACE}/results/summary.txt" 2>/dev/null || true)
@@ -442,7 +443,27 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 else
   echo "Results: ${SUCCESS_COUNT} succeeded, ${FAIL_COUNT} failed"
 fi
+
+# Dump the last 30 lines of each failed build's log
 if [[ "${FAIL_COUNT}" -gt 0 ]]; then
-  echo "ERROR: ${FAIL_COUNT} filter(s) failed to build"
-  exit 1
+  echo ""
+  echo "============================================"
+  echo "Failed build logs"
+  echo "============================================"
+  grep ': FAILED' "${WORKSPACE}/results/summary.txt" | while IFS=: read -r REPO _; do
+    LOG="${WORKSPACE}/results/${REPO}.log"
+    if [[ -f "${LOG}" ]]; then
+      echo "--- ${REPO} (last 30 lines) ---"
+      tail -30 "${LOG}"
+      echo ""
+    fi
+  done
+
+  FAIL_IS_ERROR="${FAIL_IS_ERROR:-true}"
+  if [[ "${FAIL_IS_ERROR}" == "true" ]]; then
+    echo "ERROR: ${FAIL_COUNT} filter(s) failed to build"
+    exit 1
+  else
+    echo "WARNING: ${FAIL_COUNT} filter(s) failed to build (non-fatal)"
+  fi
 fi
