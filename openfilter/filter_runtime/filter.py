@@ -877,6 +877,7 @@ class Filter:
         }
 
         alpha = 0.05
+        aggregate_timings = None
         for topic, frame in frames.items():
             if topic.startswith('_'):
                 continue
@@ -888,14 +889,17 @@ class Filter:
             all_timings.append(this_entry)
             meta['filter_timings'] = all_timings
 
-            if self._is_last_filter and len(all_timings) > 0:
-                durations = [t['duration_ms'] for t in all_timings]
-                total = sum(durations)
-                avg = total / len(durations)
-                std = (sum((d - avg) ** 2 for d in durations) / len(durations)) ** 0.5
-                self._frame_total_time_ema = (1 - alpha) * self._frame_total_time_ema + alpha * total
-                self._frame_avg_time_ema = (1 - alpha) * self._frame_avg_time_ema + alpha * avg
-                self._frame_std_time_ema = (1 - alpha) * self._frame_std_time_ema + alpha * std
+            if self._is_last_filter and aggregate_timings is None:
+                aggregate_timings = all_timings
+
+        if self._is_last_filter and aggregate_timings is not None:
+            durations = [t['duration_ms'] for t in aggregate_timings]
+            total = sum(durations)
+            avg = total / len(durations)
+            std = (sum((d - avg) ** 2 for d in durations) / len(durations)) ** 0.5
+            self._frame_total_time_ema = (1 - alpha) * self._frame_total_time_ema + alpha * total
+            self._frame_avg_time_ema = (1 - alpha) * self._frame_avg_time_ema + alpha * avg
+            self._frame_std_time_ema = (1 - alpha) * self._frame_std_time_ema + alpha * std
 
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
@@ -1093,7 +1097,7 @@ class Filter:
         # Detect last filter in pipeline (no downstream outputs)
         self._is_last_filter = self.mq.sender is None
 
-        # Start metrics upddater thread after MQ is initialized
+        # Start metrics updater thread after MQ is initialized
         if self.telemetry_enabled and hasattr(self, 'otel'):
             self.start_metrics_updater_thread()
    

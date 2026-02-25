@@ -4,7 +4,7 @@ groups:
       # Pipeline DOWN - no metrics received in 60s
       - alert: PipelineDown
         expr: |
-          time() - max(timestamp(openfilter_disk_usage_percent)) by (pipeline_instance_id) > 60
+          (time() - max_over_time(openfilter_disk_usage_percent[60s])) > 60 unless openfilter_disk_usage_percent
         for: 30s
         labels:
           severity: critical

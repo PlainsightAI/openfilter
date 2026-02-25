@@ -260,8 +260,9 @@ class OpenTelemetryClient:
         The OTel SDK will handle aggregation and the OTelLineageExporter bridge will
         send aggregated metrics to OpenLineage.
 
-        System health metrics (camera_connected, disk_usage_percent, gpu_accessible) are
-        exported with an ``openfilter_`` prefix so they are distinguishable in Prometheus.
+        System health metrics (such as camera_connected, disk_usage_percent, gpu_accessible,
+        and related timing metrics) are exported with an ``openfilter_`` prefix so they are
+        distinguishable in Prometheus.
 
         Args:
             metrics_dict: Dictionary of metric names and values
@@ -300,6 +301,7 @@ class OpenTelemetryClient:
                         if name in self._GAUGE_METRICS:
                             # Use gauge for current values
                             def make_gauge_callback(key, attrs):
+                                attrs = dict(attrs)
                                 return lambda options: [
                                     Observation(self._values.get(key, 0.0), attributes=attrs)
                                 ]

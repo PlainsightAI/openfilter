@@ -24,7 +24,12 @@ for i in $(seq 1 $CHECKS); do
     else
         echo "  Pipeline: DEAD — restarting..." | tee -a "$LOG"
         cd "$SCRIPT_DIR"
-        source /Users/navarmn/.virtualenvs/plainsight/bin/activate
+        VENV_PATH="${VENV_PATH:-"$SCRIPT_DIR/../../.venv/bin/activate"}"
+        if [ -f "$VENV_PATH" ]; then
+            source "$VENV_PATH"
+        else
+            echo "  Warning: virtual environment activation script not found at '$VENV_PATH'. Continuing without activating a virtual environment." | tee -a "$LOG"
+        fi
         nohup python run_pipeline.py --duration $DURATION --export-interval $EXPORT_INTERVAL >> "$PIPELINE_LOG" 2>&1 &
         echo "  Pipeline restarted (PID=$!)" | tee -a "$LOG"
         sleep 90  # wait for metrics to appear

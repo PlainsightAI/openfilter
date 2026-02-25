@@ -228,6 +228,22 @@ class TestInjectTimings(unittest.TestCase):
         self.assertEqual(len(frame_a.data["meta"]["filter_timings"]), 1)
         self.assertEqual(len(frame_b.data["meta"]["filter_timings"]), 1)
 
+    def test_last_filter_aggregates_only_once_with_multiple_topics(self):
+        """Aggregate EMAs are updated exactly once per _inject_timings call, not once per topic."""
+        f = make_bare_filter(_is_last_filter=True)
+        frame_a = _make_frame()
+        frame_b = _make_frame()
+        frames = {"topicA": frame_a, "topicB": frame_b}
+
+        initial_total_ema = f._frame_total_time_ema
+
+        with patch.object(Filter, '_update_process_time_ema', wraps=f._update_process_time_ema):
+            f._inject_timings(frames, 0, 1, 5.0)
+
+        # EMA should have been updated exactly once (alpha=0.05, initial=0.0, value=5.0)
+        expected = (1 - 0.05) * initial_total_ema + 0.05 * 5.0
+        self.assertAlmostEqual(f._frame_total_time_ema, expected, places=6)
+
     def test_filter_name_fallback_to_class_name(self):
         """Uses __class__.__name__ when filter_name is None."""
         f = make_bare_filter(filter_name=None)

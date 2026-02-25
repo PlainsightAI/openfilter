@@ -1,6 +1,6 @@
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.91.0
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
@@ -9,7 +9,7 @@ services:
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.48.0
     ports:
       - "9090:9090"
     volumes:
@@ -19,7 +19,7 @@ services:
       - otel-collector
 
   alertmanager:
-    image: prom/alertmanager:latest
+    image: prom/alertmanager:v0.26.0
     ports:
       - "9093:9093"
     volumes:
@@ -28,7 +28,7 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-https://hooks.slack.com/placeholder}
 
   grafana:
-    image: grafana/grafana-oss:latest
+    image: grafana/grafana-oss:10.2.0
     ports:
       - "3000:3000"
     environment:
