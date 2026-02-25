@@ -1,6 +1,23 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.21 - 2026-02-25
+
+### Added
+- **Per-frame, per-filter timing metrics**: 6 new metrics for pipeline performance observability
+  - `filter_time_in` / `filter_time_out`: timestamps when each filter starts and finishes processing
+  - `process_time_ms`: per-filter processing duration (EMA-smoothed)
+  - `frame_total_time_ms` / `frame_avg_time_ms` / `frame_std_time_ms`: aggregate timing across all filters in the pipeline (computed by the last filter)
+  - Timing metadata injected into `frame.data['meta']['filter_timings']` for downstream inspection
+  - All 6 metrics exported as `openfilter_`-prefixed observable gauges in OpenTelemetry/Prometheus
+- **Monitoring infrastructure**: Docker Compose stack with Prometheus, Grafana, Alertmanager, and OTel Collector
+- **Monitoring demo**: example pipeline with metric verification script
+- **Unit tests**: 27 new tests covering EMA math, timing injection, sink/dict/callable process paths, metric sets, and prefix logic
+
+### Fixed
+- Sink filters (returning `None` from `process()`) now correctly record timing metrics. Previously, the timing update code ran after the `None` check, so sink filters never got timing recorded.
+- Updated existing test assertions to account for timing metadata injection in frame data
+
 ## v0.1.20 - 2026-01-28
 
 ### Fixed
