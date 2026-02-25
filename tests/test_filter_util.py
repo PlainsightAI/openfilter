@@ -20,6 +20,10 @@ log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())
 
 setLogLevelGlobal(log_level)
 
+def _strip_meta(d):
+    """Return a copy of dict *d* without the 'meta' key (injected by timing instrumentation)."""
+    return {k: v for k, v in d.items() if k != 'meta'}
+
 # BGR is in effect
 REDPX          = np.array((0, 0, 255), np.uint8)
 GREENPX        = np.array((0, 255, 0), np.uint8)
@@ -98,7 +102,7 @@ class TestUtil(unittest.TestCase):
             qin.put(False)
 
             for i in range(5):
-                self.assertEqual((qout.get()['main']).data, datas[i])
+                self.assertEqual(_strip_meta((qout.get()['main']).data), datas[i])
 
             self.assertFalse(qout.get())
             self.assertGreater(time() - t0, 0.5)
@@ -132,7 +136,7 @@ class TestUtil(unittest.TestCase):
             qin.put(False)
 
             for i in range(5):
-                self.assertEqual((qout.get()['main']).data, datas[i])
+                self.assertEqual(_strip_meta((qout.get()['main']).data), datas[i])
 
             self.assertFalse(qout.get())
             self.assertGreater(time() - t0, 0.5)
