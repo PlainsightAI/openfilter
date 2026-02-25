@@ -3,6 +3,7 @@ VERSION ?= $(shell cat VERSION)
 GCP_PROJECT    := plainsightai-dev
 CLOUDBUILD_SA  := cloudbuild-dev@$(GCP_PROJECT).iam.gserviceaccount.com
 SINGLE_FILTER  ?=
+FILTER_SUBSET  ?=
 
 export VERSION
 
@@ -48,12 +49,12 @@ install:  ## Install package with dev dependencies from PyPI
 
 .PHONY: cloud.cascade cloud.cascade.live cloud.logs cloud.logs.build
 
-cloud.cascade: ## Submit cascade build (dry-run, no push; SINGLE_FILTER=filter-foo to test one)
+cloud.cascade: ## Submit cascade build (dry-run; SINGLE_FILTER=x or FILTER_SUBSET=x,y)
 	gcloud builds submit \
 		--config=cloudbuild-cascade.yaml \
 		--project=$(GCP_PROJECT) \
 		--service-account=projects/$(GCP_PROJECT)/serviceAccounts/$(CLOUDBUILD_SA) \
-		--substitutions=TAG_NAME=$(VERSION),_DRY_RUN=true,_SINGLE_FILTER=$(SINGLE_FILTER) \
+		--substitutions=TAG_NAME=$(VERSION),_DRY_RUN=true,_SINGLE_FILTER=$(SINGLE_FILTER),_FILTER_SUBSET=$(FILTER_SUBSET) \
 		.
 
 cloud.cascade.live: ## Submit cascade build (LIVE — pushes images)
@@ -82,6 +83,7 @@ cloud.cascade.local: ## Run cascade build-filters script locally (dry-run)
 		DOCKERHUB_ORG=plainsightai \
 		GITHUB_TOKEN="$$GH_TOKEN" \
 		SINGLE_FILTER="$(SINGLE_FILTER)" \
+		FILTER_SUBSET="$(FILTER_SUBSET)" \
 		bash scripts/build-filters.sh; \
 	EXIT=$$?; rm -rf "$$WORKSPACE"; exit $$EXIT
 

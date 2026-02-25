@@ -7,6 +7,7 @@
 # Optional: WORKSPACE (defaults to /workspace for Cloud Build)
 #           DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (for public-repo pushes)
 #           SINGLE_FILTER (limit to one filter for testing)
+#           FILTER_SUBSET (comma-separated list of filters to build)
 #           MAX_PARALLEL (concurrent builds, default 4)
 #           FAIL_IS_ERROR (exit 1 on filter failures, default true)
 set -euo pipefail
@@ -151,13 +152,35 @@ TOTAL_REPOS=$(wc -l < "${VISIBILITY_FILE}")
 FILTER_COUNT=$(echo "${FILTER_REPOS}" | wc -w)
 echo "Discovered ${TOTAL_REPOS} repos (${FILTER_COUNT} filters)"
 
-# Optional: limit to a single filter for testing
+# Optional: limit to a single filter (takes precedence) or a subset
 if [[ -n "${SINGLE_FILTER:-}" ]]; then
   if echo "${FILTER_REPOS}" | grep -qx "${SINGLE_FILTER}"; then
     echo "Single-filter mode: ${SINGLE_FILTER}"
     FILTER_REPOS="${SINGLE_FILTER}"
   else
     echo "WARNING: Filter '${SINGLE_FILTER}' not found in discovered repos, ignoring"
+  fi
+elif [[ -n "${FILTER_SUBSET:-}" ]]; then
+  echo "Subset mode: ${FILTER_SUBSET}"
+  SUBSET_LIST=""
+  SUBSET_MISSING=""
+  IFS=',' read -ra SUBSET_ITEMS <<< "${FILTER_SUBSET}"
+  for ITEM in "${SUBSET_ITEMS[@]}"; do
+    ITEM=$(echo "${ITEM}" | xargs)  # trim whitespace
+    if [[ -z "${ITEM}" ]]; then continue; fi
+    if echo "${FILTER_REPOS}" | tr ' ' '\n' | grep -qx "${ITEM}"; then
+      SUBSET_LIST="${SUBSET_LIST:+${SUBSET_LIST} }${ITEM}"
+    else
+      SUBSET_MISSING="${SUBSET_MISSING:+${SUBSET_MISSING}, }${ITEM}"
+    fi
+  done
+  if [[ -n "${SUBSET_MISSING}" ]]; then
+    echo "WARNING: Filter(s) not found in discovered repos: ${SUBSET_MISSING}"
+  fi
+  if [[ -n "${SUBSET_LIST}" ]]; then
+    FILTER_REPOS="${SUBSET_LIST}"
+  else
+    echo "WARNING: No filters from subset found in discovered repos, building all"
   fi
 fi
 
