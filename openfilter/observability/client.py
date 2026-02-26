@@ -63,7 +63,11 @@ def build_exporter(exporter_type: str, **config):
     
     elif exporter_type == "otlp":
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-        endpoint = config.get("endpoint", "http://localhost:4317")
+        endpoint = (
+            config.get("endpoint")
+            or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+            or "http://localhost:4317"
+        )
         return OTLPMetricExporter(endpoint=endpoint)
     else:
         from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
@@ -126,15 +130,16 @@ class OpenTelemetryClient:
 
         if self.enabled:
             try:
-                resource = Resource.create(
-                    {
-                        SERVICE_NAME: service_name,
-                        SERVICE_NAMESPACE: namespace,
-                        SERVICE_INSTANCE_ID: self.instance_id,
-                        "cloud.account.id": project_id,
-                        "cloud.resource_type": "global",
-                    }
-                )
+                resource_attrs = {
+                    SERVICE_NAME: service_name,
+                    SERVICE_NAMESPACE: namespace,
+                    "cloud.resource_type": "global",
+                }
+                if self.instance_id is not None:
+                    resource_attrs[SERVICE_INSTANCE_ID] = self.instance_id
+                if project_id is not None:
+                    resource_attrs["cloud.account.id"] = project_id
+                resource = Resource.create(resource_attrs)
 
                 # Build the primary exporter for system metrics (to OpenTelemetry)
                 primary_exporter = build_exporter(exporter_type, **exporter_config)
@@ -225,8 +230,8 @@ class OpenTelemetryClient:
                     attributes = {
                         "aggregation": "avg",
                         "metric": base_name,
-                        "pipeline_id": self.setup_metrics.get("pipeline_id"),
-                        "device_id_name": self.setup_metrics.get("device_id_name"),
+                        "pipeline_id": self.setup_metrics.get("pipeline_id") or "",
+                        "device_id_name": self.setup_metrics.get("device_id_name") or "",
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                     }
                     observations.append(Observation(avg, attributes=attributes))

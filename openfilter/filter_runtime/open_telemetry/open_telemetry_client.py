@@ -142,8 +142,8 @@ class OpenTelemetryClient:
                     attributes = {
                         "aggregation": "avg",
                         "metric": base_name,
-                        "pipeline_id": self.setup_metrics.get("pipeline_id"),
-                        "device_id_name": self.setup_metrics.get("device_id_name"),
+                        "pipeline_id": self.setup_metrics.get("pipeline_id") or "",
+                        "device_id_name": self.setup_metrics.get("device_id_name") or "",
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                     }
                     observations.append(Observation(avg, attributes=attributes))

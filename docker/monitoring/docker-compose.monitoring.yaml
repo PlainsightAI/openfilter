@@ -23,9 +23,18 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./alertmanager.yaml:/etc/alertmanager/alertmanager.yml
+      - ./alertmanager.yaml:/etc/alertmanager/alertmanager.yml.tpl:ro
     environment:
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-https://hooks.slack.com/placeholder}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-https://hooks.slack.com/services/NOT_CONFIGURED}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sed "s|SLACK_WEBHOOK_PLACEHOLDER|$${SLACK_WEBHOOK_URL}|g" \
+          /etc/alertmanager/alertmanager.yml.tpl > /tmp/alertmanager.yml
+        exec /bin/alertmanager \
+          --config.file=/tmp/alertmanager.yml \
+          --storage.path=/alertmanager
 
   grafana:
     image: grafana/grafana-oss:10.2.0

@@ -1,5 +1,5 @@
 global:
-  slack_api_url: "https://hooks.slack.com/services/REPLACE_ME"
+  slack_api_url: "SLACK_WEBHOOK_PLACEHOLDER"
 
 route:
   receiver: slack-default

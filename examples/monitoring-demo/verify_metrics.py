@@ -71,7 +71,7 @@ def main():
             data = query_prometheus(args.prometheus_url, metric)
             results = data["data"]["result"]
             if not results:
-                print(f"  FAIL: {metric} — no data points")
+                print(f"  FAIL: {metric} - no data points")
                 failed += 1
                 continue
 
@@ -82,13 +82,13 @@ def main():
 
             # Verify pipeline_instance_id label exists
             if any("pipeline_instance_id" not in r["metric"] for r in results):
-                print(f"  FAIL: {metric} — missing pipeline_instance_id label")
+                print(f"  FAIL: {metric} - missing pipeline_instance_id label")
                 failed += 1
             else:
                 passed += 1
 
         except Exception as e:
-            print(f"  FAIL: {metric} — {e}")
+            print(f"  FAIL: {metric} - {e}")
             failed += 1
 
     # --- Alert rules ---
@@ -113,7 +113,7 @@ def main():
                 failed += 1
 
     except Exception as e:
-        print(f"  FAIL: could not query alert rules — {e}")
+        print(f"  FAIL: could not query alert rules - {e}")
         failed += 1
 
     # --- Alertmanager ---
@@ -133,8 +133,21 @@ def main():
         passed += 1
 
     except Exception as e:
-        print(f"  FAIL: could not query Alertmanager — {e}")
+        print(f"  FAIL: could not query Alertmanager - {e}")
         failed += 1
+
+    # --- Slack webhook config ---
+    print("\n== Slack webhook configuration ==")
+    import os
+    slack_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+    placeholders = ["NOT_CONFIGURED", "REPLACE_ME", "SLACK_WEBHOOK_PLACEHOLDER", "YOUR/WEBHOOK/URL"]
+    if not slack_url:
+        print("  WARN: SLACK_WEBHOOK_URL env var is not set (Slack alerts will not be delivered)")
+    elif any(p in slack_url for p in placeholders):
+        print("  WARN: Slack webhook URL is still a placeholder")
+        print("        Set SLACK_WEBHOOK_URL env var for Slack alerts")
+    else:
+        print("  PASS: Slack webhook URL is configured")
 
     # --- Summary ---
     total = passed + failed

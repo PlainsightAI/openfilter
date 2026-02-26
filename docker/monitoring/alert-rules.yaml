@@ -42,3 +42,18 @@ groups:
         annotations:
           summary: "GPU unavailable on pipeline {{ $labels.pipeline_instance_id }}"
           description: "GPU is not accessible for inference. Run nvidia-smi on host. Check GPU driver status."
+
+  # Test alert rules with relaxed thresholds for verifying the alerting pipeline end-to-end.
+  # These fire easily on any machine so you can confirm alerts reach Slack.
+  - name: openfilter_test_alerts
+    rules:
+      # Fires when disk usage > 10% (almost always true on any machine)
+      - alert: DiskCriticalTest
+        expr: openfilter_disk_usage_percent > 10
+        for: 15s
+        labels:
+          severity: warning
+          test_alert: "true"
+        annotations:
+          summary: "TEST - Disk usage {{ $value | humanizePercentage }} on pipeline {{ $labels.pipeline_instance_id }}"
+          description: "This is a test alert rule with a low threshold (>10%) to verify the alerting pipeline end-to-end."
