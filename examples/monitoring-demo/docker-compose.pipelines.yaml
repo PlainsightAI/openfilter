@@ -1,0 +1,249 @@
+include:
+  - path: ../../docker/monitoring/docker-compose.monitoring.yaml
+
+x-telemetry-env: &telemetry-env
+  TELEMETRY_EXPORTER_ENABLED: "true"
+  TELEMETRY_EXPORTER_TYPE: "otlp"
+  TELEMETRY_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  EXPORT_INTERVAL: "10000"
+
+x-video-volume: &video-volume
+  - ../hello-world/example_video.mp4:/video.mp4:ro
+
+services:
+  # ============================================================
+  # P1: transform-chain (linear)
+  #   video_in -> grayscale -> resize -> timing -> webvis
+  # ============================================================
+
+  p1_video_in:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.video_in"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p1_video_in
+      FILTER_SOURCES: "file:///video.mp4!loop!maxfps=5"
+      FILTER_OUTPUTS: "tcp://*:5560"
+      PIPELINE_ID: transform-chain
+    ports:
+      - "5560:5560"
+    volumes: *video-volume
+
+  p1_grayscale:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.grayscale"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p1_grayscale
+      FILTER_SOURCES: "tcp://p1_video_in:5560"
+      FILTER_OUTPUTS: "tcp://*:5562"
+      PIPELINE_ID: transform-chain
+    ports:
+      - "5562:5562"
+    depends_on:
+      - p1_video_in
+
+  p1_resize:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.resize"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p1_resize
+      FILTER_SOURCES: "tcp://p1_grayscale:5562"
+      FILTER_OUTPUTS: "tcp://*:5564"
+      PIPELINE_ID: transform-chain
+    ports:
+      - "5564:5564"
+    depends_on:
+      - p1_grayscale
+
+  p1_timing:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p1_timing
+      FILTER_SOURCES: "tcp://p1_resize:5564"
+      FILTER_OUTPUTS: "tcp://*:5566"
+      PIPELINE_ID: transform-chain
+    ports:
+      - "5566:5566"
+    depends_on:
+      - p1_resize
+
+  p1_webvis:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p1_webvis
+      FILTER_SOURCES: "tcp://p1_timing:5566"
+      PIPELINE_ID: transform-chain
+    ports:
+      - "8001:8000"
+    depends_on:
+      - p1_timing
+
+  # ============================================================
+  # P2: fan-out
+  #   video_in -> grayscale -> timing_a -> webvis
+  #   video_in -> resize    -> timing_b -> webvis
+  # ============================================================
+
+  p2_video_in:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.video_in"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_video_in
+      FILTER_SOURCES: "file:///video.mp4!loop!maxfps=5"
+      FILTER_OUTPUTS: "tcp://*:5570"
+      PIPELINE_ID: fan-out
+    ports:
+      - "5570:5570"
+    volumes: *video-volume
+
+  p2_grayscale:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.grayscale"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_grayscale
+      FILTER_SOURCES: "tcp://p2_video_in:5570"
+      FILTER_OUTPUTS: "tcp://*:5572"
+      PIPELINE_ID: fan-out
+    ports:
+      - "5572:5572"
+    depends_on:
+      - p2_video_in
+
+  p2_resize:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.resize"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_resize
+      FILTER_SOURCES: "tcp://p2_video_in:5570"
+      FILTER_OUTPUTS: "tcp://*:5574"
+      PIPELINE_ID: fan-out
+    ports:
+      - "5574:5574"
+    depends_on:
+      - p2_video_in
+
+  p2_timing_a:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_timing_a
+      FILTER_SOURCES: "tcp://p2_grayscale:5572"
+      FILTER_OUTPUTS: "tcp://*:5576"
+      PIPELINE_ID: fan-out
+    ports:
+      - "5576:5576"
+    depends_on:
+      - p2_grayscale
+
+  p2_timing_b:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_timing_b
+      FILTER_SOURCES: "tcp://p2_resize:5574"
+      FILTER_OUTPUTS: "tcp://*:5578"
+      PIPELINE_ID: fan-out
+    ports:
+      - "5578:5578"
+    depends_on:
+      - p2_resize
+
+  p2_webvis:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p2_webvis
+      FILTER_SOURCES: "tcp://p2_timing_a:5576;>grayscale, tcp://p2_timing_b:5578;>resized"
+      PIPELINE_ID: fan-out
+    ports:
+      - "8002:8000"
+    depends_on:
+      - p2_timing_a
+      - p2_timing_b
+
+  # ============================================================
+  # P3: diamond
+  #   video_in -> grayscale -> timing -> webvis
+  #   video_in -> stats     -> timing
+  # ============================================================
+
+  p3_video_in:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.video_in"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p3_video_in
+      FILTER_SOURCES: "file:///video.mp4!loop!maxfps=5"
+      FILTER_OUTPUTS: "tcp://*:5580"
+      PIPELINE_ID: diamond
+    ports:
+      - "5580:5580"
+    volumes: *video-volume
+
+  p3_grayscale:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.grayscale"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p3_grayscale
+      FILTER_SOURCES: "tcp://p3_video_in:5580"
+      FILTER_OUTPUTS: "tcp://*:5582"
+      PIPELINE_ID: diamond
+    ports:
+      - "5582:5582"
+    depends_on:
+      - p3_video_in
+
+  p3_stats:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.stats"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p3_stats
+      FILTER_SOURCES: "tcp://p3_video_in:5580"
+      FILTER_OUTPUTS: "tcp://*:5584"
+      PIPELINE_ID: diamond
+    ports:
+      - "5584:5584"
+    depends_on:
+      - p3_video_in
+
+  p3_timing:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p3_timing
+      FILTER_SOURCES: "tcp://p3_grayscale:5582;>grayscale, tcp://p3_stats:5584;>stats"
+      FILTER_OUTPUTS: "tcp://*:5586"
+      PIPELINE_ID: diamond
+    ports:
+      - "5586:5586"
+    depends_on:
+      - p3_grayscale
+      - p3_stats
+
+  p3_webvis:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p3_webvis
+      FILTER_SOURCES: "tcp://p3_timing:5586"
+      PIPELINE_ID: diamond
+    ports:
+      - "8003:8000"
+    depends_on:
+      - p3_timing
