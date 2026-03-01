@@ -142,4 +142,6 @@ Reports/
 _authors.txt
 
 .DS_Store
-CLAUDE.md
+CLAUDE.md*.mp4
+*.avi
+*.mov
