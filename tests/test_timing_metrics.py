@@ -33,6 +33,7 @@ def make_bare_filter(**overrides):
     f._frame_avg_time_ema = 0.0
     f._frame_std_time_ema = 0.0
     f._is_last_filter = False
+    f._metadata_queue = None
     f.filter_name = "TestFilter"
     f.pipeline_id = "test-pipeline"
     f.emitter = None
