@@ -154,7 +154,7 @@ echo "Discovered ${TOTAL_REPOS} repos (${FILTER_COUNT} filters)"
 
 # Optional: limit to a single filter (takes precedence) or a subset
 if [[ -n "${SINGLE_FILTER:-}" ]]; then
-  if echo "${FILTER_REPOS}" | grep -qx "${SINGLE_FILTER}"; then
+  if echo "${FILTER_REPOS}" | grep -Fqx "${SINGLE_FILTER}"; then
     echo "Single-filter mode: ${SINGLE_FILTER}"
     FILTER_REPOS="${SINGLE_FILTER}"
   else
@@ -168,7 +168,7 @@ elif [[ -n "${FILTER_SUBSET:-}" ]]; then
   for ITEM in "${SUBSET_ITEMS[@]}"; do
     ITEM=$(echo "${ITEM}" | xargs)  # trim whitespace
     if [[ -z "${ITEM}" ]]; then continue; fi
-    if echo "${FILTER_REPOS}" | tr ' ' '\n' | grep -qx "${ITEM}"; then
+    if echo "${FILTER_REPOS}" | tr ' ' '\n' | grep -Fqx "${ITEM}"; then
       SUBSET_LIST="${SUBSET_LIST:+${SUBSET_LIST} }${ITEM}"
     else
       SUBSET_MISSING="${SUBSET_MISSING:+${SUBSET_MISSING}, }${ITEM}"
@@ -180,7 +180,10 @@ elif [[ -n "${FILTER_SUBSET:-}" ]]; then
   if [[ -n "${SUBSET_LIST}" ]]; then
     FILTER_REPOS="${SUBSET_LIST}"
   else
-    echo "WARNING: No filters from subset found in discovered repos, building all"
+    echo "ERROR: No filters from subset found in discovered repos, aborting"
+    echo "Available filters:"
+    echo "${FILTER_REPOS}" | tr ' ' '\n' | sed 's/^/  /'
+    exit 1
   fi
 fi
 
