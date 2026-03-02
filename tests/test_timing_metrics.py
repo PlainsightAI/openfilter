@@ -37,6 +37,7 @@ def make_bare_filter(**overrides):
     f.pipeline_id = "test-pipeline"
     f.emitter = None
     f._telemetry = None
+    f._metadata_queue = __import__('queue').Queue()
     for k, v in overrides.items():
         setattr(f, k, v)
     return f

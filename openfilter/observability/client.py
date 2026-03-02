@@ -9,7 +9,7 @@ from collections import defaultdict
 import threading
 import time
 from typing import Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import logging
 
@@ -232,7 +232,7 @@ class OpenTelemetryClient:
                         "metric": base_name,
                         "pipeline_id": self.setup_metrics.get("pipeline_id") or "",
                         "device_id_name": self.setup_metrics.get("device_id_name") or "",
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     observations.append(Observation(avg, attributes=attributes))
 

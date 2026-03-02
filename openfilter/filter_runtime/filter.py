@@ -2,6 +2,7 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import queue
 import re
 import sys
 import threading
@@ -533,6 +534,7 @@ class Filter:
     metrics: dict[str, JSONType]  # the last metrics that were sent out, including user metrics
 
     FILTER_TYPE = 'User'
+    _EMA_ALPHA = 0.05  # smoothing factor for exponential moving averages (timing metrics)
     metric_specs: List[MetricSpec] = []  # subclasses override this to declare metrics
 
     @property
@@ -566,6 +568,11 @@ class Filter:
 
         self.start_logging(config)  # the very firstest thing we do to catch as much as possible
         self._metrics_updater_thread = None
+        # Timing fields are written by the main processing thread (process_frames)
+        # and read by the metrics updater daemon thread. Under CPython the GIL
+        # makes simple float reads/writes effectively atomic, so a briefly stale
+        # value is acceptable for monitoring purposes. No lock is used here to
+        # avoid adding latency to the hot path.
         self._filter_time_in = 0.0
         self._filter_time_out = 0.0
         self._process_time_ema = 0.0
@@ -573,6 +580,8 @@ class Filter:
         self._frame_avg_time_ema = 0.0
         self._frame_std_time_ema = 0.0
         self._is_last_filter = False
+        self._metadata_queue = queue.Queue()
+        self._metadata_worker_thread = None
         try:
              self.telemetry_enabled: bool = bool(strtobool(TELEMETRY_EXPORTER_ENABLED)) if TELEMETRY_EXPORTER_ENABLED is not None else False
         except ValueError:
@@ -689,6 +698,31 @@ class Filter:
             self._metrics_updater_thread.join(timeout=5)
             self._metrics_updater_thread = None
 
+    def _start_metadata_worker(self):
+        """Start a single daemon thread that processes frame metadata from a queue.
+
+        Replaces the previous thread-per-frame pattern to avoid unbounded thread
+        creation. Uses the same stop_evt as start_metrics_updater_thread().
+        """
+        def worker():
+            while not self.stop_evt.is_set():
+                try:
+                    frames, emitter = self._metadata_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+                try:
+                    self.process_frames_metadata(frames, emitter)
+                except Exception as e:
+                    logger.error(f"[metadata_worker] Error processing frame metadata: {e}")
+
+        self._metadata_worker_thread = threading.Thread(target=worker, daemon=True)
+        self._metadata_worker_thread.start()
+
+    def _stop_metadata_worker(self):
+        """Drain the metadata queue and stop the worker thread."""
+        if self._metadata_worker_thread is not None:
+            self._metadata_worker_thread.join(timeout=5)
+            self._metadata_worker_thread = None
 
     @staticmethod
     def download_cached_files(config: FilterConfig):
@@ -863,7 +897,7 @@ class Filter:
 
     def _update_process_time_ema(self, duration_ms: float) -> None:
         """Update EMA for this filter's processing time."""
-        alpha = 0.05
+        alpha = self._EMA_ALPHA
         self._process_time_ema = (1 - alpha) * self._process_time_ema + alpha * duration_ms
 
     def _inject_timings(self, frames: dict[str, Frame], t_in: float, t_out: float, duration_ms: float) -> None:
@@ -876,7 +910,7 @@ class Filter:
             'duration_ms': duration_ms,
         }
 
-        alpha = 0.05
+        alpha = self._EMA_ALPHA
         aggregate_timings = None
         for topic, frame in frames.items():
             if topic.startswith('_'):
@@ -928,8 +962,7 @@ class Filter:
             # Inject timing metadata into output frames
             self._inject_timings(final_frames, t_in, t_out, process_time_ms)
 
-            proces_frames_data = threading.Thread(target=self.process_frames_metadata, args=(final_frames, self.emitter))
-            proces_frames_data.start()
+            self._metadata_queue.put((final_frames, self.emitter))
 
         if callable(processed_frames):
             def _timed_callable():
@@ -1100,9 +1133,13 @@ class Filter:
         # Start metrics updater thread after MQ is initialized
         if self.telemetry_enabled and hasattr(self, 'otel'):
             self.start_metrics_updater_thread()
-   
+
+        # Start metadata worker for processing frame metadata asynchronously
+        self._start_metadata_worker()
+
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
+        self._stop_metadata_worker()
         if hasattr(self, 'emitter') and self.emitter is not None:
             self.emitter.emit_stop()
         self.mq.destroy()
