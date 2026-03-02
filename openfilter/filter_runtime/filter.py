@@ -580,7 +580,7 @@ class Filter:
         self._frame_avg_time_ema = 0.0
         self._frame_std_time_ema = 0.0
         self._is_last_filter = False
-        self._metadata_queue = queue.Queue()
+        self._metadata_queue = queue.Queue(maxsize=64)
         self._metadata_worker_thread = None
         try:
              self.telemetry_enabled: bool = bool(strtobool(TELEMETRY_EXPORTER_ENABLED)) if TELEMETRY_EXPORTER_ENABLED is not None else False
@@ -719,7 +719,7 @@ class Filter:
         self._metadata_worker_thread.start()
 
     def _stop_metadata_worker(self):
-        """Drain the metadata queue and stop the worker thread."""
+        """Stop the metadata worker thread. Remaining queued items are discarded."""
         if self._metadata_worker_thread is not None:
             self._metadata_worker_thread.join(timeout=5)
             self._metadata_worker_thread = None
@@ -924,6 +924,9 @@ class Filter:
             meta['filter_timings'] = all_timings
 
             if self._is_last_filter and aggregate_timings is None:
+                # Use the first non-underscore topic's timing chain for aggregates.
+                # In fan-in topologies, each topic carries its own branch's timings;
+                # we report one branch rather than conflating different paths.
                 aggregate_timings = all_timings
 
         if self._is_last_filter and aggregate_timings is not None:
@@ -943,11 +946,13 @@ class Filter:
         processed_frames = self.process(frames)
         t_out = time.time()
 
-        # Always update per-filter timing (even for sink filters that return None)
+        # Update per-filter timing unless process() returned a callable,
+        # in which case _timed_callable will record the real duration later.
         process_time_ms = (t_out - t_in) * 1000
-        self._filter_time_in = t_in
-        self._filter_time_out = t_out
-        self._update_process_time_ema(process_time_ms)
+        if not callable(processed_frames):
+            self._filter_time_in = t_in
+            self._filter_time_out = t_out
+            self._update_process_time_ema(process_time_ms)
 
         if processed_frames is None:
             # Sink filter — still inject aggregate timing for last-filter metrics
@@ -962,7 +967,10 @@ class Filter:
             # Inject timing metadata into output frames
             self._inject_timings(final_frames, t_in, t_out, process_time_ms)
 
-            self._metadata_queue.put((final_frames, self.emitter))
+            try:
+                self._metadata_queue.put_nowait((final_frames, self.emitter))
+            except queue.Full:
+                pass  # metadata is best-effort; drop if queue is full
 
         if callable(processed_frames):
             def _timed_callable():

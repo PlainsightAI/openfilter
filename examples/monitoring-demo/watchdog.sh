@@ -35,14 +35,20 @@ for i in $(seq 1 $CHECKS); do
         sleep 90  # wait for metrics to appear
     fi
 
-    # Check containers
+    # Check containers (project-name agnostic via docker compose)
+    COMPOSE_FILE="${SCRIPT_DIR}/../../docker/monitoring/docker-compose.monitoring.yaml"
     for svc in otel-collector prometheus alertmanager grafana; do
-        STATUS=$(docker inspect --format='{{.State.Status}}' "monitoring-${svc}-1" 2>/dev/null || echo "missing")
+        CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q "$svc" 2>/dev/null)
+        if [ -z "$CONTAINER" ]; then
+            STATUS="missing"
+        else
+            STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+        fi
         if [ "$STATUS" = "running" ]; then
             echo "  $svc: OK" | tee -a "$LOG"
         else
-            echo "  $svc: $STATUS — restarting..." | tee -a "$LOG"
-            docker restart "monitoring-${svc}-1" 2>/dev/null
+            echo "  $svc: $STATUS - restarting..." | tee -a "$LOG"
+            docker compose -f "$COMPOSE_FILE" restart "$svc" 2>/dev/null
         fi
     done
 

@@ -130,6 +130,52 @@ Explore real-world examples covering:
 
 ---
 
+## Releasing
+
+OpenFilter publishes to **PyPI** (Python package) and **Docker Hub** (8 built-in filter images) via a single GitHub Actions workflow.
+
+### How to release a new version
+
+1. Update `VERSION` with the new version (e.g. `v0.1.22`)
+2. Add a matching entry at the top of `RELEASE.md` with the same version and a changelog
+3. Commit both changes and merge to `main`
+4. Go to **GitHub Actions > "Create Release" > "Run workflow"** on the `main` branch
+
+The workflow runs automatically from there:
+- Runs unit tests across Python 3.10, 3.11, 3.12, 3.13
+- Validates that `VERSION` matches `RELEASE.md`
+- Creates a git tag and GitHub Release
+- Builds and publishes the Python wheel to [PyPI](https://pypi.org/project/openfilter/)
+- Builds and pushes 8 Docker images to [Docker Hub](https://hub.docker.com/u/plainsightai) (multi-arch: amd64 + arm64)
+
+### Docker Hub images
+
+Each built-in filter has a corresponding Docker image at `plainsightai/openfilter-<name>`:
+
+| Image | Built-in filter | Extra |
+|-------|----------------|-------|
+| `plainsightai/openfilter-video-in` | VideoIn | `video_in` |
+| `plainsightai/openfilter-video-out` | VideoOut | `video_out` |
+| `plainsightai/openfilter-image-in` | ImageIn | `image_in` |
+| `plainsightai/openfilter-image-out` | ImageOut | `image_out` |
+| `plainsightai/openfilter-mqtt-out` | MQTTOut | `mqtt_out` |
+| `plainsightai/openfilter-recorder` | Recorder | `recorder` |
+| `plainsightai/openfilter-rest` | REST | `rest` |
+| `plainsightai/openfilter-webvis` | Webvis | `webvis` |
+
+Images are tagged with both the version (e.g. `0.1.20`) and `latest`. They install `openfilter[extra]=={version}` from PyPI, so the PyPI publish must succeed before Docker images are built.
+
+### Using a published image
+
+```bash
+docker run -e FILTER_SOURCES="file:///video.mp4!loop" \
+           -e FILTER_OUTPUTS="tcp://*:5550" \
+           -v ./video.mp4:/video.mp4:ro \
+           plainsightai/openfilter-video-in:latest
+```
+
+---
+
 ## Contributing
 
 We welcome contributions of all kinds — new filters, bugfixes, or documentation improvements!

@@ -10,6 +10,7 @@ Usage:
 import argparse
 import json
 import sys
+import urllib.parse
 import urllib.request
 
 HEALTH_METRICS = [
@@ -45,8 +46,6 @@ def check_health(base_url):
 
 
 def main():
-    import urllib.parse  # noqa: ensure available
-
     parser = argparse.ArgumentParser(description="Verify monitoring stack metrics and alerts")
     parser.add_argument("--prometheus-url", default="http://localhost:9090")
     parser.add_argument("--alertmanager-url", default="http://localhost:9093")
