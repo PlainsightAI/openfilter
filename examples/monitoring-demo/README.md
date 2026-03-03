@@ -39,9 +39,12 @@ flowchart LR
     D --> E["Webvis"]
 ```
 
+
+
 The simplest topology. Frames flow through a single chain of transforms, one after the other. Each filter processes exactly one frame at a time before passing it downstream.
 
 **Filters:**
+
 - **VideoIn** - Reads the looping video file and decodes each frame. The most CPU-intensive stage (~198ms per frame). Adds `filter_timings` metadata to every frame it emits.
 - **GrayscaleFilter** - Converts each frame to grayscale using `frame.gray`. Fast (~3ms). Passes all frame metadata through unchanged.
 - **ResizeFilter** - Resizes each frame to 320x240 using OpenCV. Fast (~2ms). Target resolution is configurable via `RESIZE_WIDTH` / `RESIZE_HEIGHT` env vars.
@@ -50,7 +53,7 @@ The simplest topology. Frames flow through a single chain of transforms, one aft
 
 **What to look for:** All filters show nearly identical FPS (they are all in the same chain, so if one slows down they all slow down). Per-filter process times are additive: the end-to-end latency roughly equals the sum of individual processing times plus ZMQ transmission overhead.
 
-**Webvis:** http://localhost:8001
+**Webvis:** [http://localhost:8001](http://localhost:8001)
 
 ### P2: fan-out
 
@@ -64,9 +67,12 @@ flowchart LR
     E --> F
 ```
 
+
+
 One source feeding two independent branches simultaneously. The same frame goes to both branches at the same time. Each branch processes independently at its own speed. The sink (Webvis) merges them back, receiving frames from both.
 
 **Filters:**
+
 - **VideoIn** - Decodes the video and broadcasts each frame to both branches simultaneously via ZMQ PUB/SUB. A single output port serves multiple subscribers with no extra configuration.
 - **GrayscaleFilter** - Branch A. Converts frames to grayscale (~3ms). Receives from VideoIn.
 - **ResizeFilter** - Branch B. Resizes frames to 320x240 (~2ms). Also receives from VideoIn, independently.
@@ -76,12 +82,14 @@ One source feeding two independent branches simultaneously. The same frame goes 
 
 **What to look for:** VideoIn FPS matches both branches (it broadcasts to both). TimingFilter_A and TimingFilter_B have separate process-time series and separate end-to-end latency measurements because they are independent sinks for their branch. The two branches may drift slightly in frame count if one is slower.
 
-**Webvis:** http://localhost:8002 shows whichever topic arrives first by default. To see each branch separately, append the topic name to the URL:
+**Webvis:** [http://localhost:8002](http://localhost:8002) shows whichever topic arrives first by default. To see each branch separately, append the topic name to the URL:
 
-| URL | What you see |
-|-----|-------------|
-| http://localhost:8002/grayscale | Grayscale branch only (from GrayscaleFilter) |
-| http://localhost:8002/resized | Resized branch only (from ResizeFilter) |
+
+| URL                                                                | What you see                                 |
+| ------------------------------------------------------------------ | -------------------------------------------- |
+| [http://localhost:8002/grayscale](http://localhost:8002/grayscale) | Grayscale branch only (from GrayscaleFilter) |
+| [http://localhost:8002/resized](http://localhost:8002/resized)     | Resized branch only (from ResizeFilter)      |
+
 
 This works for any Webvis instance: `http://localhost:<port>/<topic>` streams the MJPEG feed for that specific topic. The default URL (no path) shows whichever topic was received first.
 
@@ -96,18 +104,21 @@ flowchart LR
     D --> E["Webvis"]
 ```
 
+
+
 Fan-out at the source and fan-in at the merge point. Both branches process in parallel and TimingFilter waits for both to arrive before emitting downstream. This is the classic diamond topology used when you need to combine the results of two different analyses of the same frame.
 
 **Filters:**
+
 - **VideoIn** - Decodes and broadcasts each frame to both branches at the same time.
 - **GrayscaleFilter** - Converts frames to grayscale (~3ms). One of the two parallel branches.
 - **StatsFilter** - Computes the mean brightness of each frame using `numpy.mean` (~3ms) and logs a running average every 30 frames. Passes the frame through unchanged. The other parallel branch.
 - **TimingFilter** (`id=p3_timing`) - The fan-in merge point. Receives from both branches (as topics `grayscale` and `stats`). Waits for both to arrive before emitting. At this point the runtime selects the `filter_timings` chain from whichever branch had the latest `time_out`, ensuring end-to-end latency reflects the critical path, not the fastest branch.
-- **Webvis** - Receives the merged output and serves the stream at http://localhost:8003.
+- **Webvis** - Receives the merged output and serves the stream at [http://localhost:8003](http://localhost:8003).
 
 **What to look for:** End-to-end latency on the right panel reflects the *critical path*, meaning the slower of the two branches determines the overall pipeline speed. If GrayscaleFilter takes 3ms and StatsFilter takes 10ms, the total latency includes the 10ms wait even though Grayscale finished earlier. The per-filter process times on the left show both branches separately.
 
-**Webvis:** http://localhost:8003
+**Webvis:** [http://localhost:8003](http://localhost:8003)
 
 ### P4: diamond-same-class
 
@@ -120,24 +131,27 @@ flowchart LR
     D --> E["Webvis"]
 ```
 
+
+
 Same topology as P3 but both parallel branches use the *same Python class* (`SlowPassthrough`) with different `FILTER_ID` values and different artificial sleep durations. This pipeline was created to expose and verify fixes for two bugs:
 
 **Filters:**
+
 - **VideoIn** - Decodes and broadcasts each frame to both branches.
 - **SlowPassthrough B1** (`id=p4_slow_b1`, `SLEEP_MS=50`) - Calls `time.sleep(0.050)` on every frame, then passes it through unchanged. Represents a real-world filter that takes a fixed amount of time (e.g. a lightweight model inference).
 - **SlowPassthrough B2** (`id=p4_slow_b2`, `SLEEP_MS=80`) - Same class as B1, same code, but sleeps for 80ms instead of 50ms. This is the slower branch and therefore the critical path.
 - **TimingFilter** (`id=p4_timing`) - Fan-in merge point. Waits for both branches. The critical-path chain (from B2, the 80ms branch) is selected for the end-to-end latency calculation.
-- **Webvis** - Displays the merged output at http://localhost:8004.
+- **Webvis** - Displays the merged output at [http://localhost:8004](http://localhost:8004).
 
 **Bug 1 (metric label collision, fixed):** When two filters share the same class name, they used to collide in Prometheus as a single metric series. After the fix, `p4_slow_b1` and `p4_slow_b2` appear as two separate lines in the Per-Filter Process Time panel.
 
-**Bug 2 (wrong fan-in aggregate timing, fixed):** Before the fix, the end-to-end latency for the merged pipeline was measured from the *first* branch to arrive (50ms branch), not the slowest (80ms branch). After the fix, the total latency correctly reflects the critical path. You can verify this: P4's end-to-end latency (~280ms) is about 80ms higher than P1/P2/P3 (~200ms), exactly matching the slower branch's sleep.
+**Bug 2 (wrong fan-in aggregate timing, fixed):** Before the fix, the end-to-end latency for the merged pipeline was measured from the *first* branch to arrive (50ms branch), not the slowest (80ms branch). After the fix, the total latency correctly reflects the critical path. You can verify this: P4's end-to-end latency (~~280ms) is about 80ms higher than P1/P2/P3 (~~200ms), exactly matching the slower branch's sleep.
 
-**Webvis:** http://localhost:8004
+**Webvis:** [http://localhost:8004](http://localhost:8004)
 
 ## Grafana Dashboard
 
-The dashboard is auto-provisioned at startup. Open http://localhost:3000 (admin / admin) and select **OpenFilter Pipeline Monitor**.
+The dashboard is auto-provisioned at startup. Open [http://localhost:3000](http://localhost:3000) (admin / admin) and select **OpenFilter Pipeline Monitor**.
 
 ### Filtering by Pipeline
 
@@ -205,16 +219,18 @@ For fan-in topologies (P3 diamond, P4 diamond-same-class), the total time reflec
 
 These are reported by every filter independently. All have labels: `filter_name`, `filter_id`, `pipeline_id`.
 
-| Prometheus Name | Description |
-|-----------------|-------------|
-| `{filtername}_fps` | Frames per second |
-| `{filtername}_cpu` | CPU usage percent |
-| `{filtername}_mem` | Memory in GB |
-| `{filtername}_lat_in` | Input queue wait time (ms) |
-| `{filtername}_lat_out` | Output emit time (ms) |
-| `{filtername}_frame_count_total` | Cumulative frames processed |
-| `{filtername}_megapx_count_total` | Cumulative megapixels processed |
+
+| Prometheus Name                   | Description                                                |
+| --------------------------------- | ---------------------------------------------------------- |
+| `{filtername}_fps`                | Frames per second                                          |
+| `{filtername}_cpu`                | CPU usage percent                                          |
+| `{filtername}_mem`                | Memory in GB                                               |
+| `{filtername}_lat_in`             | Input queue wait time (ms)                                 |
+| `{filtername}_lat_out`            | Output emit time (ms)                                      |
+| `{filtername}_frame_count_total`  | Cumulative frames processed                                |
+| `{filtername}_megapx_count_total` | Cumulative megapixels processed                            |
 | `{filtername}_uptime_count_total` | Frames processed since startup (divide by fps for seconds) |
+
 
 Note: Prometheus lowercases all metric names. `GrayscaleFilter` becomes `grayscalefilter`, `SlowPassthrough` becomes `slowpassthrough`, etc.
 
@@ -222,52 +238,60 @@ Note: Prometheus lowercases all metric names. `GrayscaleFilter` becomes `graysca
 
 These use the `openfilter_` prefix and are emitted by the filter runtime for all filters.
 
-| Metric | Reported By | Description |
-|--------|-------------|-------------|
-| `openfilter_process_time_ms` | Every filter | process() duration, EMA-smoothed |
-| `openfilter_filter_time_in` | Every filter | Unix timestamp when frame entered the filter |
-| `openfilter_filter_time_out` | Every filter | Unix timestamp when frame left the filter |
-| `openfilter_frame_total_time_ms` | Sink only | Full pipeline wall-clock latency, EMA-smoothed |
-| `openfilter_frame_avg_time_ms` | Sink only | Mean per-stage process time, EMA-smoothed |
-| `openfilter_frame_std_time_ms` | Sink only | Std dev of per-stage process times, EMA-smoothed |
+
+| Metric                           | Reported By  | Description                                      |
+| -------------------------------- | ------------ | ------------------------------------------------ |
+| `openfilter_process_time_ms`     | Every filter | process() duration, EMA-smoothed                 |
+| `openfilter_filter_time_in`      | Every filter | Unix timestamp when frame entered the filter     |
+| `openfilter_filter_time_out`     | Every filter | Unix timestamp when frame left the filter        |
+| `openfilter_frame_total_time_ms` | Sink only    | Full pipeline wall-clock latency, EMA-smoothed   |
+| `openfilter_frame_avg_time_ms`   | Sink only    | Mean per-stage process time, EMA-smoothed        |
+| `openfilter_frame_std_time_ms`   | Sink only    | Std dev of per-stage process times, EMA-smoothed |
+
 
 ### System Health Metrics
 
-| Metric | Description |
-|--------|-------------|
-| `openfilter_camera_connected` | 1 = source delivering frames, 0 = disconnected |
-| `openfilter_disk_usage_percent` | Host disk usage (0-100) |
-| `openfilter_ram_usage_percent` | Host RAM usage (0-100) |
-| `openfilter_gpu_accessible` | 1 = CUDA GPU found, 0 = not found |
-| `openfilter_gpu_usage_percent` | GPU utilization from nvidia-smi |
+
+| Metric                          | Description                                    |
+| ------------------------------- | ---------------------------------------------- |
+| `openfilter_camera_connected`   | 1 = source delivering frames, 0 = disconnected |
+| `openfilter_disk_usage_percent` | Host disk usage (0-100)                        |
+| `openfilter_ram_usage_percent`  | Host RAM usage (0-100)                         |
+| `openfilter_gpu_accessible`     | 1 = CUDA GPU found, 0 = not found              |
+| `openfilter_gpu_usage_percent`  | GPU utilization from nvidia-smi                |
+
 
 ## Alert Rules
 
 Pre-configured in `docker/monitoring/alert-rules.yaml`. When `PipelineDown` fires it suppresses all other alerts for the same pipeline.
 
-| Alert | Condition | For | Severity |
-|-------|-----------|-----|----------|
-| `PipelineDown` | No metrics received for 60s | 30s | critical |
-| `CameraDisconnected` | `camera_connected == 0` | 30s | critical |
-| `DiskCritical` | `disk_usage_percent > 90` | 1m | warning |
-| `GPUUnavailable` | `gpu_accessible == 0` | 30s | critical |
-| `DiskCriticalTest` | `disk_usage_percent > 10` | 15s | warning (test only) |
+
+| Alert                | Condition                   | For | Severity            |
+| -------------------- | --------------------------- | --- | ------------------- |
+| `PipelineDown`       | No metrics received for 60s | 30s | critical            |
+| `CameraDisconnected` | `camera_connected == 0`     | 30s | critical            |
+| `DiskCritical`       | `disk_usage_percent > 90`   | 1m  | warning             |
+| `GPUUnavailable`     | `gpu_accessible == 0`       | 30s | critical            |
+| `DiskCriticalTest`   | `disk_usage_percent > 10`   | 15s | warning (test only) |
+
 
 To receive Slack alerts, export `SLACK_WEBHOOK_URL` before running `make pipelines-up`.
 
 ## Services and Ports
 
-| Service | Port | URL |
-|---------|------|-----|
-| Grafana | 3000 | http://localhost:3000 (admin / admin) |
-| Prometheus | 9090 | http://localhost:9090 |
-| Alertmanager | 9093 | http://localhost:9093 |
-| OTEL Collector gRPC | 4317 | (internal) |
-| OTEL Collector Prometheus exporter | 8889 | http://localhost:8889/metrics |
-| P1 Webvis (transform-chain) | 8001 | http://localhost:8001 |
-| P2 Webvis (fan-out) | 8002 | http://localhost:8002 |
-| P3 Webvis (diamond) | 8003 | http://localhost:8003 |
-| P4 Webvis (diamond-same-class) | 8004 | http://localhost:8004 |
+
+| Service                            | Port | URL                                                            |
+| ---------------------------------- | ---- | -------------------------------------------------------------- |
+| Grafana                            | 3000 | [http://localhost:3000](http://localhost:3000) (admin / admin) |
+| Prometheus                         | 9090 | [http://localhost:9090](http://localhost:9090)                 |
+| Alertmanager                       | 9093 | [http://localhost:9093](http://localhost:9093)                 |
+| OTEL Collector gRPC                | 4317 | (internal)                                                     |
+| OTEL Collector Prometheus exporter | 8889 | [http://localhost:8889/metrics](http://localhost:8889/metrics) |
+| P1 Webvis (transform-chain)        | 8001 | [http://localhost:8001](http://localhost:8001)                 |
+| P2 Webvis (fan-out)                | 8002 | [http://localhost:8002](http://localhost:8002)                 |
+| P3 Webvis (diamond)                | 8003 | [http://localhost:8003](http://localhost:8003)                 |
+| P4 Webvis (diamond-same-class)     | 8004 | [http://localhost:8004](http://localhost:8004)                 |
+
 
 ## Architecture
 
@@ -283,6 +307,8 @@ flowchart LR
     AR --> AM["Alertmanager\n(:9093)"]
     AM --> SL["Slack"]
 ```
+
+
 
 Metrics flow: each filter exports OTLP to the collector every 10 seconds. The collector exposes a Prometheus scrape endpoint on port 8889. Prometheus scrapes it every 10 seconds. Grafana queries Prometheus. First metrics appear approximately 70 seconds after container startup.
 
@@ -332,18 +358,22 @@ Every sink (last) filter writes a flat CSV of compiled statistics every 60 secon
 
 **Multi-pipeline (`make pipelines-up` / `docker-compose.pipelines.yaml`):**
 
-| Pipeline | File |
-|----------|------|
-| P1 transform-chain | `examples/monitoring-demo/metrics/p1_transform_chain.csv` |
-| P2 fan-out | `examples/monitoring-demo/metrics/p2_fan_out.csv` |
-| P3 diamond | `examples/monitoring-demo/metrics/p3_diamond.csv` |
+
+| Pipeline              | File                                                         |
+| --------------------- | ------------------------------------------------------------ |
+| P1 transform-chain    | `examples/monitoring-demo/metrics/p1_transform_chain.csv`    |
+| P2 fan-out            | `examples/monitoring-demo/metrics/p2_fan_out.csv`            |
+| P3 diamond            | `examples/monitoring-demo/metrics/p3_diamond.csv`            |
 | P4 diamond-same-class | `examples/monitoring-demo/metrics/p4_diamond_same_class.csv` |
+
 
 **Single-pipeline (`docker compose up` / `docker-compose.yaml`):**
 
-| Pipeline | File |
-|----------|------|
+
+| Pipeline        | File                                                      |
+| --------------- | --------------------------------------------------------- |
 | Single pipeline | `examples/monitoring-demo/metrics/openfilter_metrics.csv` |
+
 
 After 60 seconds of running, each file will have its first data row. A new row is appended every 60 seconds.
 
@@ -356,21 +386,23 @@ tail -f examples/monitoring-demo/metrics/p1_transform_chain.csv
 
 Each row represents one 60-second flush window. For each metric family five statistics are computed over the raw per-frame samples collected in that window: `_avg`, `_std`, `_p95`, `_ci_lower`, `_ci_upper`. Fields requiring at least 2 samples are left empty rather than `NaN` so the file opens cleanly in Excel and pandas.
 
-| Column | Description |
-|--------|-------------|
-| `timestamp` | ISO-8601 UTC timestamp of the flush |
-| `pipeline_id` | Value of `PIPELINE_ID` env var |
-| `filter_id` | Value of `FILTER_ID` env var |
-| `n_samples` | Number of frames accumulated in this window |
-| `fps_avg / _std / _p95 / _ci_lower / _ci_upper` | Frames per second |
-| `cpu_avg / ...` | CPU usage percent (process + children) |
-| `mem_avg / ...` | Memory in GB (RSS, process + children) |
-| `lat_in_ms_avg / ...` | Input queue wait time in ms (EMA) |
-| `lat_out_ms_avg / ...` | Output emit time in ms (EMA) |
-| `process_time_ms_avg / ...` | Per-filter `process()` duration in ms (EMA) |
-| `frame_total_time_ms_avg / ...` | Full end-to-end pipeline latency in ms (EMA) |
-| `frame_avg_time_ms_avg / ...` | Mean per-stage process time in ms (EMA) |
-| `frame_std_time_ms_avg / ...` | Std dev of per-stage process times in ms (EMA) |
+
+| Column                                          | Description                                    |
+| ----------------------------------------------- | ---------------------------------------------- |
+| `timestamp`                                     | ISO-8601 UTC timestamp of the flush            |
+| `pipeline_id`                                   | Value of `PIPELINE_ID` env var                 |
+| `filter_id`                                     | Value of `FILTER_ID` env var                   |
+| `n_samples`                                     | Number of frames accumulated in this window    |
+| `fps_avg / _std / _p95 / _ci_lower / _ci_upper` | Frames per second                              |
+| `cpu_avg / ...`                                 | CPU usage percent (process + children)         |
+| `mem_avg / ...`                                 | Memory in GB (RSS, process + children)         |
+| `lat_in_ms_avg / ...`                           | Input queue wait time in ms (EMA)              |
+| `lat_out_ms_avg / ...`                          | Output emit time in ms (EMA)                   |
+| `process_time_ms_avg / ...`                     | Per-filter `process()` duration in ms (EMA)    |
+| `frame_total_time_ms_avg / ...`                 | Full end-to-end pipeline latency in ms (EMA)   |
+| `frame_avg_time_ms_avg / ...`                   | Mean per-stage process time in ms (EMA)        |
+| `frame_std_time_ms_avg / ...`                   | Std dev of per-stage process times in ms (EMA) |
+
 
 ### Changing the interval or disabling
 

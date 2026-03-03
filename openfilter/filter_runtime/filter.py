@@ -950,7 +950,7 @@ class Filter:
             self._frame_avg_time_ema = (1 - alpha) * self._frame_avg_time_ema + alpha * avg
             self._frame_std_time_ema = (1 - alpha) * self._frame_std_time_ema + alpha * std
 
-            if self._csv_exporter is not None:
+            if getattr(self, '_csv_exporter', None) is not None:
                 _m = self.metrics
                 self._csv_exporter.add_sample({
                     'fps':                _m.get('fps', 0.0),
