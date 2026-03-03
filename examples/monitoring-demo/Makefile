@@ -4,7 +4,7 @@ COMPOSE := docker compose -f $(MONITORING_DIR)/docker-compose.monitoring.yaml
 .PHONY: help stack-up stack-down stack-health run verify verify-alerts verify-alerts-test \
        clean all build up down logs \
        pipelines-build pipelines-up pipelines-down pipelines-logs \
-       pipelines-logs-p1 pipelines-logs-p2 pipelines-logs-p3 \
+       pipelines-logs-p1 pipelines-logs-p2 pipelines-logs-p3 pipelines-logs-p4 \
        pipelines-verify pipelines-status \
        trigger-alert-gpu trigger-alert-camera trigger-alert-disk trigger-alerts \
        resolve-test-alert
@@ -99,14 +99,15 @@ PIPELINES_COMPOSE := docker compose -f docker-compose.pipelines.yaml
 pipelines-build: ## Build openfilter-local image for pipelines
 	docker build -t openfilter-local:latest -f Dockerfile ../..
 
-pipelines-up: pipelines-build ## Build image + start all 3 pipelines with monitoring
+pipelines-up: pipelines-build ## Build image + start all 4 pipelines with monitoring
 	$(PIPELINES_COMPOSE) up -d
 	@echo ""
 	@echo "Pipelines started. Wait ~30s for metrics, then run: make pipelines-verify"
-	@echo "  P1 transform-chain webvis: http://localhost:8001"
-	@echo "  P2 fan-out webvis:         http://localhost:8002"
-	@echo "  P3 diamond webvis:         http://localhost:8003"
-	@echo "  Prometheus:                http://localhost:9090"
+	@echo "  P1 transform-chain webvis:    http://localhost:8001"
+	@echo "  P2 fan-out webvis:            http://localhost:8002"
+	@echo "  P3 diamond webvis:            http://localhost:8003"
+	@echo "  P4 diamond-same-class webvis: http://localhost:8004"
+	@echo "  Prometheus:                   http://localhost:9090"
 
 pipelines-down: ## Stop all pipeline services
 	$(PIPELINES_COMPOSE) down
@@ -122,6 +123,9 @@ pipelines-logs-p2: ## Follow logs for Pipeline 2 (fan-out)
 
 pipelines-logs-p3: ## Follow logs for Pipeline 3 (diamond)
 	$(PIPELINES_COMPOSE) logs -f p3_video_in p3_grayscale p3_stats p3_timing p3_webvis
+
+pipelines-logs-p4: ## Follow logs for Pipeline 4 (diamond-same-class)
+	$(PIPELINES_COMPOSE) logs -f p4_video_in p4_slow_b1 p4_slow_b2 p4_timing p4_webvis
 
 pipelines-status: ## Show status of all pipeline containers
 	$(PIPELINES_COMPOSE) ps

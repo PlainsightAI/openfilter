@@ -247,3 +247,83 @@ services:
       - "8003:8000"
     depends_on:
       - p3_timing
+
+  # ============================================================
+  # P4: diamond-same-class (same filter class in parallel branches)
+  #   video_in -> slow_b1(50ms) -> timing -> webvis
+  #   video_in -> slow_b2(80ms) -> timing
+  #
+  #   Reproduces Bug 1 (metric label collision) and Bug 2 (wrong
+  #   aggregate timing in fan-in).
+  # ============================================================
+
+  p4_video_in:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.video_in"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p4_video_in
+      FILTER_SOURCES: "file:///video.mp4!loop!maxfps=5"
+      FILTER_OUTPUTS: "tcp://*:5590"
+      PIPELINE_ID: diamond-same-class
+    ports:
+      - "5590:5590"
+    volumes: *video-volume
+
+  p4_slow_b1:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.slow_passthrough"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p4_slow_b1
+      FILTER_SOURCES: "tcp://p4_video_in:5590"
+      FILTER_OUTPUTS: "tcp://*:5592"
+      PIPELINE_ID: diamond-same-class
+      SLEEP_MS: "50"
+    ports:
+      - "5592:5592"
+    depends_on:
+      - p4_video_in
+
+  p4_slow_b2:
+    image: openfilter-local:latest
+    command: ["python", "-m", "filters.slow_passthrough"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p4_slow_b2
+      FILTER_SOURCES: "tcp://p4_video_in:5590"
+      FILTER_OUTPUTS: "tcp://*:5594"
+      PIPELINE_ID: diamond-same-class
+      SLEEP_MS: "80"
+    ports:
+      - "5594:5594"
+    depends_on:
+      - p4_video_in
+
+  p4_timing:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p4_timing
+      FILTER_SOURCES: "tcp://p4_slow_b1:5592;>branch_b1, tcp://p4_slow_b2:5594;>branch_b2"
+      FILTER_OUTPUTS: "tcp://*:5596"
+      PIPELINE_ID: diamond-same-class
+    ports:
+      - "5596:5596"
+    depends_on:
+      - p4_slow_b1
+      - p4_slow_b2
+
+  p4_webvis:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+    environment:
+      <<: *telemetry-env
+      FILTER_ID: p4_webvis
+      FILTER_SOURCES: "tcp://p4_timing:5596"
+      PIPELINE_ID: diamond-same-class
+    ports:
+      - "8004:8000"
+    depends_on:
+      - p4_timing

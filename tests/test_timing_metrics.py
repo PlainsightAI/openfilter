@@ -433,6 +433,7 @@ class TestUpdateMetricsPrefix(unittest.TestCase):
         c = object.__new__(OpenTelemetryClient)
         c.enabled = True
         c.instance_id = "test-instance"
+        c.filter_id = None
         c.setup_metrics = {}
         c._lock = __import__("threading").Lock()
         c._metrics = {}
@@ -468,6 +469,132 @@ class TestUpdateMetricsPrefix(unittest.TestCase):
         c.enabled = False
         c.update_metrics({"filter_time_in": 1.0}, "MyFilter")
         self.assertEqual(len(c._metrics), 0)
+
+
+# ===================================================================
+# Group 8: Fan-in aggregate timing (Bug 2)
+# ===================================================================
+
+class TestFanInAggregateTiming(unittest.TestCase):
+    """Tests for critical-path selection in _inject_timings with fan-in topologies."""
+
+    def test_fan_in_uses_critical_path(self):
+        """Aggregate timing should use the longest branch (critical path)."""
+        f = make_bare_filter(_is_last_filter=True)
+        # B1 chain: VideoIn(5ms) + SlowB1(50ms) = 55ms
+        frame_b1 = _make_frame(data={"meta": {"filter_timings": [
+            {"filter_name": "VideoIn", "filter_id": "p4_vin", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 5.0},
+            {"filter_name": "SlowB1", "filter_id": "p4_slow_b1", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 50.0},
+        ]}})
+        # B2 chain: VideoIn(5ms) + SlowB2(80ms) = 85ms
+        frame_b2 = _make_frame(data={"meta": {"filter_timings": [
+            {"filter_name": "VideoIn", "filter_id": "p4_vin", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 5.0},
+            {"filter_name": "SlowB2", "filter_id": "p4_slow_b2", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 80.0},
+        ]}})
+        frames = {"branch_b1": frame_b1, "branch_b2": frame_b2}
+        f._inject_timings(frames, 0, 0, 2.0)
+
+        # Critical path: B2 chain + this filter = 5 + 80 + 2 = 87ms
+        alpha = 0.05
+        self.assertAlmostEqual(f._frame_total_time_ema, alpha * 87.0, places=4)
+
+    def test_fan_in_single_topic_unchanged(self):
+        """Linear pipeline (single topic) still works identically."""
+        f = make_bare_filter(_is_last_filter=True)
+        prev = {"filter_name": "A", "filter_id": "", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 10.0}
+        frame = _make_frame(data={"meta": {"filter_timings": [prev]}})
+        frames = {"main": frame}
+        f._inject_timings(frames, 0, 0, 5.0)
+
+        alpha = 0.05
+        # total = 10 + 5 = 15
+        self.assertAlmostEqual(f._frame_total_time_ema, alpha * 15.0, places=4)
+
+    def test_fan_in_picks_slowest_of_three_branches(self):
+        """With three fan-in branches, the slowest is selected."""
+        f = make_bare_filter(_is_last_filter=True)
+        frame_a = _make_frame(data={"meta": {"filter_timings": [
+            {"filter_name": "A", "filter_id": "", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 10.0},
+        ]}})
+        frame_b = _make_frame(data={"meta": {"filter_timings": [
+            {"filter_name": "B", "filter_id": "", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 100.0},
+        ]}})
+        frame_c = _make_frame(data={"meta": {"filter_timings": [
+            {"filter_name": "C", "filter_id": "", "pipeline_id": "", "time_in": 0, "time_out": 0, "duration_ms": 50.0},
+        ]}})
+        frames = {"a": frame_a, "b": frame_b, "c": frame_c}
+        f._inject_timings(frames, 0, 0, 3.0)
+
+        # Critical path: B(100) + this(3) = 103
+        alpha = 0.05
+        self.assertAlmostEqual(f._frame_total_time_ema, alpha * 103.0, places=4)
+
+
+# ===================================================================
+# Group 9: filter_id in metrics and timing metadata (Bug 1)
+# ===================================================================
+
+class TestFilterIdInMetrics(unittest.TestCase):
+    """Tests verifying filter_id is included in metric attributes and timing metadata."""
+
+    def _make_client(self):
+        """Create an enabled client with mocked internals."""
+        c = object.__new__(OpenTelemetryClient)
+        c.enabled = True
+        c.instance_id = "test-instance"
+        c.filter_id = None
+        c.setup_metrics = {}
+        c._lock = __import__("threading").Lock()
+        c._metrics = {}
+        c._values = {}
+        c.meter = Mock()
+        c.meter.create_observable_gauge.return_value = Mock()
+        c.meter.create_counter.return_value = Mock()
+        return c
+
+    def test_filter_id_included_in_metric_attributes(self):
+        """filter_id label should distinguish same-class filter instances."""
+        c = self._make_client()
+        c.filter_id = "p4_slow_b1"
+        c.update_metrics({"process_time_ms": 50.0}, "SlowPassthrough")
+
+        # The gauge callback is passed as callbacks=[fn] to create_observable_gauge
+        call_kwargs = c.meter.create_observable_gauge.call_args
+        callback = call_kwargs[1]['callbacks'][0]
+        observations = callback(None)
+        self.assertEqual(observations[0].attributes.get("filter_id"), "p4_slow_b1")
+
+    def test_filter_id_defaults_to_empty_string(self):
+        """When filter_id is None, attribute defaults to empty string."""
+        c = self._make_client()
+        c.filter_id = None
+        c.update_metrics({"process_time_ms": 50.0}, "MyFilter")
+
+        call_kwargs = c.meter.create_observable_gauge.call_args
+        callback = call_kwargs[1]['callbacks'][0]
+        observations = callback(None)
+        self.assertEqual(observations[0].attributes.get("filter_id"), "")
+
+    def test_inject_timings_includes_filter_id(self):
+        """Timing metadata entries include filter_id from the filter instance."""
+        f = make_bare_filter(_filter_id="my_instance_1")
+        frame = _make_frame()
+        f._inject_timings({"main": frame}, 0, 0, 5.0)
+
+        entry = frame.data["meta"]["filter_timings"][0]
+        self.assertEqual(entry["filter_id"], "my_instance_1")
+
+    def test_inject_timings_filter_id_defaults_empty(self):
+        """When _filter_id is not set, timing entry filter_id defaults to empty string."""
+        f = make_bare_filter()
+        # Ensure no _filter_id is set
+        if hasattr(f, '_filter_id'):
+            delattr(f, '_filter_id')
+        frame = _make_frame()
+        f._inject_timings({"main": frame}, 0, 0, 5.0)
+
+        entry = frame.data["meta"]["filter_timings"][0]
+        self.assertEqual(entry["filter_id"], "")
 
 
 if __name__ == "__main__":

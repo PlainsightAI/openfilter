@@ -553,7 +553,9 @@ class Filter:
     ):
         if not (config := simpledeepcopy(config)).get('id'):
             config['id'] = f'{self.__class__.__name__}-{rndstr(6)}'  # everything must have an ID for sanity
-        
+
+        self._filter_id = config['id']
+
         pipeline_id = config.get("pipeline_id") or os.environ.get("PIPELINE_ID")
         self.device_id_name = config.get("device_name") or os.environ.get("DEVICE_NAME")
         self.pipeline_id = pipeline_id  # to store as an attribute
@@ -904,6 +906,7 @@ class Filter:
         """Append this filter's timing entry to each frame's meta['filter_timings'] and compute aggregates if last filter."""
         this_entry = {
             'filter_name': self.filter_name or self.__class__.__name__,
+            'filter_id': getattr(self, '_filter_id', '') or '',
             'pipeline_id': self.pipeline_id or '',
             'time_in': t_in,
             'time_out': t_out,
@@ -911,7 +914,9 @@ class Filter:
         }
 
         alpha = self._EMA_ALPHA
-        aggregate_timings = None
+        best_timings = None
+        best_total = -1.0
+
         for topic, frame in frames.items():
             if topic.startswith('_'):
                 continue
@@ -923,14 +928,17 @@ class Filter:
             all_timings.append(this_entry)
             meta['filter_timings'] = all_timings
 
-            if self._is_last_filter and aggregate_timings is None:
-                # Use the first non-underscore topic's timing chain for aggregates.
-                # In fan-in topologies, each topic carries its own branch's timings;
-                # we report one branch rather than conflating different paths.
-                aggregate_timings = all_timings
+            if self._is_last_filter:
+                # In fan-in topologies each topic carries a different branch's
+                # timing chain.  Pick the critical path (longest total) so that
+                # frame_total_time_ms reflects the actual pipeline latency.
+                branch_total = sum(t['duration_ms'] for t in all_timings)
+                if branch_total > best_total:
+                    best_total = branch_total
+                    best_timings = all_timings
 
-        if self._is_last_filter and aggregate_timings is not None:
-            durations = [t['duration_ms'] for t in aggregate_timings]
+        if self._is_last_filter and best_timings is not None:
+            durations = [t['duration_ms'] for t in best_timings]
             total = sum(durations)
             avg = total / len(durations)
             std = (sum((d - avg) ** 2 for d in durations) / len(durations)) ** 0.5
@@ -1086,8 +1094,9 @@ class Filter:
         if self.telemetry_enabled:
             try:
                 self.otel = OpenTelemetryClient(
-                    service_name="openfilter", 
+                    service_name="openfilter",
                     instance_id=self.pipeline_id,
+                    filter_id=self._filter_id,
                     setup_metrics=self.setup_metrics,
                     lineage_emitter=self.emitter
                 )

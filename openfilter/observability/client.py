@@ -86,11 +86,12 @@ class OpenTelemetryClient:
         service_name: str = "openfilter",
         namespace: str = "telemetry",
         instance_id: Optional[str] = None,
+        filter_id: Optional[str] = None,
         setup_metrics: Optional[dict] = None,
         exporter_type: str = os.getenv("TELEMETRY_EXPORTER_TYPE", DEFAULT_EXPORTER_TYPE),
         export_interval_millis: int = None,
         exporter_config: Optional[dict] = None,
-        enabled: bool = None,  
+        enabled: bool = None,
         project_id: str | None = os.getenv("PROJECT_ID", None),
         lineage_emitter: Optional[Any] = None
     ):
@@ -120,6 +121,7 @@ class OpenTelemetryClient:
             self.enabled = DEFAULT_TELEMETRY_ENABLED
 
         self.instance_id = instance_id
+        self.filter_id = filter_id
         self.setup_metrics = setup_metrics or {}
         exporter_config = exporter_config or {}
 
@@ -294,6 +296,7 @@ class OpenTelemetryClient:
                     attributes = {
                         **self.setup_metrics,
                         "filter_name": filter_name,
+                        "filter_id": self.filter_id or "",
                         "metric_name": name,
                         "pipeline_instance_id": self.instance_id or "",
                     }

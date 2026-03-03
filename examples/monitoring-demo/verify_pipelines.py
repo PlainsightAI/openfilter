@@ -20,6 +20,7 @@ EXPECTED_FILTERS = {
     "transform-chain": {"VideoIn", "GrayscaleFilter", "ResizeFilter", "TimingFilter", "Webvis"},
     "fan-out": {"VideoIn", "GrayscaleFilter", "ResizeFilter", "TimingFilter", "Webvis"},
     "diamond": {"VideoIn", "GrayscaleFilter", "StatsFilter", "TimingFilter", "Webvis"},
+    "diamond-same-class": {"VideoIn", "SlowPassthrough", "TimingFilter", "Webvis"},
 }
 
 PIPELINE_IDS = list(EXPECTED_FILTERS.keys())
@@ -28,6 +29,7 @@ WEBVIS_PORTS = {
     "transform-chain": 8001,
     "fan-out": 8002,
     "diamond": 8003,
+    "diamond-same-class": 8004,
 }
 
 
@@ -205,6 +207,70 @@ def main():
             f"{name} (:{port}): MJPEG frames detected",
             f"{name} (:{port}): no MJPEG frames found (boundary={has_boundary}, jpeg_soi={has_jpeg_soi})",
         )
+
+    # ── Phase 5: P4 Diamond-Same-Class Verification ─────────────────
+    print("\n== Phase 5: P4 Diamond-Same-Class (filter_id + critical path) ==")
+
+    # 5a. SlowPassthrough should produce >= 2 distinct filter_id values
+    try:
+        data = query_prometheus(
+            args.prometheus_url,
+            'openfilter_process_time_ms{pipeline_id="diamond-same-class",filter_name="SlowPassthrough"}',
+        )
+        filter_ids = {
+            r["metric"].get("filter_id", "")
+            for r in data["data"]["result"]
+        }
+        filter_ids.discard("")
+        c.check(
+            len(filter_ids) >= 2,
+            f"SlowPassthrough has {len(filter_ids)} distinct filter_id values: {filter_ids}",
+            f"SlowPassthrough has only {len(filter_ids)} filter_id value(s): {filter_ids} (expected >= 2, Bug 1 may be unfixed)",
+        )
+    except Exception as e:
+        c.fail(f"could not query SlowPassthrough filter_id: {e}")
+
+    # 5b. Check individual filter_id process_time_ms values
+    for fid, expected_low, expected_high, label in [
+        ("p4_slow_b1", 30, 100, "~50ms"),
+        ("p4_slow_b2", 50, 150, "~80ms"),
+    ]:
+        try:
+            data = query_prometheus(
+                args.prometheus_url,
+                f'openfilter_process_time_ms{{filter_id="{fid}"}}',
+            )
+            results = data["data"]["result"]
+            if results:
+                val = float(results[0]["value"][1])
+                c.check(
+                    expected_low < val < expected_high,
+                    f"{fid} process_time_ms={val:.1f}ms (expected {label})",
+                    f"{fid} process_time_ms={val:.1f}ms outside expected range ({expected_low}-{expected_high}ms)",
+                )
+            else:
+                c.fail(f"{fid}: no process_time_ms metric found")
+        except Exception as e:
+            c.fail(f"{fid}: could not query process_time_ms: {e}")
+
+    # 5c. frame_total_time_ms should reflect critical path (>= 70ms, not ~50ms)
+    try:
+        data = query_prometheus(
+            args.prometheus_url,
+            'openfilter_frame_total_time_ms{pipeline_id="diamond-same-class"}',
+        )
+        results = data["data"]["result"]
+        if results:
+            val = float(results[0]["value"][1])
+            c.check(
+                val > 70,
+                f"frame_total_time_ms={val:.1f}ms reflects critical path (> 70ms)",
+                f"frame_total_time_ms={val:.1f}ms too low (expected > 70ms for critical path, Bug 2 may be unfixed)",
+            )
+        else:
+            c.fail("diamond-same-class: no frame_total_time_ms metric found")
+    except Exception as e:
+        c.fail(f"could not query frame_total_time_ms: {e}")
 
     # ── Summary ────────────────────────────────────────────────────────
     total = c.passed + c.failed
