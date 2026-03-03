@@ -17,6 +17,9 @@
 # follows conventions: filter-* name, Dockerfile, VERSION, openfilter dep.
 # DockerHub image name is derived as: openfilter-${repo#filter-}
 #
+# Use _SINGLE_FILTER to rebuild one filter, or _FILTER_SUBSET for a
+# comma-separated subset (e.g. "filter-foo,filter-bar").
+#
 # Repos with their own cloudbuild.yaml (e.g. filter-sam3-detector) are
 # auto-skipped and triggered separately in Step 5.
 # openfilter-mcp has no openfilter Python dependency (it indexes repos
@@ -38,6 +41,7 @@ substitutions:
   _DOCKERHUB_ORG: plainsightai
   _DRY_RUN: "true"
   _SINGLE_FILTER: ""
+  _FILTER_SUBSET: ""
   _MAX_PARALLEL: "4"
 
 options:
@@ -141,6 +145,7 @@ steps:
       - 'GAR_REPO=${_GAR_REPO}'
       - 'DOCKERHUB_ORG=${_DOCKERHUB_ORG}'
       - 'SINGLE_FILTER=${_SINGLE_FILTER}'
+      - 'FILTER_SUBSET=${_FILTER_SUBSET}'
       - 'MAX_PARALLEL=${_MAX_PARALLEL}'
     args: ['/workspace/scripts/build-filters.sh']
 
