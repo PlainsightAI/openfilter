@@ -14,14 +14,18 @@
       {
         "name": "pipeline_id",
         "label": "Pipeline",
-        "type": "query",
-        "datasource": { "type": "prometheus", "uid": "openfilter_prometheus" },
-        "query": "label_values(openfilter_process_time_ms, pipeline_id)",
+        "type": "custom",
+        "query": "p1 (transform-chain) : transform-chain, p2 (fan-out) : fan-out, p3 (diamond) : diamond, p4 (diamond-same-class) : diamond-same-class",
+        "options": [
+          { "text": "All",                          "value": "$__all",           "selected": true  },
+          { "text": "p1 (transform-chain)",         "value": "transform-chain",  "selected": false },
+          { "text": "p2 (fan-out)",                 "value": "fan-out",          "selected": false },
+          { "text": "p3 (diamond)",                 "value": "diamond",          "selected": false },
+          { "text": "p4 (diamond-same-class)",      "value": "diamond-same-class", "selected": false }
+        ],
         "multi": true,
         "includeAll": true,
-        "current": { "selected": true, "text": "All", "value": "$__all" },
-        "refresh": 2,
-        "sort": 1
+        "current": { "selected": true, "text": "All", "value": "$__all" }
       }
     ]
   },

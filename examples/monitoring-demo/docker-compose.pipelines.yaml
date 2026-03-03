@@ -10,6 +10,9 @@ x-telemetry-env: &telemetry-env
 x-video-volume: &video-volume
   - ../hello-world/example_video.mp4:/video.mp4:ro
 
+x-metrics-volume: &metrics-volume
+  - ./metrics:/metrics
+
 services:
   # ============================================================
   # P1: transform-chain (linear)
@@ -79,8 +82,11 @@ services:
       FILTER_ID: p1_webvis
       FILTER_SOURCES: "tcp://p1_timing:5566"
       PIPELINE_ID: transform-chain
+      FILTER_METRICS_CSV_PATH: /metrics/p1_transform_chain.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
     ports:
       - "8001:8000"
+    volumes: *metrics-volume
     depends_on:
       - p1_timing
 
@@ -167,8 +173,11 @@ services:
       FILTER_ID: p2_webvis
       FILTER_SOURCES: "tcp://p2_timing_a:5576;>grayscale, tcp://p2_timing_b:5578;>resized"
       PIPELINE_ID: fan-out
+      FILTER_METRICS_CSV_PATH: /metrics/p2_fan_out.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
     ports:
       - "8002:8000"
+    volumes: *metrics-volume
     depends_on:
       - p2_timing_a
       - p2_timing_b
@@ -243,8 +252,11 @@ services:
       FILTER_ID: p3_webvis
       FILTER_SOURCES: "tcp://p3_timing:5586"
       PIPELINE_ID: diamond
+      FILTER_METRICS_CSV_PATH: /metrics/p3_diamond.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
     ports:
       - "8003:8000"
+    volumes: *metrics-volume
     depends_on:
       - p3_timing
 
@@ -323,7 +335,10 @@ services:
       FILTER_ID: p4_webvis
       FILTER_SOURCES: "tcp://p4_timing:5596"
       PIPELINE_ID: diamond-same-class
+      FILTER_METRICS_CSV_PATH: /metrics/p4_diamond_same_class.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
     ports:
       - "8004:8000"
+    volumes: *metrics-volume
     depends_on:
       - p4_timing

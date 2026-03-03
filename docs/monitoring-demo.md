@@ -74,6 +74,13 @@ flowchart LR
 
 A linear chain. Frames flow through each stage in sequence: decode, convert to grayscale, resize, record timing metadata, display. This is the simplest topology and the baseline for understanding latency. Every filter sees every frame.
 
+**Filters:**
+- **VideoIn** - Reads the looping video file and decodes each frame. The most expensive stage (~198ms per frame due to video decoding). Injects the initial `filter_timings` entry into every frame it emits.
+- **GrayscaleFilter** - Converts each frame to grayscale using `frame.gray`. ~3ms per frame. Passes all metadata through unchanged.
+- **ResizeFilter** - Resizes each frame to 320x240 using OpenCV. ~2ms per frame. Target resolution is configurable via `RESIZE_WIDTH` / `RESIZE_HEIGHT` env vars.
+- **TimingFilter** - Pure passthrough. Performs no image transformation. Reads `frame.data['meta']['filter_timings']` and logs the full timing chain to stdout every 30 frames.
+- **Webvis** - Serves the processed frames as a live MJPEG stream over HTTP on port 8001.
+
 The end-to-end latency for this pipeline is roughly the sum of per-filter processing times plus ZMQ transmission overhead between stages.
 
 ### P2: fan-out
@@ -92,7 +99,24 @@ flowchart LR
 
 One source feeds two independent branches simultaneously. The same frame is broadcast to both `GrayscaleFilter` and `ResizeFilter` at the same time via ZMQ PUB/SUB. Each branch processes at its own speed. The sink (`Webvis`) merges them back, receiving frames from both under different topic names (`grayscale` and `resized`).
 
+**Filters:**
+- **VideoIn** - Decodes the video and broadcasts each frame to both branches simultaneously via ZMQ PUB/SUB. A single output port serves multiple subscribers with no extra configuration.
+- **GrayscaleFilter** - Branch A. Converts frames to grayscale (~3ms).
+- **ResizeFilter** - Branch B. Resizes frames to 320x240 (~2ms). Runs independently of the grayscale branch.
+- **TimingFilter_A** (`id=p2_timing_a`) - Passthrough at the end of the grayscale branch. Acts as the sink for that branch, so it emits `openfilter_frame_total_time_ms` for the grayscale path.
+- **TimingFilter_B** (`id=p2_timing_b`) - Passthrough at the end of the resize branch. Independent sink with its own end-to-end latency measurement.
+- **Webvis** - Receives from both TimingFilter_A (topic `grayscale`) and TimingFilter_B (topic `resized`) and serves both streams.
+
 `TimingFilter_A` and `TimingFilter_B` are separate filters with separate `filter_id` values, so the Grafana dashboard shows independent per-filter metrics and independent end-to-end latency measurements for each branch.
+
+Webvis receives both topics and you can view each branch individually by appending the topic name to the URL:
+
+| URL | What you see |
+|-----|-------------|
+| http://localhost:8002/grayscale | Grayscale branch only |
+| http://localhost:8002/resized | Resized branch only |
+
+This is a general Webvis feature: `http://localhost:<port>/<topic>` streams the MJPEG feed for any named topic. The root URL (`/`) shows whichever topic was received first.
 
 ### P3: diamond
 
@@ -109,6 +133,13 @@ flowchart LR
 
 Fan-out at the source, fan-in at the merge point. Both branches process in parallel and `TimingFilter` waits for frames from both `GrayscaleFilter` and `StatsFilter` before emitting downstream. This is the standard pattern when you need to combine the outputs of two different analyses of the same frame (for example, a model result and a metadata enrichment step).
 
+**Filters:**
+- **VideoIn** - Decodes and broadcasts each frame to both branches.
+- **GrayscaleFilter** - Branch A. Converts to grayscale (~3ms).
+- **StatsFilter** - Branch B. Computes mean brightness per frame using `numpy.mean` (~3ms) and logs a running average every 30 frames. Passes the frame through unchanged. Represents a metadata enrichment step running in parallel with the image transform.
+- **TimingFilter** (`id=p3_timing`) - Fan-in merge point. Receives from both branches (topics `grayscale` and `stats`). Waits for both to arrive before emitting. Selects the `filter_timings` chain from whichever branch had the latest `time_out`, ensuring end-to-end latency reflects the true critical path.
+- **Webvis** - Serves the merged output on port 8003.
+
 The key behavior to observe: end-to-end latency is determined by the *critical path*, meaning the slower branch. If `GrayscaleFilter` finishes in 3ms but `StatsFilter` takes 10ms, `TimingFilter` cannot emit until both arrive, so the total latency reflects the 10ms branch regardless of when the other finished.
 
 ### P4: diamond-same-class
@@ -117,14 +148,21 @@ The key behavior to observe: end-to-end latency is determined by the *critical p
 
 ```mermaid
 flowchart LR
-    A["VideoIn"] --> B["SlowPassthrough\n(50ms, id=p4_slow_b1)"]
-    A --> C["SlowPassthrough\n(80ms, id=p4_slow_b2)"]
+    A["VideoIn"] --> B["SlowPassthrough<br/>(50ms, id=p4_slow_b1)"]
+    A --> C["SlowPassthrough<br/>(80ms, id=p4_slow_b2)"]
     B --> D["TimingFilter"]
     C --> D
     D --> E["Webvis\n(:8004)"]
 ```
 
 Same topology as P3 but both parallel branches use the same Python class (`SlowPassthrough`) with different `FILTER_ID` values and different artificial sleep durations (50ms and 80ms). This pipeline was created to expose and verify two specific bugs in the timing system.
+
+**Filters:**
+- **VideoIn** - Decodes and broadcasts each frame to both branches.
+- **SlowPassthrough B1** (`id=p4_slow_b1`, `SLEEP_MS=50`) - Calls `time.sleep(0.050)` on every frame then passes it through unchanged. Represents a branch doing lightweight work, such as a fast model or a metadata lookup.
+- **SlowPassthrough B2** (`id=p4_slow_b2`, `SLEEP_MS=80`) - Same class as B1, same code, but configured to sleep 80ms. This is the slower branch and therefore the critical path.
+- **TimingFilter** (`id=p4_timing`) - Fan-in merge point. Waits for both branches, then selects the critical-path timing chain (from B2) for the end-to-end latency calculation.
+- **Webvis** - Displays the merged output on port 8004.
 
 **Bug 1 (metric label collision, fixed):** When two filters share the same class name, their Prometheus metrics previously collided into a single series because `filter_name` was identical and `filter_id` was not included in metric labels. After the fix, `p4_slow_b1` and `p4_slow_b2` appear as separate, distinguishable lines in all dashboard panels.
 
@@ -414,6 +452,70 @@ make trigger-alert-camera # Inject a synthetic CameraDisconnected alert
 make run                  # Run one pipeline for 120s with OTLP export
 make run-console          # Run one pipeline printing metrics to stdout
 ```
+
+## CSV Metrics Export
+
+Every sink (last) filter writes a flat CSV of compiled statistics every 60 seconds. In the monitoring demo this is already configured: each pipeline's webvis container has `FILTER_METRICS_CSV_PATH` set and the host directory `examples/monitoring-demo/metrics/` is mounted into the container.
+
+### File locations on the host
+
+After running `make pipelines-up`, CSV files appear here:
+
+| Pipeline | Host path (relative to repo root) |
+|----------|-----------------------------------|
+| P1 transform-chain | `examples/monitoring-demo/metrics/p1_transform_chain.csv` |
+| P2 fan-out | `examples/monitoring-demo/metrics/p2_fan_out.csv` |
+| P3 diamond | `examples/monitoring-demo/metrics/p3_diamond.csv` |
+| P4 diamond-same-class | `examples/monitoring-demo/metrics/p4_diamond_same_class.csv` |
+
+After running `docker compose up` (single pipeline):
+
+| Pipeline | Host path |
+|----------|-----------|
+| Single pipeline | `examples/monitoring-demo/metrics/openfilter_metrics.csv` |
+
+The first row appears after 60 seconds. New rows are appended every 60 seconds thereafter. On shutdown the final flush captures any remaining buffered frames.
+
+```bash
+# Watch P1 rows arrive in real time:
+tail -f examples/monitoring-demo/metrics/p1_transform_chain.csv
+```
+
+### Environment variables
+
+The feature is controlled by two `FILTER_*` env vars set on the last-filter (webvis) service:
+
+| Variable | Description |
+|----------|-------------|
+| `FILTER_METRICS_CSV_PATH` | Path to the CSV file inside the container. Removing this var disables the feature. |
+| `FILTER_METRICS_CSV_INTERVAL` | Flush interval in seconds. Default: `60`. |
+
+### CSV schema
+
+Each row covers one flush window. For each metric family, five statistics are computed over the raw per-frame samples: `_avg`, `_std`, `_p95`, `_ci_lower`, `_ci_upper`. Fields that require at least 2 samples are left empty (not `NaN`) so the file opens cleanly in Excel and pandas.
+
+| Column | Description |
+|--------|-------------|
+| `timestamp` | ISO-8601 UTC timestamp of the flush |
+| `pipeline_id` | Value of `PIPELINE_ID` env var |
+| `filter_id` | Value of `FILTER_ID` env var |
+| `n_samples` | Number of frames accumulated in this window |
+| `fps_avg / _std / _p95 / _ci_lower / _ci_upper` | Frames per second |
+| `cpu_avg / ...` | CPU usage percent (process + children) |
+| `mem_avg / ...` | Memory in GB (RSS, process + children) |
+| `lat_in_ms_avg / ...` | Input queue wait time in ms (EMA) |
+| `lat_out_ms_avg / ...` | Output emit time in ms (EMA) |
+| `process_time_ms_avg / ...` | Per-filter `process()` duration in ms (EMA) |
+| `frame_total_time_ms_avg / ...` | Full end-to-end pipeline latency in ms (EMA) |
+| `frame_avg_time_ms_avg / ...` | Mean per-stage process time in ms (EMA) |
+| `frame_std_time_ms_avg / ...` | Std dev of per-stage process times in ms (EMA) |
+
+### Notes
+
+- Only the last filter (the one with no downstream outputs) writes CSV. In every pipeline topology in this demo that is the webvis container.
+- All disk I/O happens in a background daemon thread so the frame-processing loop is never blocked.
+- The CSV file is appended to, never overwritten. Delete or rotate the file between runs if needed.
+- To use CSV export in your own pipeline, add `FILTER_METRICS_CSV_PATH` and a matching volume mount to whichever service is your sink filter.
 
 ## Troubleshooting
 

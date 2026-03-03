@@ -136,6 +136,9 @@ class FilterConfig(adict):  # types are informative to you as in the end they're
     mq_log:              str | bool | None
     mq_msgid_sync:       bool | None
 
+    metrics_csv_path:     str | None
+    metrics_csv_interval: float | None
+
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
 
@@ -582,6 +585,7 @@ class Filter:
         self._frame_avg_time_ema = 0.0
         self._frame_std_time_ema = 0.0
         self._is_last_filter = False
+        self._csv_exporter = None
         self._metadata_queue = queue.Queue(maxsize=64)
         self._metadata_worker_thread = None
         try:
@@ -946,6 +950,20 @@ class Filter:
             self._frame_avg_time_ema = (1 - alpha) * self._frame_avg_time_ema + alpha * avg
             self._frame_std_time_ema = (1 - alpha) * self._frame_std_time_ema + alpha * std
 
+            if self._csv_exporter is not None:
+                _m = self.metrics
+                self._csv_exporter.add_sample({
+                    'fps':                _m.get('fps', 0.0),
+                    'cpu':                _m.get('cpu', 0.0),
+                    'mem':                _m.get('mem', 0.0),
+                    'lat_in_ms':          _m.get('lat_in', 0.0),
+                    'lat_out_ms':         _m.get('lat_out', 0.0),
+                    'process_time_ms':    self._process_time_ema,
+                    'frame_total_time_ms': self._frame_total_time_ema,
+                    'frame_avg_time_ms':  self._frame_avg_time_ema,
+                    'frame_std_time_ms':  self._frame_std_time_ema,
+                })
+
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
 
@@ -1147,6 +1165,22 @@ class Filter:
         # Detect last filter in pipeline (no downstream outputs)
         self._is_last_filter = self.mq.sender is None
 
+        # CSV metrics exporter (sink filter only, opt-in via FILTER_METRICS_CSV_PATH)
+        self._csv_exporter = None
+        if self._is_last_filter:
+            csv_path = config.get('metrics_csv_path')
+            if csv_path:
+                csv_interval = float(config.get('metrics_csv_interval') or 60)
+                from openfilter.filter_runtime.csv_exporter import CSVMetricsExporter
+                self._csv_exporter = CSVMetricsExporter(
+                    path=csv_path,
+                    interval_s=csv_interval,
+                    pipeline_id=self.pipeline_id or '',
+                    filter_id=getattr(self, '_filter_id', '') or '',
+                )
+                self._csv_exporter.start()
+                logger.info(f'[csv_exporter] Writing metrics every {csv_interval}s to {csv_path!r}')
+
         # Start metrics updater thread after MQ is initialized
         if self.telemetry_enabled and hasattr(self, 'otel'):
             self.start_metrics_updater_thread()
@@ -1159,6 +1193,8 @@ class Filter:
         self._stop_metadata_worker()
         if hasattr(self, 'emitter') and self.emitter is not None:
             self.emitter.emit_stop()
+        if self._csv_exporter is not None:
+            self._csv_exporter.stop()
         self.mq.destroy()
 
     # - FOR SUBCLASS ---------------------------------------------------------------------------------------------------

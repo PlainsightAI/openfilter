@@ -44,7 +44,11 @@ services:
       TELEMETRY_EXPORTER_TYPE: "otlp"
       TELEMETRY_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       EXPORT_INTERVAL: "10000"
+      FILTER_METRICS_CSV_PATH: /metrics/openfilter_metrics.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
     ports:
       - "8000:8000"
+    volumes:
+      - ./metrics:/metrics
     depends_on:
       - timing_filter
