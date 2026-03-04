@@ -1,0 +1,17 @@
+steps:
+  - name: 'python:3.12-slim'
+    id: install
+    entrypoint: bash
+    args:
+      - -c
+      - pip install -e .[all,dev]
+
+  - name: 'python:3.12-slim'
+    id: test
+    entrypoint: bash
+    args:
+      - -c
+      - make test-all
+
+options:
+  logging: CLOUD_LOGGING_ONLY
