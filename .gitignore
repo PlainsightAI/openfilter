@@ -141,4 +141,8 @@ cache/
 Reports/
 _authors.txt
 
+# CSV metrics export (generated at runtime)
+examples/monitoring-demo/metrics/*.csv
+
 .DS_Store
+CLAUDE.md

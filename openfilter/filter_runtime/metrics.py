@@ -10,12 +10,13 @@ Environment variables:
 
 import logging
 import os
+import shutil
 import subprocess
 from pprint import pformat
 from threading import Event, Thread
 from time import time
 
-from psutil import Process, cpu_count
+from psutil import Process, cpu_count, virtual_memory
 
 from .frame import Frame
 from .utils import JSONType, json_getval, sizestr, secstr, timestr
@@ -33,18 +34,22 @@ GPU_METRIC_NAMES     = [(f'gpu{i}', f'gpu{i}_mem') for i in range(8)]
 
 class Metrics:
     def __init__(self):
-        self.fps          = 15
-        self.fps_t        = self.uptime_t = time()
-        self.fps_td       = 1 / 15
-        self.cpu          = 0
-        self.mem          = 0
-        self.lat_in       = 0
-        self.lat_out      = 0
-        self.gpu          = {}
-        self.frame_count  = 0
-        self.megapx_count = 0
-        self.proc         = Process()
-        self.stop_evt     = Event()
+        self.fps                = 15
+        self.fps_t              = self.uptime_t = time()
+        self.fps_td             = 1 / 15
+        self.cpu                = 0
+        self.mem                = 0
+        self.lat_in             = 0
+        self.lat_out            = 0
+        self.gpu                = {}
+        self.frame_count        = 0
+        self.megapx_count       = 0
+        self.disk_usage_percent = 0.0
+        self.ram_usage_percent  = 0.0
+        self.gpu_accessible     = 0
+        self.gpu_usage_percent  = 0.0
+        self.proc               = Process()
+        self.stop_evt           = Event()
 
         self.cpu_thread = Thread(target=self.cpu_thread_func, args=(self.stop_evt,), daemon=True)
 
@@ -90,6 +95,18 @@ class Metrics:
                 self.cpu = min(100, cpu / cores)
                 self.mem = mem / 0x40000000  # GB
 
+                try:
+                    usage = shutil.disk_usage('/')
+                    self.disk_usage_percent = (usage.used / usage.total) * 100
+                except Exception:
+                    pass
+
+                try:
+                    vm = virtual_memory()
+                    self.ram_usage_percent = vm.percent
+                except Exception:
+                    pass
+
         except Exception as exc:
             logger.error(exc)
 
@@ -107,10 +124,12 @@ class Metrics:
 
                 except Exception:
                     logger.debug('failed to run nvidia-smi for GPU metrics')
+                    self.gpu_accessible = 0
 
                     break
 
                 if result.returncode or not (data := result.stdout.strip()):
+                    self.gpu_accessible = 0
                     break
 
                 for line in data.split('\n'):
@@ -126,9 +145,12 @@ class Metrics:
                     gpu[f'{gpu_name}_mem']           = gpu_mem / 1000
 
                 self.gpu = gpu
+                self.gpu_accessible = 1
+                self.gpu_usage_percent = gpu.get('gpu0', 0.0)
 
         except Exception as exc:
             logger.error(exc)
+            self.gpu_accessible = 0
 
         self.gpu = {}
 
@@ -180,7 +202,11 @@ class Metrics:
         if gpu := self.gpu:
             metrics.update(gpu)
 
-        metrics['uptime_count'] = int(t - self.uptime_t)
+        metrics['uptime_count']      = int(t - self.uptime_t)
+        metrics['disk_usage_percent'] = self.disk_usage_percent
+        metrics['ram_usage_percent']  = self.ram_usage_percent
+        metrics['gpu_accessible']     = self.gpu_accessible
+        metrics['gpu_usage_percent']  = self.gpu_usage_percent
 
         if frame_count := self.frame_count:
             metrics['frame_count'] = frame_count

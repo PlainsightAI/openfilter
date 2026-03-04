@@ -1,0 +1,20 @@
+services:
+  video_in:
+    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/video_in:v1.4.25
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: VideoIn
+      FILTER_SOURCES: file:///input/video.mp4!resize=960x540!loop
+      FILTER_OUTPUTS: tcp://*
+    volumes:
+      - ./assets/sample-video.mp4:/input/video.mp4:ro
+
+  webvis:
+    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/webvis:v1.4.25
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      FILTER_ID: Webvis
+      FILTER_SOURCES: tcp://video_in
+      FILTER_MQ_LOG: pretty
+    ports: 
+      - 8000:8000

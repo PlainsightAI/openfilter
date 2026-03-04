@@ -1,0 +1,54 @@
+include:
+  - path: ../../docker/monitoring/docker-compose.monitoring.yaml
+
+services:
+  video_in:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.video_in"]
+    environment:
+      FILTER_ID: video_in
+      FILTER_SOURCES: "file:///video.mp4!loop!maxfps=5"
+      FILTER_OUTPUTS: "tcp://*:5550"
+      TELEMETRY_EXPORTER_ENABLED: "true"
+      TELEMETRY_EXPORTER_TYPE: "otlp"
+      TELEMETRY_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      EXPORT_INTERVAL: "10000"
+    ports:
+      - "5550:5550"
+    volumes:
+      - ../hello-world/example_video.mp4:/video.mp4:ro
+
+  timing_filter:
+    image: openfilter-local:latest
+    command: ["python", "-m", "timing_filter.filter"]
+    environment:
+      FILTER_ID: timing_filter
+      FILTER_SOURCES: "tcp://video_in:5550"
+      FILTER_OUTPUTS: "tcp://*:5552"
+      TELEMETRY_EXPORTER_ENABLED: "true"
+      TELEMETRY_EXPORTER_TYPE: "otlp"
+      TELEMETRY_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      EXPORT_INTERVAL: "10000"
+    ports:
+      - "5552:5552"
+    depends_on:
+      - video_in
+
+  webvis:
+    image: openfilter-local:latest
+    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+    environment:
+      FILTER_ID: webvis
+      FILTER_SOURCES: "tcp://timing_filter:5552"
+      TELEMETRY_EXPORTER_ENABLED: "true"
+      TELEMETRY_EXPORTER_TYPE: "otlp"
+      TELEMETRY_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      EXPORT_INTERVAL: "10000"
+      FILTER_METRICS_CSV_PATH: /metrics/openfilter_metrics.csv
+      FILTER_METRICS_CSV_INTERVAL: "60"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./metrics:/metrics
+    depends_on:
+      - timing_filter

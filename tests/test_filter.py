@@ -24,7 +24,11 @@ log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())
 
 setLogLevelGlobal(log_level)
 
-getdatas = lambda q, t=5: {t: f.data for t, f in q.get(True, t).items()}
+def _strip_meta(d):
+    """Return a copy of dict *d* without the 'meta' key (injected by timing instrumentation)."""
+    return {k: v for k, v in d.items() if k != 'meta'}
+
+getdatas = lambda q, t=5: {t: _strip_meta(f.data) for t, f in q.get(True, t).items()}
 
 
 class FilterFromQueue(Filter):
@@ -122,11 +126,11 @@ class TestFilterOld(unittest.TestCase):
 
         self.assertEqual(retcodes, [0, 0])
 
-        self.assertEqual({t: f.data for t, f in qin.get(0).items()}, {'main': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in qin.get(0).items()}, {'main': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in qin.get(0).items()}, {'main': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in qin.get(0).items()}, {'main': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in qin.get(0).items()}, {'main': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin.get(0).items()}, {'main': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin.get(0).items()}, {'main': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin.get(0).items()}, {'main': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin.get(0).items()}, {'main': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin.get(0).items()}, {'main': {'count': 4}})
 
 
     def test_topo_tee(self):
@@ -140,17 +144,17 @@ class TestFilterOld(unittest.TestCase):
 
         self.assertEqual(retcodes, [0, 0, 0])
 
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 4}})
 
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'main': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'main': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'main': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'main': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'main': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'main': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'main': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'main': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'main': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'main': {'count': 4}})
 
 
     def test_topo_tee_rejoin(self):
@@ -165,11 +169,11 @@ class TestFilterOld(unittest.TestCase):
 
         self.assertEqual(retcodes, [0, 0, 0, 0])
 
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 0}, 'other': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 1}, 'other': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 2}, 'other': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 3}, 'other': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 4}, 'other': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 0}, 'other': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 1}, 'other': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 2}, 'other': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 3}, 'other': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 4}, 'other': {'count': 4}})
 
 
     def test_topo_ephemeral_simple(self):
@@ -182,11 +186,11 @@ class TestFilterOld(unittest.TestCase):
 
         self.assertEqual(retcodes, [0, 0])
 
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in queue.get(0).items()}, {'main': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in queue.get(0).items()}, {'main': {'count': 4}})
 
 
     def test_topo_ephemeral_tee(self):
@@ -200,15 +204,15 @@ class TestFilterOld(unittest.TestCase):
 
         self.assertEqual(retcodes, [0, 0, 0])
 
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 0}, 'other': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 1}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 2}, 'other': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 3}})
-        self.assertEqual({t: f.data for t, f in qin1.get(0).items()}, {'main': {'count': 4}, 'other': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 0}, 'other': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 1}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 2}, 'other': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 3}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin1.get(0).items()}, {'main': {'count': 4}, 'other': {'count': 4}})
 
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'other': {'count': 0}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'other': {'count': 2}})
-        self.assertEqual({t: f.data for t, f in qin2.get(0).items()}, {'other': {'count': 4}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'other': {'count': 0}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'other': {'count': 2}})
+        self.assertEqual({t: _strip_meta(f.data) for t, f in qin2.get(0).items()}, {'other': {'count': 4}})
 
 
     # WARNING! `prop_exit` and `stop_exit` are temporary hacks for exit control in this case, they should be made more determiniztic.
@@ -598,8 +602,8 @@ class TestFilter(unittest.TestCase):
             )),
         ], [queue], exit_time=3) as runner:
 
-            self.assertTrue(queue.get()['main'].data == {'count': 0})
-            self.assertTrue(queue.get()['main'].data == {'count': 2})
+            self.assertTrue(_strip_meta(queue.get()['main'].data) == {'count': 0})
+            self.assertTrue(_strip_meta(queue.get()['main'].data) == {'count': 2})
             self.assertFalse(queue.get())
             self.assertEqual(runner.wait(), [0, 0])
 
@@ -615,8 +619,8 @@ class TestFilter(unittest.TestCase):
             )),
         ], [queue], exit_time=3) as runner:
 
-            self.assertTrue(queue.get()['main'].data == {'count': 0})
-            self.assertTrue(queue.get()['main'].data == {'count': 2})
+            self.assertTrue(_strip_meta(queue.get()['main'].data) == {'count': 0})
+            self.assertTrue(_strip_meta(queue.get()['main'].data) == {'count': 2})
             self.assertFalse(queue.get())
             self.assertEqual(runner.wait(), [0, 0])
 

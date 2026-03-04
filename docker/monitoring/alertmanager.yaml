@@ -1,0 +1,41 @@
+global:
+  slack_api_url: "SLACK_WEBHOOK_PLACEHOLDER"
+
+route:
+  receiver: slack-default
+  group_by: [alertname, pipeline_instance_id]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: slack-critical
+
+receivers:
+  - name: slack-default
+    slack_configs:
+      - channel: "#pipeline-alerts"
+        title: "{{ .CommonLabels.alertname }}"
+        text: >-
+          *Pipeline:* {{ .CommonLabels.pipeline_instance_id }}
+          *Status:* {{ .CommonAnnotations.summary }}
+          {{ .CommonAnnotations.description }}
+
+  - name: slack-critical
+    slack_configs:
+      - channel: "#pipeline-alerts-critical"
+        title: "{{ .CommonLabels.alertname }}"
+        text: >-
+          *Pipeline:* {{ .CommonLabels.pipeline_instance_id }}
+          *Status:* {{ .CommonAnnotations.summary }}
+          {{ .CommonAnnotations.description }}
+          {{ if .CommonAnnotations.runbook_url }}<{{ .CommonAnnotations.runbook_url }}|View Runbook>{{ end }}
+
+inhibit_rules:
+  # If pipeline is DOWN, suppress camera/disk/GPU alerts for same instance
+  - source_match:
+      alertname: PipelineDown
+    target_match_re:
+      alertname: CameraDisconnected|DiskCritical|GPUUnavailable
+    equal: [pipeline_instance_id]

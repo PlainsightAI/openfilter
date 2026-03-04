@@ -9,7 +9,7 @@ from collections import defaultdict
 import threading
 import time
 from typing import Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import logging
 
@@ -63,7 +63,11 @@ def build_exporter(exporter_type: str, **config):
     
     elif exporter_type == "otlp":
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-        endpoint = config.get("endpoint", "http://localhost:4317")
+        endpoint = (
+            config.get("endpoint")
+            or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+            or "http://localhost:4317"
+        )
         return OTLPMetricExporter(endpoint=endpoint)
     else:
         from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
@@ -82,11 +86,12 @@ class OpenTelemetryClient:
         service_name: str = "openfilter",
         namespace: str = "telemetry",
         instance_id: Optional[str] = None,
+        filter_id: Optional[str] = None,
         setup_metrics: Optional[dict] = None,
         exporter_type: str = os.getenv("TELEMETRY_EXPORTER_TYPE", DEFAULT_EXPORTER_TYPE),
         export_interval_millis: int = None,
         exporter_config: Optional[dict] = None,
-        enabled: bool = None,  
+        enabled: bool = None,
         project_id: str | None = os.getenv("PROJECT_ID", None),
         lineage_emitter: Optional[Any] = None
     ):
@@ -116,6 +121,7 @@ class OpenTelemetryClient:
             self.enabled = DEFAULT_TELEMETRY_ENABLED
 
         self.instance_id = instance_id
+        self.filter_id = filter_id
         self.setup_metrics = setup_metrics or {}
         exporter_config = exporter_config or {}
 
@@ -126,15 +132,16 @@ class OpenTelemetryClient:
 
         if self.enabled:
             try:
-                resource = Resource.create(
-                    {
-                        SERVICE_NAME: service_name,
-                        SERVICE_NAMESPACE: namespace,
-                        SERVICE_INSTANCE_ID: self.instance_id,
-                        "cloud.account.id": project_id,
-                        "cloud.resource_type": "global",
-                    }
-                )
+                resource_attrs = {
+                    SERVICE_NAME: service_name,
+                    SERVICE_NAMESPACE: namespace,
+                    "cloud.resource_type": "global",
+                }
+                if self.instance_id is not None:
+                    resource_attrs[SERVICE_INSTANCE_ID] = self.instance_id
+                if project_id is not None:
+                    resource_attrs["cloud.account.id"] = project_id
+                resource = Resource.create(resource_attrs)
 
                 # Build the primary exporter for system metrics (to OpenTelemetry)
                 primary_exporter = build_exporter(exporter_type, **exporter_config)
@@ -225,9 +232,9 @@ class OpenTelemetryClient:
                     attributes = {
                         "aggregation": "avg",
                         "metric": base_name,
-                        "pipeline_id": self.setup_metrics.get("pipeline_id"),
-                        "device_id_name": self.setup_metrics.get("device_id_name"),
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "pipeline_id": self.setup_metrics.get("pipeline_id") or "",
+                        "device_id_name": self.setup_metrics.get("device_id_name") or "",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     observations.append(Observation(avg, attributes=attributes))
 
@@ -239,52 +246,79 @@ class OpenTelemetryClient:
             description="Aggregated metrics across all filters in the pipeline",
         )
 
+    # System health metrics that should be exported as openfilter_ prefixed gauges
+    _SYSTEM_HEALTH_METRICS = {
+        'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent',
+        'filter_time_in', 'filter_time_out', 'process_time_ms',
+        'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
+    }
+    # Metrics that should use observable gauges (current point-in-time values)
+    _GAUGE_METRICS = {
+        'fps', 'cpu', 'mem', 'lat_in', 'lat_out',
+        'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent',
+        'filter_time_in', 'filter_time_out', 'process_time_ms',
+        'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
+        'uptime_count',
+    }
+
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
         """Update metrics for a specific filter.
-        
+
         This method sends raw system metrics directly to OpenTelemetry without aggregation.
         The OTel SDK will handle aggregation and the OTelLineageExporter bridge will
         send aggregated metrics to OpenLineage.
-        
+
+        System health metrics (such as camera_connected, disk_usage_percent, gpu_accessible,
+        and related timing metrics) are exported with an ``openfilter_`` prefix so they are
+        distinguishable in Prometheus.
+
         Args:
             metrics_dict: Dictionary of metric names and values
             filter_name: Name of the filter
         """
         if not self.enabled:
             return
-        
+
         try:
             with self._lock:
                 for name, value in metrics_dict.items():
                     if not isinstance(value, (int, float)):
                         continue
 
-                    metric_key = f"{filter_name}_{name}"
-                    
-                    # Define attributes for this metric
+                    # System health metrics get the openfilter_ prefix
+                    if name in self._SYSTEM_HEALTH_METRICS:
+                        otel_name = f"openfilter_{name}"
+                    else:
+                        otel_name = f"{filter_name}_{name}"
+
+                    metric_key = otel_name
+
+                    # Define attributes — include pipeline_instance_id for Prometheus queries
                     attributes = {
                         **self.setup_metrics,
                         "filter_name": filter_name,
+                        "filter_id": self.filter_id or "",
                         "metric_name": name,
+                        "pipeline_instance_id": self.instance_id or "",
                     }
-                    
+
                     # Create instrument if it doesn't exist
                     if metric_key not in self._metrics:
                         # Store current value for observable gauges
                         self._values[metric_key] = value
-                        
-                        # Use counter for cumulative metrics, gauge for current values
-                        if name in ['fps', 'cpu', 'mem', 'lat_in', 'lat_out']:
+
+                        if name in self._GAUGE_METRICS:
                             # Use gauge for current values
-                            def make_gauge_callback(key):
+                            def make_gauge_callback(key, attrs):
+                                attrs = dict(attrs)
                                 return lambda options: [
-                                    Observation(self._values.get(key, 0.0), attributes=attributes)
+                                    Observation(self._values.get(key, 0.0), attributes=attrs)
                                 ]
-                            
+
                             instrument = self.meter.create_observable_gauge(
                                 name=metric_key,
-                                callbacks=[make_gauge_callback(metric_key)],
-                                description=f"Current value for {filter_name}.{name}",
+                                callbacks=[make_gauge_callback(metric_key, attributes)],
+                                description=f"Current value for {name}",
                             )
                             logging.info(f"\033[92m[System Metrics] Created gauge: {metric_key} = {value}\033[0m")
                         else:
@@ -294,9 +328,9 @@ class OpenTelemetryClient:
                                 description=f"Counter for {filter_name}.{name}",
                             )
                             logging.info(f"\033[92m[System Metrics] Created counter: {metric_key} = {value}\033[0m")
-                        
+
                         self._metrics[metric_key] = instrument
-                    
+
                     # Record the metric value directly
                     instrument = self._metrics[metric_key]
                     if hasattr(instrument, 'add'):
@@ -305,6 +339,6 @@ class OpenTelemetryClient:
                     else:
                         # Gauge - update the stored value for callback
                         self._values[metric_key] = value
-                        
+
         except Exception as e:
             logging.error(f"Error updating metrics: {e}") 

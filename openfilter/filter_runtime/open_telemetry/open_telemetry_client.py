@@ -3,7 +3,7 @@ from collections import defaultdict
 import threading
 import time
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import logging
 
@@ -142,9 +142,9 @@ class OpenTelemetryClient:
                     attributes = {
                         "aggregation": "avg",
                         "metric": base_name,
-                        "pipeline_id": self.setup_metrics.get("pipeline_id"),
-                        "device_id_name": self.setup_metrics.get("device_id_name"),
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "pipeline_id": self.setup_metrics.get("pipeline_id") or "",
+                        "device_id_name": self.setup_metrics.get("device_id_name") or "",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     observations.append(Observation(avg, attributes=attributes))
 
@@ -179,10 +179,11 @@ class OpenTelemetryClient:
                             **self.setup_metrics,
                             "filter_name": filter_name,
                             "metric_name": name,
-                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
 
                         def make_callback(key, attrs):
+                            attrs = dict(attrs)  # defensive copy to avoid closure capture issues
                             return lambda options: [
                                 Observation(self._values.get(key, 0.0), attributes=attrs)
                             ]
