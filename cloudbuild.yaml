@@ -1,5 +1,5 @@
 steps:
-  - name: 'python:3.12-slim'
+  - name: 'python:3.12-slim'  # single version; full matrix in .github/workflows/ci.yaml
     id: install
     entrypoint: bash
     args:
@@ -15,3 +15,5 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s
