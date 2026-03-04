@@ -258,6 +258,7 @@ class OpenTelemetryClient:
         'camera_connected', 'disk_usage_percent', 'ram_usage_percent', 'gpu_accessible', 'gpu_usage_percent',
         'filter_time_in', 'filter_time_out', 'process_time_ms',
         'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
+        'uptime_count',
     }
 
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
