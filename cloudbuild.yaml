@@ -1,0 +1,14 @@
+steps:
+  - name: 'python:3.12-slim'  # single version; full matrix in .github/workflows/ci.yaml
+    id: test
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install -e .[all,dev]
+        pytest -v --cov=tests -s tests
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s
