@@ -1,6 +1,31 @@
 # Changelog
 OpenFilter Library release notes
 
+## Unreleased
+
+### Added
+- **Wall-Clock Latency dashboard row**: 4 new Grafana panels showing real-world pipeline latency including ZMQ transport and queue delays
+  - Wall-Clock End-to-End Latency (frame age at sink vs total process time)
+  - Per-Filter Frame Age (lat_in) with staircase visualization for linear pipelines
+  - Per-Filter Departure Age (lat_out) for identifying per-filter contribution
+  - ZMQ + Queue Transit Overhead (transport cost isolated from process time)
+- **Cumulative Counters dashboard row**: 3 stat panels (Frames Processed, Megapixels Processed, System Uptime)
+- **Latency stat boxes** in Throughput row: End-to-End Latency, Max Frame Age, Avg Frame Age, Total process() Time with color thresholds
+- **Monitoring documentation** (`docs/monitoring.md`): comprehensive panel-by-panel guide with timing concept explanations and mermaid diagrams
+
+### Changed
+- **Dashboard queries**: replaced hardcoded per-filter-class metric targets with auto-discovery queries (`{__name__=~".+_fps"}`, etc.) — dashboard now works with any filter class without modification
+- **Pipeline FPS stat**: now shows source frame rate only (`filter_id=video_in`) instead of sum across all filters
+- **GPU Accessible stat**: changed from `min()` to `max()` so any available GPU is detected
+- **End-to-End Timing right panel**: renamed to "Total Processing Time (sum of process(), EMA)" to clarify it measures CPU/GPU work only
+- **Firing Alerts**: expanded to full-width panel
+- Renamed `docs/monitoring-demo.md` to `docs/monitoring.md` with Docusaurus frontmatter
+
+### Removed
+- Input/Output Latency panel (replaced by Wall-Clock Latency row)
+- Uptime timeseries panel (replaced by System Uptime stat in Cumulative Counters)
+- `docs/observability.md` and `docs/observability-summary.md` (consolidated into monitoring.md)
+
 ## v0.1.21 - 2026-02-25
 
 ### Added
