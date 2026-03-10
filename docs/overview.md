@@ -1270,5 +1270,5 @@ With default settings (`OPENLINEAGE__HEART__BEAT__INTERVAL=10`):
 
 This is normal behavior and ensures that metrics are properly aggregated before being sent to Oleander.
 
-For detailed documentation, see [Observability Guide](./observability.md).
+For detailed documentation, see the [Monitoring Guide](./monitoring.md).
 
