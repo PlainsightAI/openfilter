@@ -162,11 +162,11 @@ class ImageIn(Filter):
         loop:
             Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
             the images only once, otherwise an int value loops through the images that number of times. Set here to apply
-            to all sources or can be set individually per source. Global env var default IMAGE_IN_LOOP.
+            to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
 
         recursive:
             Only has meaning for file:// sources. If True then scan subdirectories recursively. Set here to apply
-            to all sources or can be set individually per source. Global env var default IMAGE_IN_RECURSIVE.
+            to all sources or can be set individually per source. Global env var default FILTER_RECURSIVE / IMAGE_IN_RECURSIVE.
 
         pattern:
             Glob or regex pattern to filter files (e.g. "*.jpg", ".*\\.png$"). Set here to apply to all sources
@@ -174,7 +174,7 @@ class ImageIn(Filter):
 
         poll_interval:
             Seconds between directory/bucket scans when idle. Set here to apply to all sources or can be set
-            individually per source. Global env var default IMAGE_IN_POLL_INTERVAL.
+            individually per source. Global env var default FILTER_POLL_INTERVAL / IMAGE_IN_POLL_INTERVAL.
         
         region:
             AWS region for S3 sources. Only applies to s3:// sources.
@@ -182,7 +182,7 @@ class ImageIn(Filter):
         maxfps:
             Restrict image display to this FPS. Controls how many images per second are displayed.
             For example, maxfps=1.0 means each image is displayed for 1 second.
-            Set here to apply to all sources or can be set individually per source. Global env var default IMAGE_IN_MAXFPS.
+            Set here to apply to all sources or can be set individually per source. Global env var default FILTER_MAXFPS / IMAGE_IN_MAXFPS.
             
         Example:
             openfilter run - ImageIn --sources s3://my-bucket/images!pattern=*.jpg - Webvis

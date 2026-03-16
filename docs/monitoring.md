@@ -1,4 +1,10 @@
-# Monitoring Demo
+---
+sidebar_label: Monitoring
+title: monitoring
+description: Pipeline monitoring with Prometheus, Grafana, and Alertmanager.
+---
+
+# Monitoring
 
 The monitoring demo is a full-stack observability example that runs four OpenFilter pipelines simultaneously and exposes all their metrics through a pre-built Grafana dashboard. It is the fastest way to see what OpenFilter produces in a real monitoring environment.
 
@@ -168,6 +174,127 @@ Same topology as P3 but both parallel branches use the same Python class (`SlowP
 
 **Bug 2 (wrong fan-in critical path, fixed):** Before the fix, the end-to-end latency for fan-in pipelines was computed from the timing chain of whichever branch arrived first at the merge filter, which could be the *faster* branch rather than the critical path. After the fix, `_inject_timings` selects the chain with the latest `time_out` value across all input topics. In P4, you can verify this: the total latency is approximately 80ms higher than P1/P3 (matching the slower branch's sleep) rather than 50ms higher.
 
+## How Time is Measured
+
+There are two fundamentally different timing systems in the dashboard. Understanding the difference is critical for reading the charts correctly.
+
+### process() time — stopwatch measurement
+
+`process()` time is measured with a simple stopwatch inside each filter: start a timer before `process()`, stop it after. This measures **only CPU/GPU work** — no queue waits, no ZMQ transport.
+
+```mermaid
+sequenceDiagram
+    participant Frame
+    participant FilterA as GrayscaleFilter
+    participant FilterB as TimingFilter
+
+    Note over FilterA: frame arrives from ZMQ
+    FilterA->>FilterA: t_start = now()
+    activate FilterA
+    FilterA->>FilterA: process(frame)
+    FilterA->>FilterA: t_end = now()
+    deactivate FilterA
+    Note over FilterA: process_time = t_end - t_start<br/>e.g. 3ms of pure computation
+
+    FilterA-->>FilterB: ZMQ send (transport delay not measured)
+
+    Note over FilterB: frame arrives from ZMQ
+    FilterB->>FilterB: t_start = now()
+    activate FilterB
+    FilterB->>FilterB: process(frame)
+    FilterB->>FilterB: t_end = now()
+    deactivate FilterB
+    Note over FilterB: process_time = t_end - t_start<br/>e.g. 1ms of pure computation
+```
+
+The `openfilter_process_time_ms` metric and the "Per-Filter Process Time" chart show this. The `openfilter_frame_total_time_ms` metric sums these across all filters on the frame's path (e.g., 3 + 1 = 4ms total process time).
+
+### Wall-clock latency (lat_in / lat_out) — frame age measurement
+
+Wall-clock latency measures **how old the frame is** at each point. The video source stamps `frame.meta.ts = now()` once when the frame is created. Every downstream filter computes `now() - frame.meta.ts` to get the frame's age. This is cumulative and includes **everything**: queue waits, ZMQ transport, and processing.
+
+```mermaid
+sequenceDiagram
+    participant Src as VideoIn (source)
+    participant A as GrayscaleFilter
+    participant B as ResizeFilter
+    participant Sink as Webvis (sink)
+
+    Src->>Src: frame.meta.ts = now()
+    Src->>Src: lat_out = now() - meta.ts = 2ms
+    Note over Src: Frame born, age = 2ms
+
+    Src-->>A: ZMQ transport (~5ms)
+
+    A->>A: lat_in = now() - meta.ts = 7ms
+    Note over A: Frame arrived, age = 7ms
+    activate A
+    A->>A: process() takes 3ms
+    deactivate A
+    A->>A: lat_out = now() - meta.ts = 10ms
+    Note over A: Frame leaving, age = 10ms
+
+    A-->>B: ZMQ transport (~3ms)
+
+    B->>B: lat_in = now() - meta.ts = 13ms
+    Note over B: Frame arrived, age = 13ms
+    activate B
+    B->>B: process() takes 2ms
+    deactivate B
+    B->>B: lat_out = now() - meta.ts = 15ms
+    Note over B: Frame leaving, age = 15ms
+
+    B-->>Sink: ZMQ transport (~2ms)
+
+    Sink->>Sink: lat_in = now() - meta.ts = 17ms
+    Note over Sink: End-to-end latency = 17ms
+```
+
+### Comparing the two: where does the time go?
+
+```mermaid
+graph LR
+    subgraph "End-to-End Wall-Clock: 17ms"
+        subgraph "process() total: 5ms"
+            A_proc["Grayscale process()<br/>3ms"]
+            B_proc["Resize process()<br/>2ms"]
+        end
+        subgraph "ZMQ + queue overhead: 12ms"
+            zmq1["Src→Grayscale transport<br/>5ms"]
+            zmq2["Grayscale→Resize transport<br/>3ms"]
+            zmq3["Resize→Sink transport<br/>2ms"]
+            src_overhead["Src overhead<br/>2ms"]
+        end
+    end
+```
+
+In this example:
+- **Total process() time** = 3 + 2 = **5ms** (what the "End-to-End Timing" row shows)
+- **End-to-end wall-clock** = **17ms** (what the "Wall-Clock Latency" row shows)
+- **ZMQ + queue overhead** = 17 - 5 = **12ms** (what the "ZMQ + Queue Transit Overhead" chart shows)
+
+### Fan-out: how wall-clock works with parallel branches
+
+In a fan-out topology, multiple branches process the same frame in parallel. Each branch accumulates its own wall-clock latency independently.
+
+```mermaid
+graph TD
+    Src["VideoIn<br/>lat_out = 2ms"] --> A["GrayscaleFilter<br/>lat_in=7ms, lat_out=10ms"]
+    Src --> B["ResizeFilter<br/>lat_in=7ms, lat_out=9ms"]
+    A --> TimA["TimingFilter_A<br/>lat_in=13ms, lat_out=14ms"]
+    B --> TimB["TimingFilter_B<br/>lat_in=12ms, lat_out=13ms"]
+    TimA --> Sink["Webvis<br/>lat_in=16ms"]
+    TimB --> Sink
+
+    style A fill:#ff9,stroke:#333
+    style TimA fill:#ff9,stroke:#333
+```
+
+Key observations:
+- **Grayscale branch** (slightly longer): 14ms at TimingFilter_A lat_out
+- **Resize branch** (fast): 13ms at TimingFilter_B lat_out
+- **Webvis** sees 16ms because it receives frames from whichever branch completes first
+
 ## The Grafana Dashboard
 
 Open http://localhost:3000 (login: admin / admin). The dashboard named **OpenFilter Pipeline Monitor** is auto-provisioned on startup.
@@ -190,25 +317,40 @@ Quick health summary at a glance. Intended to answer "is anything on fire right 
 | Panel | What it shows |
 |-------|--------------|
 | Active Pipelines | Count of distinct `pipeline_id` values currently exporting metrics. Drops to 0 if Prometheus has no recent data. |
-| Total FPS | Sum of frames/second across all filter instances in the selected pipelines. |
+| Pipeline FPS | Frames per second at the video source (`filter_id=video_in`). This is the actual pipeline throughput — all downstream filters should match this. |
 | Camera Connected | Minimum of `openfilter_camera_connected` across all selected filters. Shows CONNECTED (green) or DISCONNECTED (red). |
 | Disk Usage % | Current disk utilization. The test alert rule fires above 10%, the production rule above 90%. |
 | RAM Usage % | System-level RAM. |
-| GPU Accessible | Whether `nvidia-smi` returned a GPU. Always NO GPU on macOS; this is expected. |
+| GPU Accessible | Whether `nvidia-smi` returned a GPU (uses `max()` so any GPU across filters is detected). Always NO GPU on macOS; this is expected. |
+
+### Cumulative Counters Row
+
+Three stat panels showing lifetime totals at the sink (Webvis):
+
+| Panel | What it shows |
+|-------|--------------|
+| Frames Processed | Total frames processed at the Webvis sink since startup. |
+| Megapixels Processed | Total megapixels at the Webvis sink. |
+| System Uptime | How long the pipeline has been running (based on `uptime_count` metric). |
 
 ### Throughput Row
 
-Shows how many frames per second each filter is processing and whether any filter is falling behind.
+This row has the FPS timeseries on the left and 4 latency stat boxes on the right.
 
-**FPS per Filter:** One time-series line per filter instance, labeled with `FilterClass / filter_id (pipeline_id)`. In a healthy pipeline, all filters in the same pipeline run at the same FPS (5 fps in this demo). If one filter's line drops below the others, that filter is the bottleneck.
+**FPS per Filter:** One auto-discovered time-series line per filter instance (query: `{__name__=~".+_fps"}`). In a healthy pipeline, all filters in the same pipeline run at the same FPS (5 fps in this demo). If one filter's line drops below the others, that filter is the bottleneck.
 
-**Input / Output Latency:** `lat_in` is the time a frame spends waiting in the ZMQ queue before this filter picks it up. `lat_out` is the time to emit the frame downstream after processing. High `lat_in` at a particular filter means upstream is producing faster than that filter can consume.
+**Stat boxes (right half):**
 
-**Frames Processed and Megapixels:** Cumulative counters that should grow at the same slope across all filters in the same pipeline. A filter with a slower slope is not keeping up and is dropping or skipping frames.
+| Box | What it shows |
+|-----|---------------|
+| **End-to-End Latency** | Current wall-clock latency from camera to display (`webvis_lat_in`). Green < 500ms, yellow 500-1000ms, red > 1000ms. |
+| **Max Frame Age** | Worst-case frame age across all filters right now (`max(.+_lat_in)`). If much higher than E2E, a branch is lagging. |
+| **Avg Frame Age** | Mean frame age across all filters (`avg(.+_lat_in)`). Useful baseline. |
+| **Total process() Time** | Sum of CPU/GPU work on the critical path (`openfilter_frame_total_time_ms`). Compare with E2E to see how much is queue overhead. |
 
 ### End-to-End Timing Row
 
-This is the most important section for understanding pipeline performance and for verifying the Bug 1 and Bug 2 fixes.
+This section has two panels that measure `process()` time only (CPU/GPU work, not wall-clock).
 
 **Left panel: Per-Filter Process Time (ms, EMA)**
 
@@ -223,31 +365,98 @@ Notable values in the demo:
 
 When viewing P4 with the Pipeline filter, both `SlowPassthrough` instances appear as separate lines. This confirms the Bug 1 fix is working.
 
-**Right panel: End-to-End Latency (ms, EMA)**
+**Right panel: Total Processing Time (sum of process(), EMA)**
 
-The full wall-clock time a frame takes from entering the source filter to exiting the sink (`Webvis`). This is measured at the sink, not computed by summing the left panel values. It is larger than that sum because it also includes ZMQ transmission time between filters, queue wait time at each stage, and OS scheduling overhead.
+The sum of all `process()` durations along the critical path. This is CPU/GPU work time only — does NOT include queue or transport delays between filters.
 
-One series per pipeline, because each pipeline has one sink.
+- `total process()` = sum of all `process()` times. This is the minimum possible E2E latency (if there were zero queue delays).
+- `avg/stage` = mean per-filter time. Useful for capacity planning.
+- `std/stage` = variability. High std means inconsistent processing (e.g., model inference jitter).
 
-For fan-in pipelines (P3 and P4), this value reflects the critical path: the end-to-end time is determined by the slowest parallel branch, not the first to arrive. P4's total latency is approximately 280ms vs 200ms for P1/P2/P3, because its 80ms slow branch adds ~80ms to the base pipeline cost. This confirms the Bug 2 fix.
-
-`total` = full frame journey time. `avg/stage` = mean of per-filter `process()` times. `std/stage` = standard deviation across stages (higher means one stage dominates).
+For fan-in pipelines (P3 and P4), this value reflects the critical path: the time is determined by the slowest parallel branch, not the first to arrive. P4's total is approximately 280ms vs 200ms for P1/P2/P3, because its 80ms slow branch adds ~80ms to the base pipeline cost. This confirms the Bug 2 fix.
 
 **How to read both panels together:**
 
-Select a single pipeline from the dropdown. The left panel tells you which individual filter is slow. The right panel tells you the downstream impact on the user-visible latency, including all the overhead the left panel does not capture. The gap between "sum of left panel values" and "right panel total" is the ZMQ and scheduling overhead for that topology.
+Select a single pipeline from the dropdown. The left panel tells you which individual filter is slow. The right panel tells you the total CPU/GPU cost. To see the full user-visible latency including queue overhead, look at the Wall-Clock Latency row below.
+
+### Wall-Clock Latency Row
+
+This is the most important section for understanding real-world pipeline performance. Unlike the "End-to-End Timing" row which only measures `process()` CPU/GPU time, these panels include **all** delays: ZMQ transport, queue waits, and processing.
+
+**Key concept: `lat_in` vs `lat_out`**
+
+Every filter stamps two wall-clock measurements:
+- **`lat_in`** = `now() - frame.meta.ts` measured **before** `process()`. This is the frame's age when it arrives. Since `meta.ts` is set once at the source (VideoIn), `lat_in` is cumulative — it grows at each stage.
+- **`lat_out`** = `now() - frame.meta.ts` measured **after** `process()`. The gap `lat_out - lat_in` for a single filter = that filter's `process()` time.
+
+#### Wall-Clock End-to-End Latency (ms) — top left
+
+Three lines:
+- `Sink lat_in (end-to-end)` = frame age when it arrives at Webvis (the display sink). **This is the true user-facing latency.**
+- `Max filter lat_out (last stage before sink)` = worst-case departure age across all processing filters (excluding video_in and webvis).
+- `VideoIn lat_out (source baseline)` = frame age right after camera capture. Typically ~1-5ms.
+
+How to read it:
+- The vertical gap between VideoIn and Sink = total pipeline delay.
+- If `Max filter lat_out` is **much higher** than `Sink lat_in`, a slow branch exists that doesn't block the display.
+- If `Max filter lat_out` closely tracks `Sink lat_in`, the pipeline is well-balanced.
+
+#### Per-Filter Frame Age (lat_in, ms) — top right
+
+One auto-discovered line per filter showing frame age at arrival (query: `{__name__=~".+_lat_in"}`).
+
+How to read by topology:
+
+**Linear pipeline** (A -> B -> C -> D):
+```
+Lines form a staircase:
+  A = 10ms
+  B = 50ms   (A's process + ZMQ = 40ms)
+  C = 120ms  (B's process + ZMQ = 70ms)
+  D = 200ms  (C's process + ZMQ = 80ms)
+```
+
+**Fan-out pipeline** (A -> B, A -> C, B+C -> D):
+```
+B and C appear at similar heights (parallel), then D jumps higher.
+If B=300ms and C=800ms, C is the bottleneck branch — D waits for C.
+```
+
+**Diamond pipeline** (A -> B -> D, A -> C -> D):
+```
+Same as fan-out. The merge point (D) shows lat_in = max of its inputs.
+```
+
+#### Per-Filter Departure Age (lat_out, ms) — bottom left
+
+One auto-discovered line per filter showing frame age after `process()` (query: `{__name__=~".+_lat_out"}`).
+
+Compare with the lat_in chart:
+- Filter X: `lat_in=200ms`, `lat_out=275ms` -> it added **75ms** of `process()` time.
+- Filter Y: `lat_in=200ms`, `lat_out=201ms` -> basically a passthrough (**1ms**).
+- The highest line is the critical-path bottleneck.
+
+#### ZMQ + Queue Transit Overhead (ms) — bottom right
+
+Three lines:
+- `Total pipeline delay` = `webvis_lat_in - videoin_lat_out` (full E2E minus source baseline)
+- `Total process() time` = `openfilter_frame_total_time_ms` (sum of all `process()` on the frame's path)
+- `ZMQ + queue overhead` = delay minus process() time (pure transport/queue cost)
+
+How to read it:
+- If `ZMQ + queue overhead` is flat and small, transport is healthy and `process()` dominates latency.
+- If it trends upward, queues are backing up (filters can't consume fast enough).
+- **Important caveat:** This metric reflects the path frames actually take to reach the sink (Webvis), i.e., the **fastest path** through the pipeline. If a slow branch exists but doesn't block the sink, it won't appear here. To spot slow branches, compare `Max filter lat_out` in the End-to-End panel with `Sink lat_in`.
 
 ### Resource Usage Row
 
-**CPU % per Filter:** Per-process CPU including child threads. At 5 fps with simple transforms, all filters stay low. `VideoIn` is typically highest due to video decoding. A filter sustained near 100% CPU cannot keep up with the configured frame rate.
+**CPU % per Filter:** Per-process CPU including child threads (auto-discovered via `{__name__=~".+_cpu"}`). At 5 fps with simple transforms, all filters stay low. `VideoIn` is typically highest due to video decoding. A filter sustained near 100% CPU cannot keep up with the configured frame rate.
 
-**Memory (GB) per Filter:** RSS memory footprint. Healthy filters show a flat line after startup. Slow steady growth over time indicates a memory leak.
+**Memory (GB) per Filter:** RSS memory footprint (auto-discovered via `{__name__=~".+_mem"}`). Healthy filters show a flat line after startup. Slow steady growth over time indicates a memory leak.
 
 ### System Health Row
 
-**Uptime:** How long each filter has been running, computed as `frames_processed / fps`. All lines should grow at the same rate in a healthy pipeline. A reset to zero means the filter process restarted.
-
-**Firing Alerts:** A live table of Prometheus alerts currently in FIRING or PENDING state. In this demo, `GPUUnavailable` will always be firing on macOS (expected). `PipelineDown` fires if a pipeline stops sending metrics for 90 seconds.
+**Firing Alerts:** A full-width live table of Prometheus alerts currently in FIRING or PENDING state. In this demo, `GPUUnavailable` will always be firing on macOS (expected). `PipelineDown` fires if a pipeline stops sending metrics for 90 seconds.
 
 ## Metrics Reference
 
@@ -260,8 +469,8 @@ These are exported by every filter independently. Prometheus lowercases all metr
 | `{filtername}_fps` | Current frames per second |
 | `{filtername}_cpu` | Process CPU usage percent |
 | `{filtername}_mem` | Process memory in GB |
-| `{filtername}_lat_in` | Frame input queue wait time (ms) |
-| `{filtername}_lat_out` | Frame output emit time (ms) |
+| `{filtername}_lat_in` | Frame age at arrival (ms) — `now - frame.meta.ts` before `process()` |
+| `{filtername}_lat_out` | Frame age at departure (ms) — `now - frame.meta.ts` after `process()` |
 | `{filtername}_frame_count_total` | Cumulative frames processed |
 | `{filtername}_megapx_count_total` | Cumulative megapixels processed |
 | `{filtername}_uptime_count_total` | Frames processed since startup (divide by fps for elapsed seconds) |
@@ -412,7 +621,7 @@ class MyDetectionFilter(Filter):
 
 These metrics appear in Prometheus under `mydetectionfilter_detections_per_frame` and `mydetectionfilter_confidence`, with the same `filter_id`, `pipeline_id`, and `pipeline_instance_id` labels as all other metrics from that filter.
 
-See [observability.md](./observability.md) for the full MetricSpec reference, allowlist configuration, and OpenLineage integration.
+See the `MetricSpec` class in `openfilter/observability/` for the full reference on custom metrics, allowlist configuration, and OpenLineage integration.
 
 ## Makefile Reference
 
@@ -503,8 +712,8 @@ Each row covers one flush window. For each metric family, five statistics are co
 | `fps_avg / _std / _p95 / _ci_lower / _ci_upper` | Frames per second |
 | `cpu_avg / ...` | CPU usage percent (process + children) |
 | `mem_avg / ...` | Memory in GB (RSS, process + children) |
-| `lat_in_ms_avg / ...` | Input queue wait time in ms (EMA) |
-| `lat_out_ms_avg / ...` | Output emit time in ms (EMA) |
+| `lat_in_ms_avg / ...` | Frame age at arrival in ms (EMA) |
+| `lat_out_ms_avg / ...` | Frame age at departure in ms (EMA) |
 | `process_time_ms_avg / ...` | Per-filter `process()` duration in ms (EMA) |
 | `frame_total_time_ms_avg / ...` | Full end-to-end pipeline latency in ms (EMA) |
 | `frame_avg_time_ms_avg / ...` | Mean per-stage process time in ms (EMA) |

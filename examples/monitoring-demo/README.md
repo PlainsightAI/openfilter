@@ -167,51 +167,44 @@ All panels update immediately to show only that pipeline's data. The variable is
 
 #### Overview (top row)
 
-Quick health summary. Shows active pipeline count, total FPS across all filters, camera connection status, disk usage, RAM usage, and GPU accessibility. On macOS, GPU will always show NO GPU (expected, no nvidia-smi).
+Quick health summary. Shows active pipeline count, pipeline FPS (source frame rate from `video_in`), camera connection status, disk usage, RAM usage, and GPU accessibility. On macOS, GPU will always show NO GPU (expected, no nvidia-smi).
+
+#### Cumulative Counters
+
+Three stat panels: frames processed, megapixels processed, and system uptime — all measured at the Webvis sink.
 
 #### Throughput
 
-**FPS per Filter:** One line per filter instance. All filters in the same pipeline should hover at the same value (~5 fps in this demo). A line that drops below the others means that filter is the bottleneck.
+**FPS per Filter:** Auto-discovered — one line per filter instance. All filters in the same pipeline should hover at the same value (~5 fps in this demo). A line that drops below the others means that filter is the bottleneck.
 
-**Input / Output Latency:** `lat_in` is how long a frame waits in the ZMQ queue before this filter picks it up. `lat_out` is the time to emit the frame downstream. High `lat_in` means upstream is pushing faster than this filter can consume.
-
-**Frames Processed / Megapixels:** Cumulative counters that should increase at the same slope across all filters in the same pipeline. A filter with a slower slope is not keeping up with the frame rate.
+**Stat boxes:** End-to-End Latency (wall-clock from camera to display), Max Frame Age, Avg Frame Age, and Total process() Time. These give at-a-glance latency health with color thresholds (green < 500ms, yellow < 1000ms, red > 1000ms).
 
 #### End-to-End Timing
 
-This section has two panels that measure different things.
+**Left panel: Per-Filter Process Time (ms, EMA)** — time each filter's `process()` function took. Only CPU/GPU work, no queue waits. In P4, both `SlowPassthrough` instances appear as separate lines (Bug 1 fix).
 
-**Left panel: Per-Filter Process Time (ms, EMA)**
+**Right panel: Total Processing Time (sum of process(), EMA)** — sum of all `process()` durations on the critical path. This is the minimum possible E2E latency. For fan-in pipelines (P3, P4), reflects the critical path (Bug 2 fix).
 
-The time each filter's `process()` function took, smoothed with an exponential moving average. This is the time spent *inside* the filter doing actual work. It does not include time waiting in queues or ZMQ transmission.
+#### Wall-Clock Latency
 
-In P4, both `SlowPassthrough` instances (`p4_slow_b1` at ~50ms, `p4_slow_b2` at ~80ms) appear as separate lines. Without the Bug 1 fix they would have collapsed into a single line.
+Four panels showing real-world latency including all delays (ZMQ, queue, processing):
 
-**Right panel: End-to-End Latency (ms, EMA)**
+- **Wall-Clock E2E Latency:** Sink lat_in (true user-facing latency), max filter lat_out, VideoIn lat_out (baseline).
+- **Per-Filter Frame Age (lat_in):** Auto-discovered. Linear pipelines show a staircase pattern; fan-out shows parallel clusters.
+- **Per-Filter Departure Age (lat_out):** Compare with lat_in to see each filter's contribution.
+- **ZMQ + Queue Overhead:** Transport/queue cost = total delay minus process() time. Should be flat and small.
 
-The full wall-clock time a frame takes from entering the source filter to exiting the sink (Webvis). This is measured at the sink, not computed by adding up the left panel values.
-
-It is larger than the sum of per-filter process times because it also includes ZMQ transmission time between filters, queue wait times, and OS scheduling overhead. One series per pipeline (because there is one sink per pipeline).
-
-For fan-in topologies (P3 diamond, P4 diamond-same-class), the total time reflects the *critical path*: the end-to-end latency is determined by the slowest parallel branch, not the first one to arrive.
-
-`total` = full frame journey from source to sink.
-`avg/stage` = mean of all per-filter process times for that pipeline.
-`std/stage` = standard deviation across filter stages (higher means uneven stage times).
-
-**How to compare them:** Select a single pipeline from the Pipeline dropdown. The left panel shows which individual filter is the bottleneck. The right panel shows the resulting impact on end-to-end latency, including all transmission overhead.
+See [monitoring.md](../../docs/monitoring.md) for the full panel-by-panel guide.
 
 #### Resource Usage
 
-**CPU % per Filter:** Per-process CPU usage. In this demo (5 fps, simple transforms) it stays low. VideoIn is typically the highest due to video decoding. If a filter hits near 100%, it cannot keep up with the configured frame rate.
+**CPU % per Filter:** Auto-discovered per-process CPU usage. VideoIn is typically highest. Near 100% means a filter can't keep up.
 
-**Memory (GB) per Filter:** RSS memory footprint. Slow steady growth over time suggests a memory leak in that filter.
+**Memory (GB) per Filter:** Auto-discovered RSS memory footprint. Slow steady growth suggests a memory leak.
 
 #### System Health
 
-**Uptime:** How long each filter has been running, computed as `frames_processed / fps`. All lines should grow at the same rate. A reset to zero means the filter process restarted.
-
-**Firing Alerts:** Active Prometheus alerts. On macOS the `GPUUnavailable` alert will always be firing (no nvidia-smi available). `PipelineDown` fires if any pipeline stops sending metrics for 90 seconds.
+**Firing Alerts:** Full-width table of active Prometheus alerts. `GPUUnavailable` always fires on macOS. `PipelineDown` fires if a pipeline goes silent for 90 seconds.
 
 ## Metrics Reference
 
@@ -225,8 +218,8 @@ These are reported by every filter independently. All have labels: `filter_name`
 | `{filtername}_fps`                | Frames per second                                          |
 | `{filtername}_cpu`                | CPU usage percent                                          |
 | `{filtername}_mem`                | Memory in GB                                               |
-| `{filtername}_lat_in`             | Input queue wait time (ms)                                 |
-| `{filtername}_lat_out`            | Output emit time (ms)                                      |
+| `{filtername}_lat_in`             | Frame age at arrival (ms) — `now - frame.meta.ts`          |
+| `{filtername}_lat_out`            | Frame age at departure (ms) — `now - frame.meta.ts`        |
 | `{filtername}_frame_count_total`  | Cumulative frames processed                                |
 | `{filtername}_megapx_count_total` | Cumulative megapixels processed                            |
 | `{filtername}_uptime_count_total` | Frames processed since startup (divide by fps for seconds) |
@@ -396,8 +389,8 @@ Each row represents one 60-second flush window. For each metric family five stat
 | `fps_avg / _std / _p95 / _ci_lower / _ci_upper` | Frames per second                              |
 | `cpu_avg / ...`                                 | CPU usage percent (process + children)         |
 | `mem_avg / ...`                                 | Memory in GB (RSS, process + children)         |
-| `lat_in_ms_avg / ...`                           | Input queue wait time in ms (EMA)              |
-| `lat_out_ms_avg / ...`                          | Output emit time in ms (EMA)                   |
+| `lat_in_ms_avg / ...`                           | Frame age at arrival in ms (EMA)               |
+| `lat_out_ms_avg / ...`                          | Frame age at departure in ms (EMA)             |
 | `process_time_ms_avg / ...`                     | Per-filter `process()` duration in ms (EMA)    |
 | `frame_total_time_ms_avg / ...`                 | Full end-to-end pipeline latency in ms (EMA)   |
 | `frame_avg_time_ms_avg / ...`                   | Mean per-stage process time in ms (EMA)        |

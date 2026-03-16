@@ -221,6 +221,20 @@ class TestVideoOutEnvVars(unittest.TestCase):
             {'preset': 'fast', 'crf': 23}
         )
 
+    def test_filter_params_preserves_case(self):
+        """JSON string values must preserve case (e.g., codec preset names)."""
+        self.assertEqual(
+            self._get('VIDEO_OUT_PARAMS', {'FILTER_PARAMS': '{"preset": "UltraFast", "profile": "High"}'}),
+            {'preset': 'UltraFast', 'profile': 'High'}
+        )
+
+    def test_legacy_params_preserves_case(self):
+        """Legacy VIDEO_OUT_PARAMS must also preserve case."""
+        self.assertEqual(
+            self._get('VIDEO_OUT_PARAMS', {'VIDEO_OUT_PARAMS': '{"vf": "scale=1280:720,Hflip"}'}),
+            {'vf': 'scale=1280:720,Hflip'}
+        )
+
     # --- Legacy VIDEO_OUT_* still works ---
 
     def test_legacy_bgr(self):

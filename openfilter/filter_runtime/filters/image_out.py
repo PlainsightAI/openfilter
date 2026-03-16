@@ -210,7 +210,7 @@ class ImageOut(Filter):
 
         bgr:
             True means images are in BGR format, False means RGB. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_BGR.
+            can be set individually per output. Global env var default FILTER_BGR / IMAGE_OUT_BGR.
 
         format:
             Image format override. If None, determined from file extension. Set here to apply to all outputs or
@@ -218,11 +218,11 @@ class ImageOut(Filter):
 
         quality:
             JPEG quality (1-100). Only used for JPEG format. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_QUALITY.
+            can be set individually per output. Global env var default FILTER_QUALITY / IMAGE_OUT_QUALITY.
 
         compression:
             PNG compression level (0-9). Only used for PNG format. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_COMPRESSION.
+            can be set individually per output. Global env var default FILTER_COMPRESSION / IMAGE_OUT_COMPRESSION.
 
     Environment variables (FILTER_* or legacy IMAGE_OUT_* prefix, legacy takes precedence):
         FILTER_BGR          / IMAGE_OUT_BGR

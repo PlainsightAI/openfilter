@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": {
     "from": "now-15m",
@@ -128,8 +128,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Total FPS",
-      "description": "Sum of frames per second across all filters in the selected pipelines.",
+      "title": "Pipeline FPS",
+      "description": "Frames per second at the video source \u2014 the actual pipeline throughput.",
       "gridPos": {
         "x": 4,
         "y": 1,
@@ -182,8 +182,8 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "sum(videoin_fps{pipeline_id=~\"$pipeline_id\"}) + sum(grayscalefilter_fps{pipeline_id=~\"$pipeline_id\"} or vector(0)) + sum(resizefilter_fps{pipeline_id=~\"$pipeline_id\"} or vector(0)) + sum(timingfilter_fps{pipeline_id=~\"$pipeline_id\"} or vector(0))",
-          "legendFormat": "Total FPS",
+          "expr": "sum({__name__=~\".+_fps\", pipeline_id=~\"$pipeline_id\", filter_id=~\".*video_in.*\"})",
+          "legendFormat": "Pipeline FPS",
           "instant": true
         }
       ]
@@ -462,8 +462,186 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "min(openfilter_gpu_accessible{pipeline_id=~\"$pipeline_id\"})",
+          "expr": "max(openfilter_gpu_accessible{pipeline_id=~\"$pipeline_id\"})",
           "legendFormat": "GPU",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Cumulative Counters",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Frames Processed",
+      "description": "Total frames processed at the sink (Webvis) since startup.",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "sum({__name__=~\".+_frame_count_total\", pipeline_id=~\"$pipeline_id\", filter_id=~\".*webvis.*\"})",
+          "legendFormat": "Frames",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Megapixels Processed",
+      "description": "Total megapixels processed at the sink (Webvis) since startup.",
+      "gridPos": {
+        "x": 8,
+        "y": 6,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "sum({__name__=~\".+_megapx_count_total\", pipeline_id=~\"$pipeline_id\", filter_id=~\".*webvis.*\"})",
+          "legendFormat": "MPx",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "type": "stat",
+      "title": "System Uptime",
+      "description": "How long filters have been running (based on uptime_count metric). Shows the maximum uptime across all filters.",
+      "gridPos": {
+        "x": 16,
+        "y": 6,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "max({__name__=~\".+_uptime_count\", pipeline_id=~\"$pipeline_id\", filter_id=~\".*webvis.*\"})",
+          "legendFormat": "Uptime",
           "instant": true
         }
       ]
@@ -475,7 +653,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 5,
+        "y": 12,
         "w": 24,
         "h": 1
       }
@@ -487,7 +665,7 @@
       "description": "Frames per second at each filter stage. A drop means the filter is a bottleneck or upstream is stalling. All filters in the same pipeline should run at the same FPS.",
       "gridPos": {
         "x": 0,
-        "y": 6,
+        "y": 13,
         "w": 12,
         "h": 8
       },
@@ -524,68 +702,20 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "videoin_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "VideoIn / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "grayscalefilter_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_fps{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
+          "expr": "{__name__=~\".+_fps\", pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "{{filter_name}} / {{filter_id}}"
         }
       ]
     },
     {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Input / Output Latency (ms)",
-      "description": "lat_in = time between a frame being produced upstream and this filter picking it up (queue wait). lat_out = time to emit downstream. High lat_in means this filter cannot keep up.",
+      "id": 54,
+      "type": "stat",
+      "title": "End-to-End Latency",
+      "description": "True wall-clock latency from source to sink (Webvis lat_in).",
       "gridPos": {
         "x": 12,
-        "y": 6,
-        "w": 12,
+        "y": 13,
+        "w": 3,
         "h": 8
       },
       "datasource": {
@@ -593,25 +723,41 @@
         "uid": "openfilter_prometheus"
       },
       "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        },
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "reduceOptions": {
           "calcs": [
-            "lastNotNull",
-            "mean"
+            "lastNotNull"
           ]
-        }
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
+        "justifyMode": "center"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
           }
         }
       },
@@ -621,93 +767,63 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "grayscalefilter_lat_in{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale lat_in / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_lat_in{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize lat_in / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_lat_in{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats lat_in / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_lat_in{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing lat_in / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_lat_in{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough lat_in / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "grayscalefilter_lat_out{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale lat_out / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_lat_out{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize lat_out / {{filter_id}} ({{pipeline_id}})"
+          "expr": "max(webvis_lat_in{pipeline_id=~\"$pipeline_id\"})",
+          "legendFormat": "End-to-End",
+          "instant": true
         }
       ]
     },
     {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Frames Processed (cumulative counter)",
-      "description": "Total frames processed by each filter since startup. All filters in the same pipeline should increase at the same rate. A slower slope means that filter is dropping or skipping frames.",
+      "id": 55,
+      "type": "stat",
+      "title": "Max Frame Age",
+      "description": "Worst-case frame age across all filters (highest lat_in).",
       "gridPos": {
-        "x": 0,
-        "y": 14,
-        "w": 12,
-        "h": 7
+        "x": 15,
+        "y": 13,
+        "w": 3,
+        "h": 8
       },
       "datasource": {
         "type": "prometheus",
         "uid": "openfilter_prometheus"
       },
       "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        },
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ]
-        }
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
+        "justifyMode": "center"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 5
+          "unit": "ms",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
           }
         }
       },
@@ -717,85 +833,63 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "grayscalefilter_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_frame_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
+          "expr": "max({__name__=~\".+_lat_in\", pipeline_id=~\"$pipeline_id\"})",
+          "legendFormat": "Max Frame Age",
+          "instant": true
         }
       ]
     },
     {
-      "id": 14,
-      "type": "timeseries",
-      "title": "Megapixels Processed (cumulative)",
-      "description": "Total megapixels processed. Higher resolution sources produce steeper slopes. Useful for estimating GPU/CPU load per pixel.",
+      "id": 56,
+      "type": "stat",
+      "title": "Avg Frame Age",
+      "description": "Mean frame age across all filters (average lat_in).",
       "gridPos": {
-        "x": 12,
-        "y": 14,
-        "w": 12,
-        "h": 7
+        "x": 18,
+        "y": 13,
+        "w": 3,
+        "h": 8
       },
       "datasource": {
         "type": "prometheus",
         "uid": "openfilter_prometheus"
       },
       "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        },
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ]
-        }
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
+        "justifyMode": "center"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 5
+          "unit": "ms",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
           }
         }
       },
@@ -805,48 +899,75 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "grayscalefilter_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
+          "expr": "avg({__name__=~\".+_lat_in\", pipeline_id=~\"$pipeline_id\"})",
+          "legendFormat": "Avg Frame Age",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 57,
+      "type": "stat",
+      "title": "Total process() Time",
+      "description": "Sum of all process() durations on the critical path. CPU/GPU work only, no queue delays.",
+      "gridPos": {
+        "x": 21,
+        "y": 13,
+        "w": 3,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
         },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "orientation": "vertical",
+        "justifyMode": "center"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 500
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "resizefilter_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_megapx_count_total{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
+          "expr": "max(openfilter_frame_total_time_ms{pipeline_id=~\"$pipeline_id\"})",
+          "legendFormat": "Total process()",
+          "instant": true
         }
       ]
     },
@@ -866,7 +987,7 @@
       "id": 21,
       "type": "timeseries",
       "title": "Per-Filter Process Time (ms, EMA)",
-      "description": "How long each filter's process() call took, smoothed with EMA (alpha=0.05). The tallest line is your bottleneck. In P4 (diamond-same-class), the two SlowPassthrough branches appear as separate lines with distinct filter_ids - that is the Bug 1 fix.",
+      "description": "How long each filter's process() call took, smoothed with EMA (alpha=0.05). The tallest line is your bottleneck.",
       "gridPos": {
         "x": 0,
         "y": 22,
@@ -915,8 +1036,8 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "End-to-End Latency (ms, EMA)",
-      "description": "Measured at the sink (last filter, webvis). total_time = full wall-clock frame journey from source to sink \u2014 NOT the sum of the per-filter process() times on the left. It is larger because it also includes ZMQ transmission time between filters, queue wait times, and scheduling overhead. One series per pipeline (each pipeline has one sink). For fan-in pipelines (P3 diamond, P4 diamond-same-class), total_time reflects the critical path (slowest branch) \u2014 that is the Bug 2 fix. avg_time = average per-stage process() time. std_time = jitter between stages.",
+      "title": "Total Processing Time (sum of process(), EMA)",
+      "description": "Sum of all process() durations along the critical path. This is CPU/GPU work time only \u2014 does NOT include queue or transport delays between filters.",
       "gridPos": {
         "x": 12,
         "y": 22,
@@ -958,7 +1079,7 @@
             "uid": "openfilter_prometheus"
           },
           "expr": "openfilter_frame_total_time_ms{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "total  {{filter_id}} ({{pipeline_id}})"
+          "legendFormat": "total process()  {{filter_id}} ({{pipeline_id}})"
         },
         {
           "datasource": {
@@ -979,13 +1100,263 @@
       ]
     },
     {
+      "id": 50,
+      "type": "row",
+      "title": "Wall-Clock Latency",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Wall-Clock End-to-End Latency (ms)",
+      "description": "Wall-clock frame age vs total process() time. Note: wall-clock (lat_in/lat_out) measures time since frame.meta.ts, which is stamped AFTER VideoIn decodes the frame. So wall-clock will be smaller than total process() time because it excludes VideoIn's decode cost (~200ms). The gap shows how much of total process time is VideoIn decode vs downstream pipeline delay.",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "openfilter_frame_total_time_ms{pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "Total process() time (incl. VideoIn decode)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "webvis_lat_in{pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "Sink lat_in (wall-clock, excl. VideoIn decode)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "max({__name__=~\".+_lat_out\", pipeline_id=~\"$pipeline_id\", filter_id!~\".*video_in.*\", filter_id!~\".*webvis.*\"})",
+          "legendFormat": "Max filter lat_out"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "{__name__=~\".+_lat_out\", pipeline_id=~\"$pipeline_id\", filter_id=~\".*video_in.*\"}",
+          "legendFormat": "VideoIn lat_out (source baseline)"
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "Per-Filter Frame Age (lat_in, ms)",
+      "description": "Frame age at arrival for every filter, auto-discovered. Linear pipelines show a staircase (each step = upstream process + ZMQ transit). Fan-out pipelines show parallel clusters. The spread between lines reveals cumulative delay.",
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "{__name__=~\".+_lat_in\", pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "{{filter_name}} / {{filter_id}}"
+        }
+      ]
+    },
+    {
+      "id": 58,
+      "type": "timeseries",
+      "title": "Per-Filter Departure Age (lat_out, ms)",
+      "description": "Frame age after process() for every filter, auto-discovered. Compare with the lat_in chart: the gap between a filter's lat_in and lat_out = its process() time in wall-clock terms. The highest line is the critical path bottleneck.",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "{__name__=~\".+_lat_out\", pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "{{filter_name}} / {{filter_id}}"
+        }
+      ]
+    },
+    {
+      "id": 59,
+      "type": "timeseries",
+      "title": "ZMQ + Queue Transit Overhead (ms)",
+      "description": "Estimated time spent in ZMQ transport and queue waits (not in process()). Computed as: total pipeline delay (webvis_lat_in - videoin_lat_out) minus sum of process() times on the frame's path (openfilter_frame_total_time_ms). If this grows, queues are backing up.",
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "openfilter_prometheus"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "max"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "webvis_lat_in{pipeline_id=~\"$pipeline_id\"} - videoin_lat_out{pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "Total pipeline delay"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "openfilter_frame_total_time_ms{pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "Total process() time"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openfilter_prometheus"
+          },
+          "expr": "(webvis_lat_in{pipeline_id=~\"$pipeline_id\"} - videoin_lat_out{pipeline_id=~\"$pipeline_id\"}) - openfilter_frame_total_time_ms{pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "ZMQ + queue overhead"
+        }
+      ]
+    },
+    {
       "id": 30,
       "type": "row",
       "title": "Resource Usage",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 47,
         "w": 24,
         "h": 1
       }
@@ -997,7 +1368,7 @@
       "description": "Per-process CPU usage including child threads. Sustained near 100% on any filter means it cannot keep up with the frame rate.",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 48,
         "w": 12,
         "h": 7
       },
@@ -1036,56 +1407,8 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "videoin_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "VideoIn / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "grayscalefilter_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_cpu{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
+          "expr": "{__name__=~\".+_cpu\", pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "{{filter_name}} / {{filter_id}}"
         }
       ]
     },
@@ -1096,7 +1419,7 @@
       "description": "RSS memory footprint of each filter process. Slow steady growth over time suggests a memory leak.",
       "gridPos": {
         "x": 12,
-        "y": 31,
+        "y": 48,
         "w": 12,
         "h": 7
       },
@@ -1134,56 +1457,8 @@
             "type": "prometheus",
             "uid": "openfilter_prometheus"
           },
-          "expr": "videoin_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "VideoIn / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "grayscalefilter_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_mem{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
+          "expr": "{__name__=~\".+_mem\", pipeline_id=~\"$pipeline_id\"}",
+          "legendFormat": "{{filter_name}} / {{filter_id}}"
         }
       ]
     },
@@ -1194,106 +1469,10 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 55,
         "w": 24,
         "h": 1
       }
-    },
-    {
-      "id": 41,
-      "type": "timeseries",
-      "title": "Uptime",
-      "description": "How long each filter has been running. Computed as uptime_count (frames processed) divided by fps, giving elapsed seconds. All lines should grow at the same rate. A reset to zero means the filter process restarted.",
-      "gridPos": {
-        "x": 0,
-        "y": 39,
-        "w": 12,
-        "h": 6
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "openfilter_prometheus"
-      },
-      "options": {
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        },
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 5
-          }
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "videoin_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "VideoIn / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "grayscalefilter_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Grayscale / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "resizefilter_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Resize / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "statsfilter_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Stats / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "timingfilter_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Timing / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "slowpassthrough_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "SlowPassthrough / {{filter_id}} ({{pipeline_id}})"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openfilter_prometheus"
-          },
-          "expr": "webvis_uptime_count{pipeline_id=~\"$pipeline_id\"}",
-          "legendFormat": "Webvis / {{filter_id}} ({{pipeline_id}})"
-        }
-      ]
     },
     {
       "id": 42,
@@ -1301,9 +1480,9 @@
       "title": "Firing Alerts",
       "description": "Prometheus alerts currently in FIRING or PENDING state. GPUUnavailable always fires on macOS (no nvidia-smi). PipelineDown fires if any pipeline goes silent for 90s.",
       "gridPos": {
-        "x": 12,
-        "y": 39,
-        "w": 12,
+        "x": 0,
+        "y": 56,
+        "w": 24,
         "h": 6
       },
       "datasource": {
