@@ -45,7 +45,7 @@ def _eval_env_var(module_path, var_name, env_overrides):
     env.update(env_overrides)
     result = subprocess.run(
         [PYTHON, '-c', code],
-        capture_output=True, text=True, env=env, cwd=PROJECT_ROOT
+        capture_output=True, text=True, env=env, cwd=PROJECT_ROOT, timeout=30
     )
     if result.returncode != 0:
         raise RuntimeError(f"subprocess failed: {result.stderr}")
