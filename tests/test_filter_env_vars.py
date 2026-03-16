@@ -27,23 +27,6 @@ ALL_FILTER_ENV_VARS = [
     'IMAGE_OUT_BGR', 'IMAGE_OUT_QUALITY', 'IMAGE_OUT_COMPRESSION',
 ]
 
-# Module-level constant names per filter module
-_FILTER_CONSTANTS = {
-    'openfilter.filter_runtime.filters.video_in': [
-        'VIDEO_IN_BGR', 'VIDEO_IN_SYNC', 'VIDEO_IN_LOOP', 'VIDEO_IN_MAXFPS',
-        'VIDEO_IN_MAXSIZE', 'VIDEO_IN_RESIZE',
-    ],
-    'openfilter.filter_runtime.filters.video_out': [
-        'VIDEO_OUT_BGR', 'VIDEO_OUT_FPS', 'VIDEO_OUT_SEGTIME', 'VIDEO_OUT_PARAMS',
-    ],
-    'openfilter.filter_runtime.filters.image_in': [
-        'IMAGE_IN_POLL_INTERVAL', 'IMAGE_IN_LOOP', 'IMAGE_IN_RECURSIVE', 'IMAGE_IN_MAXFPS',
-    ],
-    'openfilter.filter_runtime.filters.image_out': [
-        'IMAGE_OUT_BGR', 'IMAGE_OUT_QUALITY', 'IMAGE_OUT_COMPRESSION',
-    ],
-}
-
 
 def _eval_with_env(mod_path, var_name, env_overrides):
     """Reload module with patched env, read the constant, then restore all original attributes.

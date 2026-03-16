@@ -620,7 +620,7 @@ class VideoIn(Filter):
             True means images in BGR format, False means RGB. Doesn't really affect anythong other than procesing speed
             since images should always be converted to the needed format. Don't touch this unless you have an explicit
             need and understanding of why you need to change it. Set here to apply to all sources or can be set
-            infividually per source. Global env var default FILTER_BGR / VIDEO_IN_BGR.
+            individually per source. Global env var default FILTER_BGR / VIDEO_IN_BGR.
 
         sync:
             Only has meaning for file:// sources. If True then frames will be delivered one by one without skipping or
