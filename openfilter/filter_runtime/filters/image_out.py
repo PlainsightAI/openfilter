@@ -14,9 +14,9 @@ __all__ = ['ImageWriter']
 logger = logging.getLogger(__name__)
 
 # Environment variables
-IMAGE_OUT_BGR = bool(json_getval((os.getenv('IMAGE_OUT_BGR') or 'true').lower()))
-IMAGE_OUT_QUALITY = int(os.getenv('IMAGE_OUT_QUALITY') or '95')  # JPEG quality 1-100
-IMAGE_OUT_COMPRESSION = int(os.getenv('IMAGE_OUT_COMPRESSION') or '6')  # PNG compression 0-9
+IMAGE_OUT_BGR = bool(json_getval((os.getenv('IMAGE_OUT_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
+IMAGE_OUT_QUALITY = int(os.getenv('IMAGE_OUT_QUALITY') or os.getenv('FILTER_QUALITY') or '95')  # JPEG quality 1-100
+IMAGE_OUT_COMPRESSION = int(os.getenv('IMAGE_OUT_COMPRESSION') or os.getenv('FILTER_COMPRESSION') or '6')  # PNG compression 0-9
 
 # File extension patterns
 re_file = re.compile(r'^file://')
@@ -210,7 +210,7 @@ class ImageOut(Filter):
 
         bgr:
             True means images are in BGR format, False means RGB. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_BGR.
+            can be set individually per output. Global env var default FILTER_BGR / IMAGE_OUT_BGR.
 
         format:
             Image format override. If None, determined from file extension. Set here to apply to all outputs or
@@ -218,16 +218,16 @@ class ImageOut(Filter):
 
         quality:
             JPEG quality (1-100). Only used for JPEG format. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_QUALITY.
+            can be set individually per output. Global env var default FILTER_QUALITY / IMAGE_OUT_QUALITY.
 
         compression:
             PNG compression level (0-9). Only used for PNG format. Set here to apply to all outputs or
-            can be set individually per output. Global env var default IMAGE_OUT_COMPRESSION.
+            can be set individually per output. Global env var default FILTER_COMPRESSION / IMAGE_OUT_COMPRESSION.
 
-    Environment variables:
-        IMAGE_OUT_BGR
-        IMAGE_OUT_QUALITY
-        IMAGE_OUT_COMPRESSION
+    Environment variables (FILTER_* or legacy IMAGE_OUT_* prefix, legacy takes precedence):
+        FILTER_BGR          / IMAGE_OUT_BGR
+        FILTER_QUALITY      / IMAGE_OUT_QUALITY
+        FILTER_COMPRESSION  / IMAGE_OUT_COMPRESSION
     """
 
     FILTER_TYPE = 'Output'

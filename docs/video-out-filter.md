@@ -67,10 +67,10 @@ Filter.run_multi([
 You can configure via environment variables:
 
 ```bash
-export VIDEO_OUT_BGR="true"           # BGR format (default: true)
-export VIDEO_OUT_FPS="30"             # Default FPS (default: 15)
-export VIDEO_OUT_SEGTIME="1"          # Default segment time in minutes
-export VIDEO_OUT_PARAMS='{"crf": 23}' # Default encoding parameters
+export FILTER_BGR="true"           # BGR format (default: true)
+export FILTER_FPS="30"             # Default FPS (default: 15)
+export FILTER_SEGTIME="1"          # Default segment time in minutes
+export FILTER_PARAMS='{"crf": 23}' # Default encoding parameters
 ```
 
 ## Output Destinations
@@ -758,7 +758,7 @@ class VideoOut(Filter):
 ```
 
 ### Environment Variables
-- `VIDEO_OUT_BGR`: BGR format (default: true)
-- `VIDEO_OUT_FPS`: Default FPS (default: 15)
-- `VIDEO_OUT_SEGTIME`: Default segment time in minutes
-- `VIDEO_OUT_PARAMS`: Default encoding parameters as JSON string
+- `FILTER_BGR`: BGR format (default: true)
+- `FILTER_FPS`: Default FPS (default: 15)
+- `FILTER_SEGTIME`: Default segment time in minutes
+- `FILTER_PARAMS`: Default encoding parameters as JSON string

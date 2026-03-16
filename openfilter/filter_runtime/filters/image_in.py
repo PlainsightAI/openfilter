@@ -31,10 +31,10 @@ __all__ = ['ImageInConfig', 'ImageIn']
 logger = logging.getLogger(__name__)
 
 # Environment variable defaults (following VideoIn pattern)
-IMAGE_IN_POLL_INTERVAL = float(json_getval((os.getenv('IMAGE_IN_POLL_INTERVAL') or '5.0')))
-IMAGE_IN_LOOP = json_getval((os.getenv('IMAGE_IN_LOOP') or 'false').lower())
-IMAGE_IN_RECURSIVE = bool(json_getval((os.getenv('IMAGE_IN_RECURSIVE') or 'false').lower()))
-IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or 'null').lower())) is None else float(_)
+IMAGE_IN_POLL_INTERVAL = float(json_getval((os.getenv('IMAGE_IN_POLL_INTERVAL') or os.getenv('FILTER_POLL_INTERVAL') or '5.0')))
+IMAGE_IN_LOOP = json_getval((os.getenv('IMAGE_IN_LOOP') or os.getenv('FILTER_LOOP') or 'false').lower())
+IMAGE_IN_RECURSIVE = bool(json_getval((os.getenv('IMAGE_IN_RECURSIVE') or os.getenv('FILTER_RECURSIVE') or 'false').lower()))
+IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif', 'webp'}
@@ -162,11 +162,11 @@ class ImageIn(Filter):
         loop:
             Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
             the images only once, otherwise an int value loops through the images that number of times. Set here to apply
-            to all sources or can be set individually per source. Global env var default IMAGE_IN_LOOP.
+            to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
 
         recursive:
             Only has meaning for file:// sources. If True then scan subdirectories recursively. Set here to apply
-            to all sources or can be set individually per source. Global env var default IMAGE_IN_RECURSIVE.
+            to all sources or can be set individually per source. Global env var default FILTER_RECURSIVE / IMAGE_IN_RECURSIVE.
 
         pattern:
             Glob or regex pattern to filter files (e.g. "*.jpg", ".*\\.png$"). Set here to apply to all sources
@@ -174,7 +174,7 @@ class ImageIn(Filter):
 
         poll_interval:
             Seconds between directory/bucket scans when idle. Set here to apply to all sources or can be set
-            individually per source. Global env var default IMAGE_IN_POLL_INTERVAL.
+            individually per source. Global env var default FILTER_POLL_INTERVAL / IMAGE_IN_POLL_INTERVAL.
         
         region:
             AWS region for S3 sources. Only applies to s3:// sources.
@@ -182,7 +182,7 @@ class ImageIn(Filter):
         maxfps:
             Restrict image display to this FPS. Controls how many images per second are displayed.
             For example, maxfps=1.0 means each image is displayed for 1 second.
-            Set here to apply to all sources or can be set individually per source. Global env var default IMAGE_IN_MAXFPS.
+            Set here to apply to all sources or can be set individually per source. Global env var default FILTER_MAXFPS / IMAGE_IN_MAXFPS.
             
         Example:
             openfilter run - ImageIn --sources s3://my-bucket/images!pattern=*.jpg - Webvis
@@ -194,11 +194,11 @@ class ImageIn(Filter):
             openfilter run - ImageIn --sources file:///path/to/images!recursive!pattern=*.jpg!loop=3!poll_interval=10!region=us-west-2 - Webvis
             openfilter run - ImageIn --sources file:///path/to/images!maxfps=1.0 - Webvis
 
-    Environment variables:
-        IMAGE_IN_LOOP
-        IMAGE_IN_RECURSIVE
-        IMAGE_IN_POLL_INTERVAL
-        IMAGE_IN_MAXFPS
+    Environment variables (FILTER_* or legacy IMAGE_IN_* prefix, legacy takes precedence):
+        FILTER_LOOP           / IMAGE_IN_LOOP
+        FILTER_RECURSIVE      / IMAGE_IN_RECURSIVE
+        FILTER_POLL_INTERVAL  / IMAGE_IN_POLL_INTERVAL
+        FILTER_MAXFPS         / IMAGE_IN_MAXFPS
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:

@@ -3,7 +3,18 @@ OpenFilter Library release notes
 
 ## Unreleased
 
+## v0.1.22 - 2026-03-16
+
 ### Added
+- **Standardized `FILTER_*` environment variable support** for core I/O filters (VideoIn, VideoOut, ImageIn, ImageOut)
+  - All filter-specific parameters now accept the `FILTER_` prefix used by the Plainsight platform (API, controller, portal)
+  - Legacy prefixes (`VIDEO_IN_*`, `VIDEO_OUT_*`, `IMAGE_IN_*`, `IMAGE_OUT_*`) remain supported and take precedence for backward compatibility
+  - New env var mappings:
+    - VideoIn: `FILTER_BGR`, `FILTER_SYNC`, `FILTER_LOOP`, `FILTER_MAXFPS`, `FILTER_MAXSIZE`, `FILTER_RESIZE`
+    - VideoOut: `FILTER_BGR`, `FILTER_FPS`, `FILTER_SEGTIME`, `FILTER_PARAMS`
+    - ImageIn: `FILTER_POLL_INTERVAL`, `FILTER_LOOP`, `FILTER_RECURSIVE`, `FILTER_MAXFPS`
+    - ImageOut: `FILTER_BGR`, `FILTER_QUALITY`, `FILTER_COMPRESSION`
+- **101 new unit tests** covering `FILTER_*` env var support, legacy prefix backward compatibility, precedence behavior, case insensitivity, cross-filter propagation, and `FilterConfig` interaction
 - **Wall-Clock Latency dashboard row**: 4 new Grafana panels showing real-world pipeline latency including ZMQ transport and queue delays
   - Wall-Clock End-to-End Latency (frame age at sink vs total process time)
   - Per-Filter Frame Age (lat_in) with staircase visualization for linear pipelines
@@ -20,6 +31,15 @@ OpenFilter Library release notes
 - **End-to-End Timing right panel**: renamed to "Total Processing Time (sum of process(), EMA)" to clarify it measures CPU/GPU work only
 - **Firing Alerts**: expanded to full-width panel
 - Renamed `docs/monitoring-demo.md` to `docs/monitoring.md` with Docusaurus frontmatter
+
+### Fixed
+- Documentation in `video-in-filter.md`: corrected `FILTER_FPS` to `FILTER_MAXFPS`
+- Documentation in `video-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
+- Documentation in `image-in-filter.md`: standardized env var examples and API reference to use `FILTER_*` prefix
+- Documentation in `image-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
+- `VIDEO_OUT_PARAMS` / `FILTER_PARAMS`: removed `.lower()` that corrupted case-sensitive JSON string values
+- Inline docstring references updated to show both `FILTER_*` and legacy env var names
+- Fixed `VIDEO_MAXFPS` typo in VideoIn docstring (should be `VIDEO_IN_MAXFPS`)
 
 ### Removed
 - Input/Output Latency panel (replaced by Wall-Clock Latency row)

@@ -68,9 +68,9 @@ You can configure via environment variables:
 ```bash
 export FILTER_SOURCES="tcp://localhost:5550"
 export FILTER_OUTPUTS="file:///path/to/images_%d.jpg"
-export IMAGE_OUT_BGR="true"
-export IMAGE_OUT_QUALITY="95"
-export IMAGE_OUT_COMPRESSION="6"
+export FILTER_BGR="true"
+export FILTER_QUALITY="95"
+export FILTER_COMPRESSION="6"
 ```
 
 ## Output URI Formats
@@ -470,8 +470,8 @@ class ImageOut(Filter):
 ```
 
 ### Environment Variables
-- `IMAGE_OUT_BGR`: Default BGR/RGB setting
-- `IMAGE_OUT_QUALITY`: Default JPEG quality (1-100)
-- `IMAGE_OUT_COMPRESSION`: Default PNG compression (0-9)
+- `FILTER_BGR`: Default BGR/RGB setting
+- `FILTER_QUALITY`: Default JPEG quality (1-100)
+- `FILTER_COMPRESSION`: Default PNG compression (0-9)
 - `FILTER_SOURCES`: Input sources
 - `FILTER_OUTPUTS`: Output destinations

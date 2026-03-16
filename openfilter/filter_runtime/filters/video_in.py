@@ -21,12 +21,12 @@ __all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'V
 
 logger = logging.getLogger(__name__)
 
-VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or 'true').lower()))
-VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or 'false').lower()))
-VIDEO_IN_LOOP     = _ if isinstance(_ := json_getval((os.getenv('VIDEO_IN_LOOP') or 'false').lower()), bool) else int(_)
-VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or 'null').lower())) is None else float(_)
-VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or None
-VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or None
+VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
+VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or os.getenv('FILTER_SYNC') or 'false').lower()))
+VIDEO_IN_LOOP     = _ if isinstance(_ := json_getval((os.getenv('VIDEO_IN_LOOP') or os.getenv('FILTER_LOOP') or 'false').lower()), bool) else int(_)
+VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
+VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
+VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
 
 re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam|s3)://')
 re_video_stream   = re.compile(r'^(rtsp|rtmp|http|https)://')
@@ -620,12 +620,12 @@ class VideoIn(Filter):
             True means images in BGR format, False means RGB. Doesn't really affect anythong other than procesing speed
             since images should always be converted to the needed format. Don't touch this unless you have an explicit
             need and understanding of why you need to change it. Set here to apply to all sources or can be set
-            infividually per source. Global env var default VIDEO_IN_BGR.
+            individually per source. Global env var default FILTER_BGR / VIDEO_IN_BGR.
 
         sync:
             Only has meaning for file:// sources. If True then frames will be delivered one by one without skipping or
             waiting to maintain realtime, in this way all frames will be read and presented. Set here to apply to all
-            sources or can be set individually per source. Global env var default VIDEO_IN_SYNC.
+            sources or can be set individually per source. Global env var default FILTER_SYNC / VIDEO_IN_SYNC.
 
             NOTE: When a file source is read in `sync` mode, the original fps is passed downstream so that any video
             created from this file will have the original framerate regardless of the potential slowness of the
@@ -635,32 +635,32 @@ class VideoIn(Filter):
         loop:
             Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
             the video only once, otherwise an int value loops through the video that number of times. Set here to apply
-            to all sources or can be set individually per source. Global env var default VIDEO_IN_LOOP.
+            to all sources or can be set individually per source. Global env var default FILTER_LOOP / VIDEO_IN_LOOP.
 
         maxfps:
             Restrict video to this FPS. Works for all types of video and if playing a file:// video in `sync` mode then
             will present the individual frames at this frame rate but will not skip any frames. Set here to apply to
-            all sources or can be set individually per source. Global env var default VIDEO_MAXFPS.
+            all sources or can be set individually per source. Global env var default FILTER_MAXFPS / VIDEO_IN_MAXFPS.
 
         maxsize:
             Maximum image size to allow, above this will be resized down. Valid codes are 'WxH' which will
             proportionally resize maintaining aspect ratio so that neither dimension exceeds the max, 'W+H' will resize
             without maintaining aspect ratio. Optional suffixes 'near', 'lin' and 'cub' specify interpolation, default
             is 'near'est neighbor. Set here to apply to all sources or can be set individually per source. Global env
-            var default VIDEO_IN_MAXSIZE.
+            var default FILTER_MAXSIZE / VIDEO_IN_MAXSIZE.
 
         resize:
             Same as `maxsize` but is always applied unconditionally regardless of input size.Can not be specified
             together with `maxsize`, it is one or the other. Set here to apply to all sources or can be set individually
-            per source. Global env var default VIDEO_IN_RESIZE.
+            per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
 
-    Environment variables:
-        VIDEO_IN_BGR
-        VIDEO_IN_SYNC
-        VIDEO_IN_LOOP
-        VIDEO_IN_MAXFPS
-        VIDEO_IN_MAXSIZE
-        VIDEO_IN_RESIZE
+    Environment variables (FILTER_* or legacy VIDEO_IN_* prefix, legacy takes precedence):
+        FILTER_BGR      / VIDEO_IN_BGR
+        FILTER_SYNC     / VIDEO_IN_SYNC
+        FILTER_LOOP     / VIDEO_IN_LOOP
+        FILTER_MAXFPS   / VIDEO_IN_MAXFPS
+        FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
+        FILTER_RESIZE   / VIDEO_IN_RESIZE
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
