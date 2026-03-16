@@ -1023,12 +1023,9 @@ class ImageIn(Filter):
 ```
 
 ### Environment Variables
-- `IMAGE_IN_POLL_INTERVAL`: Default polling interval
-- `IMAGE_IN_LOOP`: Default loop behavior
-- `IMAGE_IN_RECURSIVE`: Default recursive scanning
-- `IMAGE_IN_MAXFPS`: Default FPS limiting (new)
+- `FILTER_POLL_INTERVAL`: Default polling interval
+- `FILTER_LOOP`: Default loop behavior
+- `FILTER_RECURSIVE`: Default recursive scanning
+- `FILTER_MAXFPS`: Default FPS limiting
 - `FILTER_SOURCES`: Image sources
 - `FILTER_PATTERN`: Global pattern filter
-- `FILTER_LOOP`: Global loop behavior
-- `FILTER_RECURSIVE`: Global recursive scanning
-- `FILTER_MAXFPS`: Global FPS limiting (new)

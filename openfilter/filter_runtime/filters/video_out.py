@@ -336,11 +336,11 @@ class VideoOut(Filter):
             "g":       Sets the group of pictures (GOP) size. Example: {"g": 50}
             "vf":      Sets the video filter. Example: "vf": "scale=1280:720"
 
-    Environment variables:
-        VIDEO_OUT_BGR
-        VIDEO_OUT_FPS
-        VIDEO_OUT_SEGTIME
-        VIDEO_OUT_PARAMS
+    Environment variables (FILTER_* or legacy VIDEO_OUT_* prefix, legacy takes precedence):
+        FILTER_BGR      / VIDEO_OUT_BGR
+        FILTER_FPS      / VIDEO_OUT_FPS
+        FILTER_SEGTIME  / VIDEO_OUT_SEGTIME
+        FILTER_PARAMS   / VIDEO_OUT_PARAMS
     """
 
     FILTER_TYPE = 'Output'

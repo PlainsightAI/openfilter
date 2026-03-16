@@ -16,7 +16,9 @@ OpenFilter Library release notes
 
 ### Fixed
 - Documentation in `video-in-filter.md`: corrected `FILTER_FPS` to `FILTER_MAXFPS`
-- Documentation in `image-in-filter.md`: standardized env var examples to use `FILTER_*` prefix
+- Documentation in `video-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
+- Documentation in `image-in-filter.md`: standardized env var examples and API reference to use `FILTER_*` prefix
+- Documentation in `image-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
 
 ## v0.1.21 - 2026-02-25
 

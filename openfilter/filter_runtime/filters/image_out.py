@@ -224,10 +224,10 @@ class ImageOut(Filter):
             PNG compression level (0-9). Only used for PNG format. Set here to apply to all outputs or
             can be set individually per output. Global env var default IMAGE_OUT_COMPRESSION.
 
-    Environment variables:
-        IMAGE_OUT_BGR
-        IMAGE_OUT_QUALITY
-        IMAGE_OUT_COMPRESSION
+    Environment variables (FILTER_* or legacy IMAGE_OUT_* prefix, legacy takes precedence):
+        FILTER_BGR          / IMAGE_OUT_BGR
+        FILTER_QUALITY      / IMAGE_OUT_QUALITY
+        FILTER_COMPRESSION  / IMAGE_OUT_COMPRESSION
     """
 
     FILTER_TYPE = 'Output'

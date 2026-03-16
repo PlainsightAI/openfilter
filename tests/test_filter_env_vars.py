@@ -494,10 +494,7 @@ class TestFilterConfigInteraction(unittest.TestCase):
     def test_get_config_reads_filter_prefix(self):
         """Filter.get_config() should parse FILTER_* vars into config dict."""
         code = """
-import json, os
-os.environ['FILTER_SYNC'] = 'true'
-os.environ['FILTER_BGR'] = 'false'
-os.environ['FILTER_MAXFPS'] = '15'
+import json
 from openfilter.filter_runtime.filter import Filter
 cfg = Filter.get_config()
 print(json.dumps({'sync': cfg.get('sync'), 'bgr': cfg.get('bgr'), 'maxfps': cfg.get('maxfps')}))
@@ -505,7 +502,6 @@ print(json.dumps({'sync': cfg.get('sync'), 'bgr': cfg.get('bgr'), 'maxfps': cfg.
         env = {k: v for k, v in os.environ.items()}
         for k in ALL_FILTER_ENV_VARS:
             env.pop(k, None)
-        # Set these so they're in the env before the subprocess runs
         env['FILTER_SYNC'] = 'true'
         env['FILTER_BGR'] = 'false'
         env['FILTER_MAXFPS'] = '15'

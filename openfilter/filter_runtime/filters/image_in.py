@@ -194,11 +194,11 @@ class ImageIn(Filter):
             openfilter run - ImageIn --sources file:///path/to/images!recursive!pattern=*.jpg!loop=3!poll_interval=10!region=us-west-2 - Webvis
             openfilter run - ImageIn --sources file:///path/to/images!maxfps=1.0 - Webvis
 
-    Environment variables:
-        IMAGE_IN_LOOP
-        IMAGE_IN_RECURSIVE
-        IMAGE_IN_POLL_INTERVAL
-        IMAGE_IN_MAXFPS
+    Environment variables (FILTER_* or legacy IMAGE_IN_* prefix, legacy takes precedence):
+        FILTER_LOOP           / IMAGE_IN_LOOP
+        FILTER_RECURSIVE      / IMAGE_IN_RECURSIVE
+        FILTER_POLL_INTERVAL  / IMAGE_IN_POLL_INTERVAL
+        FILTER_MAXFPS         / IMAGE_IN_MAXFPS
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
