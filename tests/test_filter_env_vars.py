@@ -5,20 +5,17 @@ Verifies that core filters accept the standardized FILTER_* prefix as an alterna
 to filter-specific prefixes (VIDEO_IN_*, VIDEO_OUT_*, IMAGE_IN_*, IMAGE_OUT_*),
 with the filter-specific prefix taking precedence for backward compatibility.
 
-Uses subprocess to test module-level env var loading in isolation, avoiding
-importlib.reload class identity issues that break isinstance checks in other tests.
+Uses unittest.mock.patch.dict + importlib.reload to test module-level env var loading
+in-process. Each test saves/restores module-level constants to avoid class identity
+issues from reload affecting other test files.
 """
 
-import json
+import importlib
 import os
-import subprocess
-import sys
 import unittest
+from unittest.mock import patch
 
-PYTHON = sys.executable
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-# All env var names that could affect filter behavior — cleared before each subprocess
+# All env var names that could affect filter behavior — cleared before each test
 ALL_FILTER_ENV_VARS = [
     'FILTER_BGR', 'FILTER_SYNC', 'FILTER_LOOP', 'FILTER_MAXFPS', 'FILTER_MAXSIZE',
     'FILTER_RESIZE', 'FILTER_FPS', 'FILTER_SEGTIME', 'FILTER_PARAMS',
@@ -30,26 +27,47 @@ ALL_FILTER_ENV_VARS = [
     'IMAGE_OUT_BGR', 'IMAGE_OUT_QUALITY', 'IMAGE_OUT_COMPRESSION',
 ]
 
+# Module-level constant names per filter module
+_FILTER_CONSTANTS = {
+    'openfilter.filter_runtime.filters.video_in': [
+        'VIDEO_IN_BGR', 'VIDEO_IN_SYNC', 'VIDEO_IN_LOOP', 'VIDEO_IN_MAXFPS',
+        'VIDEO_IN_MAXSIZE', 'VIDEO_IN_RESIZE',
+    ],
+    'openfilter.filter_runtime.filters.video_out': [
+        'VIDEO_OUT_BGR', 'VIDEO_OUT_FPS', 'VIDEO_OUT_SEGTIME', 'VIDEO_OUT_PARAMS',
+    ],
+    'openfilter.filter_runtime.filters.image_in': [
+        'IMAGE_IN_POLL_INTERVAL', 'IMAGE_IN_LOOP', 'IMAGE_IN_RECURSIVE', 'IMAGE_IN_MAXFPS',
+    ],
+    'openfilter.filter_runtime.filters.image_out': [
+        'IMAGE_OUT_BGR', 'IMAGE_OUT_QUALITY', 'IMAGE_OUT_COMPRESSION',
+    ],
+}
 
-def _eval_env_var(module_path, var_name, env_overrides):
-    """Run a subprocess to import a module and print an env var's value as JSON.
 
-    Each test runs in a fresh process to ensure module-level globals are re-evaluated
-    with the test's specific environment, without polluting other tests.
+def _eval_with_env(mod_path, var_name, env_overrides):
+    """Reload module with patched env, read the constant, then restore all original attributes.
+
+    Saves and restores the entire module __dict__ to preserve class identity for
+    isinstance checks in other test files that import config classes.
     """
-    code = f"import json; import {module_path} as m; print(json.dumps(m.{var_name}))"
-    env = {k: v for k, v in os.environ.items()}
-    # Clear all filter-related env vars to guarantee a clean slate
-    for k in ALL_FILTER_ENV_VARS:
-        env.pop(k, None)
-    env.update(env_overrides)
-    result = subprocess.run(
-        [PYTHON, '-c', code],
-        capture_output=True, text=True, env=env, cwd=PROJECT_ROOT, timeout=30
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"subprocess failed: {result.stderr}")
-    return json.loads(result.stdout.strip())
+    mod = importlib.import_module(mod_path)
+
+    # Save entire module dict (shallow copy — class objects are preserved by reference)
+    original_dict = dict(mod.__dict__)
+
+    try:
+        with patch.dict(os.environ, env_overrides, clear=False):
+            # Remove all filter env vars not in overrides
+            for k in ALL_FILTER_ENV_VARS:
+                if k not in env_overrides:
+                    os.environ.pop(k, None)
+            importlib.reload(mod)
+            return getattr(mod, var_name)
+    finally:
+        # Restore all original module attributes (preserves class identity)
+        mod.__dict__.clear()
+        mod.__dict__.update(original_dict)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +80,7 @@ class TestVideoInEnvVars(unittest.TestCase):
     MOD = 'openfilter.filter_runtime.filters.video_in'
 
     def _get(self, var, env):
-        return _eval_env_var(self.MOD, var, env)
+        return _eval_with_env(self.MOD, var, env)
 
     # --- FILTER_* as primary configuration (platform convention) ---
 
@@ -188,7 +206,7 @@ class TestVideoOutEnvVars(unittest.TestCase):
     MOD = 'openfilter.filter_runtime.filters.video_out'
 
     def _get(self, var, env):
-        return _eval_env_var(self.MOD, var, env)
+        return _eval_with_env(self.MOD, var, env)
 
     # --- FILTER_* as primary configuration ---
 
@@ -291,7 +309,7 @@ class TestImageInEnvVars(unittest.TestCase):
     MOD = 'openfilter.filter_runtime.filters.image_in'
 
     def _get(self, var, env):
-        return _eval_env_var(self.MOD, var, env)
+        return _eval_with_env(self.MOD, var, env)
 
     # --- FILTER_* as primary configuration ---
 
@@ -375,7 +393,7 @@ class TestImageOutEnvVars(unittest.TestCase):
     MOD = 'openfilter.filter_runtime.filters.image_out'
 
     def _get(self, var, env):
-        return _eval_env_var(self.MOD, var, env)
+        return _eval_with_env(self.MOD, var, env)
 
     # --- FILTER_* as primary configuration ---
 
@@ -445,52 +463,27 @@ class TestCrossFilterEnvVars(unittest.TestCase):
     """Test that shared FILTER_* env vars correctly propagate to multiple filters."""
 
     def test_filter_bgr_affects_both_video_in_and_out(self):
-        """When FILTER_BGR is set, both VideoIn and VideoOut should pick it up."""
-        env = {'FILTER_BGR': 'false'}
-        vin = _eval_env_var('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_BGR', env)
-        vout = _eval_env_var('openfilter.filter_runtime.filters.video_out', 'VIDEO_OUT_BGR', env)
-        self.assertFalse(vin)
-        self.assertFalse(vout)
+        self.assertFalse(_eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_BGR', {'FILTER_BGR': 'false'}))
+        self.assertFalse(_eval_with_env('openfilter.filter_runtime.filters.video_out', 'VIDEO_OUT_BGR', {'FILTER_BGR': 'false'}))
 
-    def test_filter_bgr_affects_both_image_in_and_out(self):
-        """When FILTER_BGR is set, ImageOut should pick it up (ImageIn has no BGR)."""
-        env = {'FILTER_BGR': 'false'}
-        iout = _eval_env_var('openfilter.filter_runtime.filters.image_out', 'IMAGE_OUT_BGR', env)
-        self.assertFalse(iout)
+    def test_filter_bgr_affects_image_out(self):
+        self.assertFalse(_eval_with_env('openfilter.filter_runtime.filters.image_out', 'IMAGE_OUT_BGR', {'FILTER_BGR': 'false'}))
 
     def test_filter_loop_affects_both_video_in_and_image_in(self):
-        """When FILTER_LOOP is set, both VideoIn and ImageIn should pick it up."""
-        env = {'FILTER_LOOP': 'true'}
-        vin = _eval_env_var('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_LOOP', env)
-        iin = _eval_env_var('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_LOOP', env)
-        self.assertTrue(vin)
-        self.assertTrue(iin)
+        self.assertTrue(_eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_LOOP', {'FILTER_LOOP': 'true'}))
+        self.assertTrue(_eval_with_env('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_LOOP', {'FILTER_LOOP': 'true'}))
 
     def test_filter_maxfps_affects_both_video_in_and_image_in(self):
-        """When FILTER_MAXFPS is set, both VideoIn and ImageIn should pick it up."""
-        env = {'FILTER_MAXFPS': '10'}
-        vin = _eval_env_var('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_MAXFPS', env)
-        iin = _eval_env_var('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_MAXFPS', env)
-        self.assertEqual(vin, 10.0)
-        self.assertEqual(iin, 10.0)
+        self.assertEqual(_eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_MAXFPS', {'FILTER_MAXFPS': '10'}), 10.0)
+        self.assertEqual(_eval_with_env('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_MAXFPS', {'FILTER_MAXFPS': '10'}), 10.0)
 
     def test_independent_legacy_prefixes(self):
-        """Different legacy prefixes can set different values for different filters."""
-        env = {'VIDEO_IN_BGR': 'false', 'VIDEO_OUT_BGR': 'true'}
-        vin = _eval_env_var('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_BGR', env)
-        vout = _eval_env_var('openfilter.filter_runtime.filters.video_out', 'VIDEO_OUT_BGR', env)
-        self.assertFalse(vin)
-        self.assertTrue(vout)
+        self.assertFalse(_eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_BGR', {'VIDEO_IN_BGR': 'false'}))
+        self.assertTrue(_eval_with_env('openfilter.filter_runtime.filters.video_out', 'VIDEO_OUT_BGR', {'VIDEO_OUT_BGR': 'true'}))
 
     def test_mixed_legacy_and_filter_prefix(self):
-        """Legacy on one filter, FILTER_* on another — both work correctly."""
-        env = {'VIDEO_IN_MAXFPS': '60', 'FILTER_MAXFPS': '30'}
-        vin = _eval_env_var('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_MAXFPS', env)
-        iin = _eval_env_var('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_MAXFPS', env)
-        # VideoIn: legacy takes precedence → 60
-        self.assertEqual(vin, 60.0)
-        # ImageIn: no legacy set, falls back to FILTER_MAXFPS → 30
-        self.assertEqual(iin, 30.0)
+        self.assertEqual(_eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_MAXFPS', {'VIDEO_IN_MAXFPS': '60', 'FILTER_MAXFPS': '30'}), 60.0)
+        self.assertEqual(_eval_with_env('openfilter.filter_runtime.filters.image_in', 'IMAGE_IN_MAXFPS', {'FILTER_MAXFPS': '30'}), 30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -498,66 +491,34 @@ class TestCrossFilterEnvVars(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestFilterConfigInteraction(unittest.TestCase):
-    """Test that Filter.get_config() and module-level defaults coexist correctly.
-
-    Filter.get_config() reads FILTER_* env vars into a FilterConfig dict (stripping
-    the prefix). Module-level constants also read FILTER_* as a fallback. These tests
-    verify both paths work and don't interfere with each other.
-    """
+    """Test that Filter.get_config() and module-level defaults coexist correctly."""
 
     def test_get_config_reads_filter_prefix(self):
-        """Filter.get_config() should parse FILTER_* vars into config dict."""
-        code = """
-import json
-from openfilter.filter_runtime.filter import Filter
-cfg = Filter.get_config()
-print(json.dumps({'sync': cfg.get('sync'), 'bgr': cfg.get('bgr'), 'maxfps': cfg.get('maxfps')}))
-"""
-        env = {k: v for k, v in os.environ.items()}
-        for k in ALL_FILTER_ENV_VARS:
-            env.pop(k, None)
-        env['FILTER_SYNC'] = 'true'
-        env['FILTER_BGR'] = 'false'
-        env['FILTER_MAXFPS'] = '15'
-        result = subprocess.run(
-            [PYTHON, '-c', code],
-            capture_output=True, text=True, env=env, cwd=PROJECT_ROOT
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout.strip())
-        self.assertTrue(data['sync'])
-        self.assertFalse(data['bgr'])
-        self.assertEqual(data['maxfps'], 15)
+        from openfilter.filter_runtime.filter import Filter
+        env = {'FILTER_SYNC': 'true', 'FILTER_BGR': 'false', 'FILTER_MAXFPS': '15'}
+        with patch.dict(os.environ, env, clear=False):
+            for k in ALL_FILTER_ENV_VARS:
+                if k not in env:
+                    os.environ.pop(k, None)
+            cfg = Filter.get_config()
+        self.assertTrue(cfg.get('sync'))
+        self.assertFalse(cfg.get('bgr'))
+        self.assertEqual(cfg.get('maxfps'), 15)
 
     def test_module_defaults_align_with_filter_config(self):
-        """Module-level defaults and FilterConfig should read the same FILTER_* value."""
-        code = """
-import json, os
-from openfilter.filter_runtime.filter import Filter
-from openfilter.filter_runtime.filters.video_in import VIDEO_IN_SYNC, VIDEO_IN_MAXFPS
-cfg = Filter.get_config()
-print(json.dumps({
-    'module_sync': VIDEO_IN_SYNC,
-    'config_sync': cfg.get('sync'),
-    'module_maxfps': VIDEO_IN_MAXFPS,
-    'config_maxfps': cfg.get('maxfps'),
-}))
-"""
-        env = {k: v for k, v in os.environ.items()}
-        for k in ALL_FILTER_ENV_VARS:
-            env.pop(k, None)
-        env['FILTER_SYNC'] = 'true'
-        env['FILTER_MAXFPS'] = '25'
-        result = subprocess.run(
-            [PYTHON, '-c', code],
-            capture_output=True, text=True, env=env, cwd=PROJECT_ROOT
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        data = json.loads(result.stdout.strip())
-        self.assertTrue(data['module_sync'])
-        self.assertTrue(data['config_sync'])
-        self.assertEqual(data['module_maxfps'], 25.0)
-        self.assertEqual(data['config_maxfps'], 25)
+        from openfilter.filter_runtime.filter import Filter
+        env = {'FILTER_SYNC': 'true', 'FILTER_MAXFPS': '25'}
+        module_sync = _eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_SYNC', env)
+        module_maxfps = _eval_with_env('openfilter.filter_runtime.filters.video_in', 'VIDEO_IN_MAXFPS', env)
+        with patch.dict(os.environ, env, clear=False):
+            for k in ALL_FILTER_ENV_VARS:
+                if k not in env:
+                    os.environ.pop(k, None)
+            cfg = Filter.get_config()
+        self.assertTrue(module_sync)
+        self.assertTrue(cfg.get('sync'))
+        self.assertEqual(module_maxfps, 25.0)
+        self.assertEqual(cfg.get('maxfps'), 25)
 
 
 if __name__ == '__main__':
