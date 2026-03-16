@@ -222,6 +222,11 @@ class TestVideoOutEnvVars(unittest.TestCase):
             {'preset': 'fast', 'crf': 23}
         )
 
+    def test_filter_params_python_style_literals(self):
+        """Python-style Null/True/False in JSON are accepted via .lower() fallback."""
+        self.assertIsNone(self._get('VIDEO_OUT_PARAMS', {'FILTER_PARAMS': 'Null'}))
+        self.assertIsNone(self._get('VIDEO_OUT_PARAMS', {'FILTER_PARAMS': 'NULL'}))
+
     def test_filter_params_preserves_case(self):
         """JSON string values must preserve case (e.g., codec preset names)."""
         self.assertEqual(
