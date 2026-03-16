@@ -72,7 +72,7 @@ export FILTER_OUTPUTS="tcp://*:5550"
 export FILTER_BGR="true"
 export FILTER_SYNC="true"
 export FILTER_LOOP="true"
-export FILTER_FPS="30"
+export FILTER_MAXFPS="30"
 export FILTER_MAXSIZE="1920x1080"
 export FILTER_RESIZE="800x600"
 ```
@@ -741,6 +741,6 @@ class VideoIn(Filter):
 - `FILTER_BGR`: Color format (BGR/RGB)
 - `FILTER_SYNC`: Enable synchronization
 - `FILTER_LOOP`: Enable video looping
-- `FILTER_FPS`: Output frame rate
+- `FILTER_MAXFPS`: Maximum frame rate
 - `FILTER_MAXSIZE`: Maximum image size
 - `FILTER_RESIZE`: Image resize dimensions

@@ -14,9 +14,9 @@ __all__ = ['ImageWriter']
 logger = logging.getLogger(__name__)
 
 # Environment variables
-IMAGE_OUT_BGR = bool(json_getval((os.getenv('IMAGE_OUT_BGR') or 'true').lower()))
-IMAGE_OUT_QUALITY = int(os.getenv('IMAGE_OUT_QUALITY') or '95')  # JPEG quality 1-100
-IMAGE_OUT_COMPRESSION = int(os.getenv('IMAGE_OUT_COMPRESSION') or '6')  # PNG compression 0-9
+IMAGE_OUT_BGR = bool(json_getval((os.getenv('IMAGE_OUT_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
+IMAGE_OUT_QUALITY = int(os.getenv('IMAGE_OUT_QUALITY') or os.getenv('FILTER_QUALITY') or '95')  # JPEG quality 1-100
+IMAGE_OUT_COMPRESSION = int(os.getenv('IMAGE_OUT_COMPRESSION') or os.getenv('FILTER_COMPRESSION') or '6')  # PNG compression 0-9
 
 # File extension patterns
 re_file = re.compile(r'^file://')

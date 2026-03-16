@@ -71,7 +71,7 @@ export FILTER_PATTERN="*.jpg"
 export FILTER_POLL_INTERVAL="5.0"
 export FILTER_LOOP="true"
 export FILTER_RECURSIVE="false"
-export IMAGE_IN_MAXFPS="1.0"  # Control display rate
+export FILTER_MAXFPS="1.0"  # Control display rate
 ```
 
 ## Source URI Formats

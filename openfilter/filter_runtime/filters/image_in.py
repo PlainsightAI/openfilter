@@ -31,10 +31,10 @@ __all__ = ['ImageInConfig', 'ImageIn']
 logger = logging.getLogger(__name__)
 
 # Environment variable defaults (following VideoIn pattern)
-IMAGE_IN_POLL_INTERVAL = float(json_getval((os.getenv('IMAGE_IN_POLL_INTERVAL') or '5.0')))
-IMAGE_IN_LOOP = json_getval((os.getenv('IMAGE_IN_LOOP') or 'false').lower())
-IMAGE_IN_RECURSIVE = bool(json_getval((os.getenv('IMAGE_IN_RECURSIVE') or 'false').lower()))
-IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or 'null').lower())) is None else float(_)
+IMAGE_IN_POLL_INTERVAL = float(json_getval((os.getenv('IMAGE_IN_POLL_INTERVAL') or os.getenv('FILTER_POLL_INTERVAL') or '5.0')))
+IMAGE_IN_LOOP = json_getval((os.getenv('IMAGE_IN_LOOP') or os.getenv('FILTER_LOOP') or 'false').lower())
+IMAGE_IN_RECURSIVE = bool(json_getval((os.getenv('IMAGE_IN_RECURSIVE') or os.getenv('FILTER_RECURSIVE') or 'false').lower()))
+IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif', 'webp'}

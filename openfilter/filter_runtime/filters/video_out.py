@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 parse_segtime     = lambda s: sum(float(a) * b for a, b in zip(([0] + str(s).split(':', 1))[-2:], (60, 1))) if s else None  # -> '02:21' -> 141, segtime in minutes
 
-VIDEO_OUT_BGR     = bool(json_getval((os.getenv('VIDEO_OUT_BGR') or 'true').lower()))
-VIDEO_OUT_FPS     = json_getval((os.getenv('VIDEO_OUT_FPS') or 'null').lower())
-VIDEO_OUT_SEGTIME = parse_segtime(json_getval((os.getenv('VIDEO_OUT_SEGTIME') or 'null').lower()))
-VIDEO_OUT_PARAMS  = json_getval((os.getenv('VIDEO_OUT_PARAMS') or 'null').lower())
+VIDEO_OUT_BGR     = bool(json_getval((os.getenv('VIDEO_OUT_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
+VIDEO_OUT_FPS     = json_getval((os.getenv('VIDEO_OUT_FPS') or os.getenv('FILTER_FPS') or 'null').lower())
+VIDEO_OUT_SEGTIME = parse_segtime(json_getval((os.getenv('VIDEO_OUT_SEGTIME') or os.getenv('FILTER_SEGTIME') or 'null').lower()))
+VIDEO_OUT_PARAMS  = json_getval((os.getenv('VIDEO_OUT_PARAMS') or os.getenv('FILTER_PARAMS') or 'null').lower())
 
 re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam)://')
 re_video_stream   = re.compile(r'^(rtsp|rtmp|http|https)://')

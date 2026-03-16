@@ -1,6 +1,23 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.22 - 2026-03-16
+
+### Added
+- **Standardized `FILTER_*` environment variable support** for core I/O filters (VideoIn, VideoOut, ImageIn, ImageOut)
+  - All filter-specific parameters now accept the `FILTER_` prefix used by the Plainsight platform (API, controller, portal)
+  - Legacy prefixes (`VIDEO_IN_*`, `VIDEO_OUT_*`, `IMAGE_IN_*`, `IMAGE_OUT_*`) remain supported and take precedence for backward compatibility
+  - New env var mappings:
+    - VideoIn: `FILTER_BGR`, `FILTER_SYNC`, `FILTER_LOOP`, `FILTER_MAXFPS`, `FILTER_MAXSIZE`, `FILTER_RESIZE`
+    - VideoOut: `FILTER_BGR`, `FILTER_FPS`, `FILTER_SEGTIME`, `FILTER_PARAMS`
+    - ImageIn: `FILTER_POLL_INTERVAL`, `FILTER_LOOP`, `FILTER_RECURSIVE`, `FILTER_MAXFPS`
+    - ImageOut: `FILTER_BGR`, `FILTER_QUALITY`, `FILTER_COMPRESSION`
+- **99 new unit tests** covering `FILTER_*` env var support, legacy prefix backward compatibility, precedence behavior, case insensitivity, cross-filter propagation, and `FilterConfig` interaction
+
+### Fixed
+- Documentation in `video-in-filter.md`: corrected `FILTER_FPS` to `FILTER_MAXFPS`
+- Documentation in `image-in-filter.md`: standardized env var examples to use `FILTER_*` prefix
+
 ## v0.1.21 - 2026-02-25
 
 ### Added
