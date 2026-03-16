@@ -1,6 +1,8 @@
 # Changelog
 OpenFilter Library release notes
 
+## Unreleased
+
 ## v0.1.22 - 2026-03-16
 
 ### Added
