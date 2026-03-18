@@ -274,7 +274,11 @@ class ImageIn(Filter):
             if topic not in self.queues:
                 self.queues[topic] = []
                 self.processed[topic] = set()
-                self.loop_counts[topic] = source.options.loop if isinstance(source.options.loop, int) else (0 if source.options.loop else 1)
+                loop_val = source.options.loop
+                if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
+                    self.loop_counts[topic] = loop_val - 1   # finite: remaining reloads after initial pass
+                else:
+                    self.loop_counts[topic] = 0
                 
                 # Initialize FPS control for this topic
                 maxfps = source.options.maxfps or config.maxfps or IMAGE_IN_MAXFPS
@@ -282,7 +286,17 @@ class ImageIn(Filter):
                     self.ns_per_maxfps[topic] = int(1_000_000_000 // maxfps)
                     self.tmaxfps[topic] = time_ns()
                     logger.info(f"ImageIn topic '{topic}' FPS limited to {maxfps:.1f} fps")
-        
+
+        # Precompute topic-to-source map and identify finite-loop topics
+        self._topic_sources = {}
+        self._finite_loop_topics = set()
+        for source in config.sources:
+            topic = source.topic or 'main'
+            self._topic_sources[topic] = source
+            loop_val = source.options.loop if source.options.loop is not None else config.loop
+            if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
+                self._finite_loop_topics.add(topic)
+
         # Load initial images
         self._load_initial_images()
         
@@ -299,6 +313,7 @@ class ImageIn(Filter):
             try:
                 images = self._list_images(source)
                 self.queues[topic].extend(images)
+                self.processed[topic].update(images)
                 logger.info(f"Loaded {len(images)} images from {source.source} for topic '{topic}'")
             except Exception as e:
                 logger.error(f"Failed to load images from {source.source}: {e}")
@@ -461,7 +476,7 @@ class ImageIn(Filter):
             for topic, queue in self.queues.items():
                 if not queue:
                     # Check if we should loop
-                    source = next((s for s in self.config.sources if (s.topic or 'main') == topic), None)
+                    source = self._topic_sources.get(topic)
                     if source and (source.options.loop or self.config.loop):
                         if source.options.loop is True or self.config.loop is True:
                             # Infinite loop - reload all images
@@ -495,15 +510,8 @@ class ImageIn(Filter):
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')
 
-            if not out:
-                all_exhausted = all(
-                    not self.queues[t] and not (
-                        (s := next((s for s in self.config.sources if (s.topic or 'main') == t), None))
-                        and (s.options.loop or self.config.loop)
-                    )
-                    for t in self.queues
-                )
-                if all_exhausted:
+            if not out and self._finite_loop_topics and len(self._finite_loop_topics) == len(self.queues):
+                if all(not self.queues[t] and self.loop_counts[t] <= 0 for t in self.queues):
                     self.exit('all images processed')
 
             return out or None
