@@ -559,6 +559,38 @@ export IMAGE_IN_MAXFPS=1.0
 python scenario1_empty_start.py
 ```
 
+## Docker
+
+You can also run the ImageIn example using Docker. This builds from local source.
+
+### Build and run
+
+```bash
+# From the repo root
+docker compose -f examples/image_in/docker-compose.yaml build
+docker compose -f examples/image_in/docker-compose.yaml up
+```
+
+Open http://localhost:8088 to see the images.
+
+### Reproduce the reported bug (pre-fix)
+
+The original bug was that ImageIn exited immediately with code 0:
+
+```yaml
+services:
+  image_in:
+    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter/image_in:v0.1.22
+    environment:
+      FILTER_ID: image_in
+      FILTER_SOURCES: file:///app/data/images!pattern=*.png!maxfps=2.0
+      FILTER_OUTPUTS: tcp://*:5550
+    volumes:
+      - ./test_images:/app/data/images:ro
+```
+
+This was caused by a missing `if __name__ == '__main__'` entry point. Fixed in v0.1.23.
+
 ## Troubleshooting
 
 - **No images appear**: Check that the `test_images/` directory is created

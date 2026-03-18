@@ -495,6 +495,17 @@ class ImageIn(Filter):
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')
 
+            if not out:
+                all_exhausted = all(
+                    not self.queues[t] and not (
+                        (s := next((s for s in self.config.sources if (s.topic or 'main') == t), None))
+                        and (s.options.loop or self.config.loop)
+                    )
+                    for t in self.queues
+                )
+                if all_exhausted:
+                    self.exit('all images processed')
+
             return out or None
 
         return get_next_frame
@@ -519,3 +530,7 @@ class ImageIn(Filter):
         if hasattr(self, 'poll_thread'):
             self.poll_thread.join(timeout=5)
         logger.info(f"ImageIn sent {self.frame_id + 1} frames; shutting down.")
+
+
+if __name__ == '__main__':
+    ImageIn.run()

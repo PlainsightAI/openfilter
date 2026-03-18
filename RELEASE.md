@@ -1,6 +1,16 @@
 # Changelog
 OpenFilter Library release notes
 
+## v0.1.23 - 2026-03-18
+
+### Fixed
+- **ImageIn Docker image exits immediately with code 0**: Added missing `if __name__ == '__main__'` entry point block to `image_in.py`. Without this, running `python -m openfilter.filter_runtime.filters.image_in` (the Docker CMD) would import the module but never start the filter.
+- **ImageIn never exits after processing all images**: When all images are processed and looping is disabled, the filter now calls `self.exit('all images processed')` instead of spinning indefinitely. This matches VideoIn's clean exit behavior.
+- **ImageIn not exported from filters package**: Added `ImageIn` and `ImageInConfig` to `openfilter/filter_runtime/filters/__init__.py` exports.
+
+### Added
+- **ImageIn Docker example**: Added `examples/image_in/Dockerfile` and `docker-compose.yaml` for local Docker testing of ImageIn -> Webvis pipelines.
+
 ## v0.1.22 - 2026-03-16
 
 ### Added
