@@ -274,7 +274,7 @@ class ImageIn(Filter):
             if topic not in self.queues:
                 self.queues[topic] = []
                 self.processed[topic] = set()
-                loop_val = source.options.loop
+                loop_val = source.options.loop if source.options.loop is not None else config.loop
                 if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
                     self.loop_counts[topic] = loop_val - 1   # finite: remaining reloads after initial pass
                 else:
@@ -477,9 +477,10 @@ class ImageIn(Filter):
                 if not queue:
                     # Check if we should loop
                     source = self._topic_sources.get(topic)
-                    if source and (source.options.loop or self.config.loop):
-                        if source.options.loop is True or self.config.loop is True:
-                            # Infinite loop - reload all images
+                    loop_val = source.options.loop if (source and source.options.loop is not None) else self.config.loop
+                    if source and loop_val is not None and loop_val is not False:
+                        if loop_val is True or loop_val == 0:
+                            # Infinite loop (True or 0) - reload all images
                             self._reload_images_for_topic(topic)
                         elif self.loop_counts[topic] > 0:
                             # Finite loop - reload and decrement count
