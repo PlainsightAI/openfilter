@@ -160,9 +160,10 @@ class ImageIn(Filter):
                     For example, maxfps=1.0 means each image is displayed for 1 second.
 
         loop:
-            Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
-            the images only once, otherwise an int value loops through the images that number of times. Set here to apply
-            to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
+            Only has meaning for file:// sources. True or 0 means infinite loop. False means don't loop; images are
+            processed once but the filter stays alive for polling (new files added to the directory will still be
+            picked up). An int value (e.g. 2) loops through the images that number of times, then exits. Set here
+            to apply to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
 
         recursive:
             Only has meaning for file:// sources. If True then scan subdirectories recursively. Set here to apply
@@ -512,7 +513,9 @@ class ImageIn(Filter):
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')
 
             if not out and self._finite_loop_topics and len(self._finite_loop_topics) == len(self.queues):
-                if all(not self.queues[t] and self.loop_counts[t] <= 0 for t in self.queues):
+                # Only exit if we actually processed at least one frame (frame_id >= 0)
+                # to avoid exiting immediately on an empty directory before polling finds files
+                if self.frame_id >= 0 and all(not self.queues[t] and self.loop_counts[t] <= 0 for t in self.queues):
                     self.exit('all images processed')
 
             return out or None
@@ -526,8 +529,10 @@ class ImageIn(Filter):
                 try:
                     images = self._list_images(source)
                     self.queues[topic].extend(images)
-                    # Clear processed set for this topic to allow reprocessing
+                    # Clear processed set and re-populate with reloaded images
+                    # so the poll thread doesn't re-add them as "new"
                     self.processed[topic].clear()
+                    self.processed[topic].update(images)
                     logger.info(f"Reloaded {len(images)} images for topic '{topic}'")
                 except Exception as e:
                     logger.error(f"Failed to reload images for topic '{topic}': {e}")

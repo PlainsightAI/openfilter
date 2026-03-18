@@ -641,5 +641,38 @@ class TestImageIn(unittest.TestCase):
             queue.close()
 
 
+    def test_global_config_loop_fallback(self):
+        """Test that global config.loop=N works when per-source loop is not set."""
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}!pattern=*.jpg',
+                outputs='ipc://test-ImageIn',
+                loop=2,  # global config, not per-source !loop=2
+                poll_interval=300,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=10)
+
+        try:
+            frames = []
+            while True:
+                try:
+                    result = queue.get(timeout=3)
+                    if result is False:
+                        break
+                    frames.append(result)
+                except:
+                    self.fail("Timed out waiting for frames or exit signal")
+
+            # 3 images x 2 loops = 6 frames (same as per-source !loop=2)
+            self.assertEqual(len(frames), 6, f"Expected 6 frames (3 images x 2 loops via config.loop), got {len(frames)}")
+        finally:
+            runner.stop()
+            queue.close()
+
+
 if __name__ == '__main__':
     unittest.main()
