@@ -52,7 +52,9 @@ services:
   image_in:
     build:
       context: ../..
-      dockerfile: examples/image_in/Dockerfile
+      dockerfile: docker/image_in.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
     environment:
       FILTER_ID: image_in
       FILTER_SOURCES: "file:///app/data/images!pattern=*.png!maxfps=2.0!loop"
@@ -63,8 +65,9 @@ services:
   webvis:
     build:
       context: ../..
-      dockerfile: examples/image_in/Dockerfile
-    command: ["python", "-m", "openfilter.filter_runtime.filters.webvis"]
+      dockerfile: docker/webvis.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
     environment:
       FILTER_ID: webvis
       FILTER_SOURCES: "tcp://image_in:5550"

@@ -9,7 +9,7 @@ OpenFilter Library release notes
 - **ImageIn not exported from filters package**: Added `ImageIn` and `ImageInConfig` to `openfilter/filter_runtime/filters/__init__.py` exports.
 
 ### Added
-- **ImageIn Docker example**: Added `examples/image_in/Dockerfile` and `docker-compose.yaml` for local Docker testing of ImageIn -> Webvis pipelines.
+- **ImageIn Docker example**: Added `examples/image_in/docker-compose.yaml` for Docker testing of ImageIn -> Webvis pipelines (uses `docker/image_in.Dockerfile` and `docker/webvis.Dockerfile`).
 
 ## v0.1.22 - 2026-03-16
 

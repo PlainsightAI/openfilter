@@ -18,15 +18,13 @@ This example demonstrates the ImageIn filter, which reads images from local file
 ## Quick Start
 
 1. Install dependencies:
-   ```bash
+  ```bash
    pip install -r requirements.txt
-   ```
-
+  ```
 2. Run the demo:
-   ```bash
+  ```bash
    python main.py
-   ```
-
+  ```
 3. Open your browser to `http://localhost:8000` to see the images
 
 ## Demo Scenarios
@@ -34,9 +32,11 @@ This example demonstrates the ImageIn filter, which reads images from local file
 This directory includes five demonstration scenarios that showcase real-world use cases:
 
 ### 1. `scenario1_empty_start.py` - Empty Folder Start
+
 **Simulates:** Pipeline starts with an empty folder and waits for images to appear.
 
 **What it does:**
+
 - Creates an empty `test_images/` directory
 - Starts the pipeline with no images present
 - Automatically adds images at 5, 15, 25, 35, and 45 seconds
@@ -44,17 +44,20 @@ This directory includes five demonstration scenarios that showcase real-world us
 - Shows automatic pickup of new images when they're added
 
 **Usage:**
+
 ```bash
 python scenario1_empty_start.py
 ```
 
 **Expected behavior:**
+
 1. Pipeline starts with empty folder
 2. Webvis shows no images initially
 3. Images appear automatically as they're added to the folder
 4. Pipeline processes each new image as it appears
 
 **Timeline:**
+
 - **0s**: Pipeline starts with empty folder
 - **5s**: First image appears in browser
 - **15s**: Second image appears in browser
@@ -63,9 +66,11 @@ python scenario1_empty_start.py
 - **45s**: Fifth image appears in browser
 
 ### 2. `scenario2_excluded_images.py` - Dynamic Pattern Exclusion
+
 **Simulates:** Pipeline starts with images in folder but they're excluded by pattern, then demonstrates dynamic add/remove behavior.
 
 **What it does:**
+
 - Creates `test_images/` with 3 excluded images (.bmp, .png, .tiff)
 - Starts pipeline with pattern `*.jpg` only
 - Pipeline remains idle (ignores excluded formats)
@@ -73,17 +78,20 @@ python scenario1_empty_start.py
 - Shows how pipeline handles real-world file system changes
 
 **Usage:**
+
 ```bash
 python scenario2_excluded_images.py
 ```
 
 **Expected behavior:**
+
 1. Pipeline starts with excluded images present
 2. Webvis shows no images (pattern excludes them)
 3. Matching .jpg images are added, then removed, then re-added
 4. Pipeline responds dynamically to file system changes
 
 **Dynamic Timeline:**
+
 - **0-8s**: Pipeline idle (only excluded images present)
 - **8s**: Add matching image 1 → appears in browser
 - **12s**: Add matching image 2 → appears in browser
@@ -98,6 +106,7 @@ python scenario2_excluded_images.py
 - **60s**: Add new image 4 → appears in browser
 
 **Browser Display Timeline:**
+
 ```
 Time    | Browser Display
 --------|------------------
@@ -116,9 +125,11 @@ Time    | Browser Display
 ```
 
 ### 3. `scenario3_queue_empty.py` - Queue Empty Behavior
+
 **Simulates:** What happens when the pipeline processes all available images and the queue becomes empty.
 
 **What it does:**
+
 - Creates a folder with 3 initial images
 - Starts the pipeline and processes all images quickly
 - Queue becomes empty - demonstrates graceful idle state
@@ -126,17 +137,20 @@ Time    | Browser Display
 - Shows that pipeline doesn't crash when queue is empty
 
 **Usage:**
+
 ```bash
 python scenario3_queue_empty.py
 ```
 
 **Expected behavior:**
+
 1. Pipeline starts and quickly processes 3 initial images
 2. Queue becomes empty - pipeline goes idle (doesn't crash)
 3. After 15 seconds, new images are added
 4. Pipeline automatically resumes processing new images
 
 **Timeline:**
+
 - **0-3s**: Process initial 3 images rapidly
 - **3-15s**: Queue empty - pipeline idle but alive
 - **15s**: Add new images → pipeline resumes processing
@@ -145,9 +159,11 @@ python scenario3_queue_empty.py
 **Key Insight:** Pipeline remains responsive even when no images are available.
 
 ### 4. `scenario4_multi_fps.py` - Multiple Topics with Different FPS
+
 **Simulates:** Multiple image sources with independent FPS control running simultaneously.
 
 **What it does:**
+
 - Creates two separate image sources with different topics
 - **Fast Stream** (green borders): 2.0 FPS - updates every 0.5 seconds
 - **Slow Stream** (red borders): 0.5 FPS - updates every 2 seconds
@@ -155,29 +171,34 @@ python scenario3_queue_empty.py
 - Shows mixed output where streams process at their own speeds
 
 **Usage:**
+
 ```bash
 python scenario4_multi_fps.py
 ```
 
 **Expected behavior:**
+
 1. Two streams start simultaneously
 2. Green-bordered images appear every 0.5 seconds (fast stream)
 3. Red-bordered images appear every 2 seconds (slow stream)
 4. Output shows mixed timing - not synchronized
 
 **Timeline:**
+
 - **Fast Stream**: Images at 0.5s, 1.0s, 1.5s, 2.0s, 2.5s, 3.0s...
 - **Slow Stream**: Images at 2.0s, 4.0s, 6.0s, 8.0s...
 - **Mixed Output**: Interleaved streams at different rates
 
-See the results in the browser http://localhost:8000/fast and http://localhost:8000/slow
+See the results in the browser [http://localhost:8000/fast](http://localhost:8000/fast) and [http://localhost:8000/slow](http://localhost:8000/slow)
 
 **Key Insight:** Each topic has independent FPS control - no global bottleneck.
 
 ### 5. `scenario5_looping_demo.py` - Looping vs Non-Looping Comparison
+
 **Simulates:** Different looping behaviors: non-looping, finite looping, and infinite looping.
 
 **What it does:**
+
 - Demonstrates three phases of looping behavior
 - **Phase 1**: Non-looping (3 images processed once, then stops)
 - **Phase 2**: Finite looping (3 images processed 2 times total)
@@ -185,16 +206,19 @@ See the results in the browser http://localhost:8000/fast and http://localhost:8
 - Shows different use cases for each looping mode
 
 **Usage:**
+
 ```bash
 python scenario5_looping_demo.py
 ```
 
 **Expected behavior:**
+
 1. **Phase 1 (0-15s)**: Process 3 images once, then pipeline goes idle
 2. **Phase 2 (15-35s)**: Process 3 images twice (6 total), then stops
 3. **Phase 3 (35s+)**: Process 3 images infinitely until Ctrl+C
 
 **Phase Timeline:**
+
 ```
 Phase 1 (No Loop):
 0-6s     | Process images 1,2,3 once
@@ -286,6 +310,7 @@ export IMAGE_IN_MAXFPS="1.0"
 ## Pipeline Examples
 
 ### Basic Image Display
+
 ```python
 Filter.run_multi([
     (ImageIn, dict(sources='file://images', outputs='tcp://*:5550')),
@@ -294,6 +319,7 @@ Filter.run_multi([
 ```
 
 ### Image Processing Pipeline
+
 ```python
 Filter.run_multi([
     (ImageIn, dict(sources='file://images!loop', outputs='tcp://*:5550')),
@@ -307,6 +333,7 @@ Filter.run_multi([
 ```
 
 ### Multiple Sources Pipeline
+
 ```python
 Filter.run_multi([
     (ImageIn, dict(
@@ -320,20 +347,24 @@ Filter.run_multi([
 ## Source URI Formats
 
 ### Local Files
+
 - `file:///absolute/path/to/images`
 - `file://relative/path/to/images`
 
 ### AWS S3
+
 - `s3://bucket-name/path/to/images`
 - Requires AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, etc.)
 
 ### Google Cloud Storage
+
 - `gs://bucket-name/path/to/images`
 - Requires Google Cloud credentials (GOOGLE_APPLICATION_CREDENTIALS or gcloud auth)
 
 ## Options
 
 ### Source Options (using `!` syntax)
+
 - `!loop` - Enable infinite looping
 - `!loop=3` - Loop 3 times
 - `!pattern=*.jpg` - Filter by pattern
@@ -342,6 +373,7 @@ Filter.run_multi([
 - `!maxfps=1.0` - Control display FPS (images per second)
 
 ### Configuration Options
+
 - `sources`: Image source URIs
 - `pattern`: Glob or regex pattern to filter files
 - `poll_interval`: Seconds between directory scans (default: 5.0)
@@ -352,6 +384,7 @@ Filter.run_multi([
 ## Advanced Features
 
 ### Pattern Matching
+
 The filter supports both glob patterns and regex patterns:
 
 ```python
@@ -364,6 +397,7 @@ sources='file:///images!pattern=.*\\.(jpg|png)$'
 ```
 
 ### Looping Behavior
+
 Different looping options:
 
 ```python
@@ -378,6 +412,7 @@ sources='file:///images!loop=3'
 ```
 
 ### Recursive Scanning
+
 Scan subdirectories for images:
 
 ```python
@@ -385,6 +420,7 @@ sources='file:///images!recursive'
 ```
 
 ### FPS Control
+
 Control how fast images are displayed:
 
 ```python
@@ -399,6 +435,7 @@ sources='file:///images!maxfps=2.0'
 ```
 
 ### S3 Integration
+
 Read images from S3 buckets:
 
 ```python
@@ -406,6 +443,7 @@ sources='s3://my-bucket/images!pattern=*.jpg!region=us-west-2'
 ```
 
 ### GCS Integration
+
 Read images from Google Cloud Storage:
 
 ```python
@@ -415,23 +453,30 @@ sources='gs://my-bucket/images!pattern=*.jpg'
 ## Key Features Demonstrated
 
 ### Polling Behavior
+
 The filter polls for new images at the specified interval, demonstrating real-time monitoring capability.
 
 ### Pattern Filtering
+
 Demonstrates how patterns can exclude certain file types while monitoring for matching ones.
 
 ### FPS Control
+
 Controls display rate to prevent overwhelming downstream processing.
 
 ### Dynamic File Handling
+
 Demonstrates the pipeline's ability to:
+
 - **Add files**: Images appear immediately when added
 - **Remove files**: Images disappear when removed
 - **Re-add files**: Same images can be re-added and processed again
 - **Real-time monitoring**: Responds to file system changes instantly
 
 ### Threading Architecture
+
 Uses background threads for non-blocking operation:
+
 - **Non-blocking**: Pipeline starts immediately
 - **Clean shutdown**: Proper thread cleanup on Ctrl+C
 - **Error handling**: Thread errors don't crash the pipeline
@@ -439,12 +484,14 @@ Uses background threads for non-blocking operation:
 ## Real-World Applications
 
 ### Scenario 1 Use Cases:
+
 - **Security cameras**: Pipeline starts before cameras are active
 - **Batch processing**: Waiting for new image batches to arrive
 - **Monitoring systems**: Starting monitoring before data arrives
 - **File upload systems**: Monitoring for new uploads
 
 ### Scenario 2 Use Cases:
+
 - **File format filtering**: Only process specific image formats
 - **Quality control**: Ignore temporary or low-quality images
 - **Multi-format environments**: Handle mixed file types intelligently
@@ -452,6 +499,7 @@ Uses background threads for non-blocking operation:
 - **Testing environments**: Simulate real-world file system changes
 
 ### Scenario 3 Use Cases:
+
 - **Batch processing**: Handle periods with no incoming data
 - **Monitoring systems**: Graceful handling of quiet periods
 - **Production pipelines**: Robust behavior during data gaps
@@ -459,6 +507,7 @@ Uses background threads for non-blocking operation:
 - **Testing reliability**: Verify pipeline stability during idle periods
 
 ### Scenario 4 Use Cases:
+
 - **Multi-camera systems**: Different cameras with different frame rates
 - **Mixed data sources**: Local files + cloud storage at different speeds
 - **Priority processing**: Fast lane for urgent images, slow lane for background
@@ -466,6 +515,7 @@ Uses background threads for non-blocking operation:
 - **Resource optimization**: Balance processing load across sources
 
 ### Scenario 5 Use Cases:
+
 - **One-time processing**: Process dataset once and stop (no loop)
 - **Stress testing**: Repeat processing multiple times (finite loop)
 - **Continuous monitoring**: Process same images forever (infinite loop)
@@ -475,6 +525,7 @@ Uses background threads for non-blocking operation:
 ## Error Handling
 
 The filter handles various error conditions gracefully:
+
 - Missing directories/files
 - Invalid image files
 - Network issues (for cloud storage)
@@ -494,6 +545,7 @@ Errors are logged but don't stop the filter from continuing to process other ima
 ## Cloud Storage Setup
 
 ### AWS S3
+
 ```bash
 export AWS_ACCESS_KEY_ID="your-access-key"
 export AWS_SECRET_ACCESS_KEY="your-secret-key"
@@ -501,6 +553,7 @@ export AWS_DEFAULT_REGION="us-west-2"
 ```
 
 ### Google Cloud Storage
+
 ```bash
 # Option 1: Service account key file
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
@@ -512,42 +565,39 @@ gcloud auth application-default login
 ## Running the Scripts
 
 1. **Navigate to the directory:**
-   ```bash
+  ```bash
    cd examples/image_in
-   ```
-
+  ```
 2. **Run the main demo:**
-   ```bash
+  ```bash
    python main.py
-   ```
-
+  ```
 3. **Run scenario demos:**
-   ```bash
+  ```bash
    # Empty start demonstration
    python scenario1_empty_start.py
-   
+
    # Pattern filtering demonstration
    python scenario2_excluded_images.py
-   
+
    # Queue empty behavior demonstration
    python scenario3_queue_empty.py
-   
+
    # Multi-FPS topics demonstration
    python scenario4_multi_fps.py
-   
+
    # Looping behavior demonstration
    python scenario5_looping_demo.py
-   ```
-
+  ```
 4. **Open browser:**
-   Navigate to http://localhost:8000 to see the results
-
+  Navigate to [http://localhost:8000](http://localhost:8000) to see the results
 5. **Stop the pipeline:**
-   Press Ctrl+C to stop the pipeline
+  Press Ctrl+C to stop the pipeline
 
 ## Environment Variables
 
 You can customize behavior with environment variables:
+
 ```bash
 # Control polling frequency
 export IMAGE_IN_POLL_INTERVAL=2.0
@@ -561,9 +611,9 @@ python scenario1_empty_start.py
 
 ## Docker
 
-You can also run the ImageIn example using Docker. This builds from local source.
+### Production (published PyPI version)
 
-### Build and run
+Uses `docker/image_in.Dockerfile` and `docker/webvis.Dockerfile`, which install from PyPI:
 
 ```bash
 # From the repo root
@@ -571,25 +621,17 @@ docker compose -f examples/image_in/docker-compose.yaml build
 docker compose -f examples/image_in/docker-compose.yaml up
 ```
 
-Open http://localhost:8088 to see the images.
+### Development (local source)
 
-### Reproduce the reported bug (pre-fix)
+Uses `examples/image_in/Dockerfile.dev`, which builds from local source so your changes are included:
 
-The original bug was that ImageIn exited immediately with code 0:
-
-```yaml
-services:
-  image_in:
-    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/openfilter/image_in:v0.1.22
-    environment:
-      FILTER_ID: image_in
-      FILTER_SOURCES: file:///app/data/images!pattern=*.png!maxfps=2.0
-      FILTER_OUTPUTS: tcp://*:5550
-    volumes:
-      - ./test_images:/app/data/images:ro
+```bash
+# From the repo root
+docker compose -f examples/image_in/docker-compose.dev.yaml build
+docker compose -f examples/image_in/docker-compose.dev.yaml up
 ```
 
-This was caused by a missing `if __name__ == '__main__'` entry point. Fixed in v0.1.23.
+Open [http://localhost:8088](http://localhost:8088) to see the images.
 
 ## Troubleshooting
 
@@ -597,4 +639,5 @@ This was caused by a missing `if __name__ == '__main__'` entry point. Fixed in v
 - **Webvis not loading**: Ensure port 8000 is available
 - **Pipeline errors**: Check that all dependencies are installed
 - **Permission issues**: Ensure write permissions for creating test directories
-- **Thread issues**: Ensure proper cleanup with Ctrl+C 
+- **Thread issues**: Ensure proper cleanup with Ctrl+C
+

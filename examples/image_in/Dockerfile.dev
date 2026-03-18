@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.4
-# Build openfilter from local source for Docker-based ImageIn testing.
-# Build context must be the repo root: docker build -f examples/image_in/Dockerfile ../..
+# Build openfilter from local source for development testing.
+# Build context must be the repo root.
 FROM python:3.13-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY . /src
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir "/src[image_in]"
+    pip install --no-cache-dir "/src[all]"
 
 FROM python:3.13-slim
 
