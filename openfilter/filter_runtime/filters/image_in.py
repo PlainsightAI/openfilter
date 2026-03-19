@@ -484,9 +484,9 @@ class ImageIn(Filter):
                             # Infinite loop (True or 0) - reload all images
                             self._reload_images_for_topic(topic)
                         elif self.loop_counts[topic] > 0:
-                            # Finite loop - reload and decrement count
-                            self._reload_images_for_topic(topic)
-                            self.loop_counts[topic] -= 1
+                            # Finite loop - only decrement on successful reload
+                            if self._reload_images_for_topic(topic):
+                                self.loop_counts[topic] -= 1
                         else:
                             continue
                     else:
@@ -522,21 +522,22 @@ class ImageIn(Filter):
 
         return get_next_frame
 
-    def _reload_images_for_topic(self, topic: str):
-        """Reload all images for a topic (for looping)."""
+    def _reload_images_for_topic(self, topic: str) -> bool:
+        """Reload all images for a topic (for looping). Returns True on success."""
         for source in self.config.sources:
             if (source.topic or 'main') == topic:
                 try:
                     images = self._list_images(source)
                     self.queues[topic].extend(images)
-                    # Clear processed set and re-populate with reloaded images
-                    # so the poll thread doesn't re-add them as "new"
-                    self.processed[topic].clear()
-                    self.processed[topic].update(images)
+                    # Atomic reassignment so the poll thread's dedup guard
+                    # is never in a partially-cleared state
+                    self.processed[topic] = set(images)
                     logger.info(f"Reloaded {len(images)} images for topic '{topic}'")
+                    return True
                 except Exception as e:
                     logger.error(f"Failed to reload images for topic '{topic}': {e}")
-                break
+                    return False
+        return False
 
     def shutdown(self):
         """Clean up resources."""

@@ -611,7 +611,7 @@ class TestImageIn(unittest.TestCase):
             try:
                 result = queue.get(timeout=1)
                 self.assertIsNot(result, False, "Filter sent exit signal with no-loop config (should stay alive for polling)")
-            except:
+            except Exception:
                 pass  # Timeout is expected: no more frames and no exit signal
         finally:
             runner.stop()
