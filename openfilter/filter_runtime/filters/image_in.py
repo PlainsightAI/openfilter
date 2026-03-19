@@ -512,8 +512,11 @@ class ImageIn(Filter):
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')
 
+            # Exit only when ALL topics use finite loops (no infinite/no-loop topics mixed in)
+            # and every finite-loop topic has exhausted its queue and loop count.
+            # The len() guard prevents premature exit in mixed configs (e.g. one topic loops, another doesn't).
             if not out and self._finite_loop_topics and len(self._finite_loop_topics) == len(self.queues):
-                # Only exit if we actually processed at least one frame (frame_id >= 0)
+                # Also require at least one frame processed (frame_id >= 0)
                 # to avoid exiting immediately on an empty directory before polling finds files
                 if self.frame_id >= 0 and all(not self.queues[t] and self.loop_counts[t] <= 0 for t in self.queues):
                     self.exit('all images processed')
@@ -529,8 +532,10 @@ class ImageIn(Filter):
                 try:
                     images = self._list_images(source)
                     self.queues[topic].extend(images)
-                    # Atomic reassignment so the poll thread's dedup guard
-                    # is never in a partially-cleared state
+                    # Replace processed set with reloaded image paths.
+                    # Note: not fully thread-safe with the poll thread (no lock),
+                    # but reference swap minimizes the race window vs clear()+update().
+                    # A proper fix would require a threading lock around queue/processed ops.
                     self.processed[topic] = set(images)
                     logger.info(f"Reloaded {len(images)} images for topic '{topic}'")
                     return True

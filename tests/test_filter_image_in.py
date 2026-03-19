@@ -2,6 +2,7 @@
 
 import logging
 import os
+import queue
 import shutil
 import tempfile
 import unittest
@@ -588,6 +589,7 @@ class TestImageIn(unittest.TestCase):
 
     def test_no_loop_stays_alive(self):
         """Test that default (no loop) does NOT send exit signal, allowing polling to find new files."""
+        q = FiltersToQueue.Queue()
         runner = Filter.Runner([
             (ImageIn, dict(
                 sources=f'file://{self.test_dir}!pattern=*.jpg',
@@ -596,26 +598,26 @@ class TestImageIn(unittest.TestCase):
             )),
             (FiltersToQueue, dict(
                 sources='ipc://test-ImageIn',
-                queue=(queue := FiltersToQueue.Queue()).child_queue,
+                queue=q.child_queue,
             )),
         ], exit_time=5)
 
         try:
             # Consume the 3 JPG images
             for _ in range(3):
-                result = queue.get(timeout=3)
+                result = q.get(timeout=3)
                 self.assertIsNot(result, False, "Filter exited prematurely")
 
             # After consuming all images, the filter should NOT send False (exit signal).
             # It should stay alive for polling. Wait a bit to confirm no exit.
             try:
-                result = queue.get(timeout=1)
+                result = q.get(timeout=1)
                 self.assertIsNot(result, False, "Filter sent exit signal with no-loop config (should stay alive for polling)")
-            except Exception:
+            except queue.Empty:
                 pass  # Timeout is expected: no more frames and no exit signal
         finally:
             runner.stop()
-            queue.close()
+            q.close()
 
     def test_infinite_loop_stays_alive(self):
         """Test that loop=True keeps producing frames and never exits."""
