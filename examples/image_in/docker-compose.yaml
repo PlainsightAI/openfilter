@@ -1,0 +1,30 @@
+services:
+  image_in:
+    build:
+      context: ../..
+      dockerfile: docker/image_in.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
+    environment:
+      FILTER_ID: image_in
+      FILTER_SOURCES: "file:///app/data/images!pattern=*.png!maxfps=2.0!loop"
+      FILTER_OUTPUTS: "tcp://*:5550"
+      LOG_LEVEL: INFO
+    volumes:
+      - ./test_images:/app/data/images:ro
+
+  webvis:
+    build:
+      context: ../..
+      dockerfile: docker/webvis.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
+    environment:
+      FILTER_ID: webvis
+      FILTER_SOURCES: "tcp://image_in:5550"
+      FILTER_PORT: "8000"
+      LOG_LEVEL: INFO
+    depends_on:
+      - image_in
+    ports:
+      - "8088:8000"

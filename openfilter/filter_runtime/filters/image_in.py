@@ -160,9 +160,10 @@ class ImageIn(Filter):
                     For example, maxfps=1.0 means each image is displayed for 1 second.
 
         loop:
-            Only has meaning for file:// sources. True or 0 means infinite loop, False means don't loop and go through
-            the images only once, otherwise an int value loops through the images that number of times. Set here to apply
-            to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
+            Only has meaning for file:// sources. True or 0 means infinite loop. False means don't loop; images are
+            processed once but the filter stays alive for polling (new files added to the directory will still be
+            picked up). An int value (e.g. 2) loops through the images that number of times, then exits. Set here
+            to apply to all sources or can be set individually per source. Global env var default FILTER_LOOP / IMAGE_IN_LOOP.
 
         recursive:
             Only has meaning for file:// sources. If True then scan subdirectories recursively. Set here to apply
@@ -274,7 +275,11 @@ class ImageIn(Filter):
             if topic not in self.queues:
                 self.queues[topic] = []
                 self.processed[topic] = set()
-                self.loop_counts[topic] = source.options.loop if isinstance(source.options.loop, int) else (0 if source.options.loop else 1)
+                loop_val = source.options.loop if source.options.loop is not None else config.loop
+                if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
+                    self.loop_counts[topic] = loop_val - 1   # finite: remaining reloads after initial pass
+                else:
+                    self.loop_counts[topic] = 0
                 
                 # Initialize FPS control for this topic
                 maxfps = source.options.maxfps or config.maxfps or IMAGE_IN_MAXFPS
@@ -282,7 +287,17 @@ class ImageIn(Filter):
                     self.ns_per_maxfps[topic] = int(1_000_000_000 // maxfps)
                     self.tmaxfps[topic] = time_ns()
                     logger.info(f"ImageIn topic '{topic}' FPS limited to {maxfps:.1f} fps")
-        
+
+        # Precompute topic-to-source map and identify finite-loop topics
+        self._topic_sources = {}
+        self._finite_loop_topics = set()
+        for source in config.sources:
+            topic = source.topic or 'main'
+            self._topic_sources[topic] = source
+            loop_val = source.options.loop if source.options.loop is not None else config.loop
+            if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
+                self._finite_loop_topics.add(topic)
+
         # Load initial images
         self._load_initial_images()
         
@@ -299,6 +314,7 @@ class ImageIn(Filter):
             try:
                 images = self._list_images(source)
                 self.queues[topic].extend(images)
+                self.processed[topic].update(images)
                 logger.info(f"Loaded {len(images)} images from {source.source} for topic '{topic}'")
             except Exception as e:
                 logger.error(f"Failed to load images from {source.source}: {e}")
@@ -461,15 +477,16 @@ class ImageIn(Filter):
             for topic, queue in self.queues.items():
                 if not queue:
                     # Check if we should loop
-                    source = next((s for s in self.config.sources if (s.topic or 'main') == topic), None)
-                    if source and (source.options.loop or self.config.loop):
-                        if source.options.loop is True or self.config.loop is True:
-                            # Infinite loop - reload all images
+                    source = self._topic_sources.get(topic)
+                    loop_val = source.options.loop if (source and source.options.loop is not None) else self.config.loop
+                    if source and loop_val is not None and loop_val is not False:
+                        if loop_val is True or loop_val == 0:
+                            # Infinite loop (True or 0) - reload all images
                             self._reload_images_for_topic(topic)
                         elif self.loop_counts[topic] > 0:
-                            # Finite loop - reload and decrement count
-                            self._reload_images_for_topic(topic)
-                            self.loop_counts[topic] -= 1
+                            # Finite loop - only decrement on successful reload
+                            if self._reload_images_for_topic(topic):
+                                self.loop_counts[topic] -= 1
                         else:
                             continue
                     else:
@@ -495,23 +512,37 @@ class ImageIn(Filter):
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')
 
+            # Exit only when ALL topics use finite loops (no infinite/no-loop topics mixed in)
+            # and every finite-loop topic has exhausted its queue and loop count.
+            # The len() guard prevents premature exit in mixed configs (e.g. one topic loops, another doesn't).
+            if not out and self._finite_loop_topics and len(self._finite_loop_topics) == len(self.queues):
+                # Also require at least one frame processed (frame_id >= 0)
+                # to avoid exiting immediately on an empty directory before polling finds files
+                if self.frame_id >= 0 and all(not self.queues[t] and self.loop_counts[t] <= 0 for t in self.queues):
+                    self.exit('all images processed')
+
             return out or None
 
         return get_next_frame
 
-    def _reload_images_for_topic(self, topic: str):
-        """Reload all images for a topic (for looping)."""
+    def _reload_images_for_topic(self, topic: str) -> bool:
+        """Reload all images for a topic (for looping). Returns True on success."""
         for source in self.config.sources:
             if (source.topic or 'main') == topic:
                 try:
                     images = self._list_images(source)
                     self.queues[topic].extend(images)
-                    # Clear processed set for this topic to allow reprocessing
-                    self.processed[topic].clear()
+                    # Replace processed set with reloaded image paths.
+                    # Note: not fully thread-safe with the poll thread (no lock),
+                    # but reference swap minimizes the race window vs clear()+update().
+                    # A proper fix would require a threading lock around queue/processed ops.
+                    self.processed[topic] = set(images)
                     logger.info(f"Reloaded {len(images)} images for topic '{topic}'")
+                    return True
                 except Exception as e:
                     logger.error(f"Failed to reload images for topic '{topic}': {e}")
-                break
+                    return False
+        return False
 
     def shutdown(self):
         """Clean up resources."""
@@ -519,3 +550,7 @@ class ImageIn(Filter):
         if hasattr(self, 'poll_thread'):
             self.poll_thread.join(timeout=5)
         logger.info(f"ImageIn sent {self.frame_id + 1} frames; shutting down.")
+
+
+if __name__ == '__main__':
+    ImageIn.run()

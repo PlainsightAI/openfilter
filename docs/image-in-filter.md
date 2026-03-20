@@ -27,6 +27,59 @@ The ImageIn filter is designed to handle image ingestion scenarios where you nee
 - **Thread-Safe**: Background polling with proper synchronization
 - **Dynamic File Handling**: Respond to file additions, removals, and changes
 
+## Running as a Module / Docker
+
+ImageIn can be run standalone as a Python module, which is how the Docker image starts it:
+
+```bash
+python -m openfilter.filter_runtime.filters.image_in
+```
+
+This requires `FILTER_SOURCES` and `FILTER_OUTPUTS` environment variables to be set.
+
+### Docker image
+
+The Docker CMD is:
+
+```dockerfile
+CMD ["python", "-m", "openfilter.filter_runtime.filters.image_in"]
+```
+
+### Example docker-compose (ImageIn -> Webvis)
+
+```yaml
+services:
+  image_in:
+    build:
+      context: ../..
+      dockerfile: docker/image_in.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
+    environment:
+      FILTER_ID: image_in
+      FILTER_SOURCES: "file:///app/data/images!pattern=*.png!maxfps=2.0!loop"
+      FILTER_OUTPUTS: "tcp://*:5550"
+    volumes:
+      - ./test_images:/app/data/images:ro
+
+  webvis:
+    build:
+      context: ../..
+      dockerfile: docker/webvis.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.1.23}
+    environment:
+      FILTER_ID: webvis
+      FILTER_SOURCES: "tcp://image_in:5550"
+      FILTER_PORT: "8000"
+    depends_on:
+      - image_in
+    ports:
+      - "8088:8000"
+```
+
+See `examples/image_in/` for the full Docker example.
+
 ## Configuration
 
 ### Basic Configuration

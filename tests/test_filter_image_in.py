@@ -2,6 +2,7 @@
 
 import logging
 import os
+import queue
 import shutil
 import tempfile
 import unittest
@@ -555,5 +556,125 @@ class TestImageIn(unittest.TestCase):
             queue.close()
 
 
+    def test_finite_loop_exits(self):
+        """Test that finite loop (loop=2) processes images N times then exits."""
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}!loop=2!pattern=*.jpg',
+                outputs='ipc://test-ImageIn',
+                poll_interval=300,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=10)
+
+        try:
+            frames = []
+            while True:
+                try:
+                    result = queue.get(timeout=3)
+                    if result is False:
+                        break
+                    frames.append(result)
+                except:
+                    self.fail("Timed out waiting for frames or exit signal")
+
+            # 3 images x 2 loops = 6 frames
+            self.assertEqual(len(frames), 6, f"Expected 6 frames (3 images x 2 loops), got {len(frames)}")
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_no_loop_stays_alive(self):
+        """Test that default (no loop) does NOT send exit signal, allowing polling to find new files."""
+        q = FiltersToQueue.Queue()
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}!pattern=*.jpg',
+                outputs='ipc://test-ImageIn',
+                poll_interval=0.1,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn',
+                queue=q.child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            # Consume the 3 JPG images
+            for _ in range(3):
+                result = q.get(timeout=3)
+                self.assertIsNot(result, False, "Filter exited prematurely")
+
+            # After consuming all images, the filter should NOT send False (exit signal).
+            # It should stay alive for polling. Wait a bit to confirm no exit.
+            try:
+                result = q.get(timeout=1)
+                self.assertIsNot(result, False, "Filter sent exit signal with no-loop config (should stay alive for polling)")
+            except queue.Empty:
+                pass  # Timeout is expected: no more frames and no exit signal
+        finally:
+            runner.stop()
+            q.close()
+
+    def test_infinite_loop_stays_alive(self):
+        """Test that loop=True keeps producing frames and never exits."""
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}!loop!pattern=*.jpg',
+                outputs='ipc://test-ImageIn',
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            # Consume more than one cycle (3 images), proving it loops
+            for i in range(6):
+                result = queue.get(timeout=3)
+                self.assertIsNot(result, False, f"Filter exited on frame {i}, should loop infinitely")
+                self.assertIn('main', result)
+        finally:
+            runner.stop()
+            queue.close()
+
+
+    def test_global_config_loop_fallback(self):
+        """Test that global config.loop=N works when per-source loop is not set."""
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}!pattern=*.jpg',
+                outputs='ipc://test-ImageIn',
+                loop=2,  # global config, not per-source !loop=2
+                poll_interval=300,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=10)
+
+        try:
+            frames = []
+            while True:
+                try:
+                    result = queue.get(timeout=3)
+                    if result is False:
+                        break
+                    frames.append(result)
+                except:
+                    self.fail("Timed out waiting for frames or exit signal")
+
+            # 3 images x 2 loops = 6 frames (same as per-source !loop=2)
+            self.assertEqual(len(frames), 6, f"Expected 6 frames (3 images x 2 loops via config.loop), got {len(frames)}")
+        finally:
+            runner.stop()
+            queue.close()
+
+
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()
