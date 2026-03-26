@@ -136,6 +136,7 @@ class FilterConfig(adict):  # types are informative to you as in the end they're
     mq_log:              str | bool | None
     mq_msgid_sync:       bool | None
 
+    device:               str | int | None
     metrics_csv_path:     str | None
     metrics_csv_interval: float | None
 
@@ -1047,8 +1048,85 @@ class Filter:
     # - FOR SPECIAL SUBCLASS -------------------------------------------------------------------------------------------
     
     
+    def _validate_device(self, config: FilterConfig) -> None:
+        """Validate GPU/CUDA availability when device=cuda is requested.
+
+        Called early in init() before model loading. Supports:
+          - 'cuda', 'cuda:0', etc.: require CUDA, raise RuntimeError if unavailable
+          - 'auto': use CUDA if available, warn and fall back to CPU otherwise
+          - 'cpu', None, or missing: no validation needed
+          - integer >= 0: treated as a CUDA device index
+        """
+        device = config.get('device')
+        if device is None:
+            return
+
+        device_str = str(device).strip().lower()
+
+        is_cuda = device_str.startswith('cuda') or (isinstance(device, int) and device >= 0)
+        is_auto = device_str == 'auto'
+
+        if not is_cuda and not is_auto:
+            return  # cpu or unrecognized -- nothing to check
+
+        try:
+            import torch
+        except ImportError:
+            return  # torch not installed, non-GPU filter
+
+        try:
+            cuda_available = torch.cuda.is_available()
+        except Exception as exc:
+            logger.warning("FILTER_DEVICE=%s but torch.cuda.is_available() raised: %s", device, exc)
+            if is_auto:
+                config['device'] = 'cpu'
+            return
+
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            device_name = torch.cuda.get_device_name(0) if device_count > 0 else 'unknown'
+            logger.info(
+                "CUDA available: device_count=%d, device_name=%s, cuda_version=%s",
+                device_count, device_name, torch.version.cuda,
+            )
+            if not is_auto:
+                # Validate explicit device index is in range
+                idx = device if isinstance(device, int) else None
+                if idx is None and ':' in device_str:
+                    try:
+                        idx = int(device_str.split(':', 1)[1])
+                    except ValueError:
+                        pass
+                if idx is not None and idx >= device_count:
+                    raise RuntimeError(
+                        f"FILTER_DEVICE={device} requested device index {idx} but only "
+                        f"{device_count} CUDA device(s) available (indices 0-{device_count - 1})."
+                    )
+            else:
+                config['device'] = 'cuda'
+        else:
+            cuda_version = getattr(torch.version, 'cuda', 'unknown')
+            cuda_built = torch.backends.cuda.is_built() if hasattr(torch.backends, 'cuda') else False
+
+            if is_auto:
+                logger.warning(
+                    "FILTER_DEVICE=auto but CUDA is not available "
+                    "(PyTorch CUDA version: %s, CUDA built: %s). Falling back to CPU.",
+                    cuda_version, cuda_built,
+                )
+                config['device'] = 'cpu'
+            else:
+                raise RuntimeError(
+                    f"FILTER_DEVICE={device} but CUDA is not available. "
+                    f"PyTorch CUDA version: {cuda_version}, CUDA built: {cuda_built}. "
+                    f"Check that the GPU node driver is compatible with CUDA {cuda_version}. "
+                    f"Use FILTER_DEVICE=cpu or FILTER_DEVICE=auto to run on CPU."
+                )
+
     def init(self, config: FilterConfig):
         """Mostly set up inter-filter communication."""
+
+        self._validate_device(config)
 
         # Prepare facets with config and version information
         facets = dict(config)
