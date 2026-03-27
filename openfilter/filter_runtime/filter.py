@@ -1080,7 +1080,11 @@ class Filter:
             logger.warning("FILTER_DEVICE=%s but torch.cuda.is_available() raised: %s", device, exc)
             if is_auto:
                 config['device'] = 'cpu'
-            return
+                return
+            raise RuntimeError(
+                f"FILTER_DEVICE={device} but torch.cuda.is_available() raised: {exc}. "
+                f"Check GPU driver and CUDA installation."
+            ) from exc
 
         if cuda_available:
             device_count = torch.cuda.device_count()

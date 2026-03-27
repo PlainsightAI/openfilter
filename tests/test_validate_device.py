@@ -197,15 +197,17 @@ class TestValidateDevice(unittest.TestCase):
         self.assertTrue(any('unknown' in msg for msg in cm.output))
 
     def test_is_available_raises_exception_cuda_device(self):
-        """torch.cuda.is_available() raises -- logs warning, does not crash."""
+        """torch.cuda.is_available() raises -- raises RuntimeError for explicit cuda."""
         mock_torch = _mock_torch()
         mock_torch.cuda.is_available.side_effect = RuntimeError("CUDA driver error")
 
         f, config = self._make('cuda')
         with patch.dict('sys.modules', {'torch': mock_torch}):
             with self.assertLogs('openfilter.filter_runtime.filter', level='WARNING') as cm:
-                f._validate_device(config)
+                with self.assertRaises(RuntimeError) as ctx:
+                    f._validate_device(config)
 
+        self.assertIn('CUDA driver error', str(ctx.exception))
         self.assertTrue(any('CUDA driver error' in msg for msg in cm.output))
 
     def test_is_available_raises_exception_auto_falls_back(self):
