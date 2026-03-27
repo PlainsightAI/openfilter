@@ -62,8 +62,9 @@ When `batch_size` is set to a value greater than 1 in the filter config, the run
     class MyGPUFilter(Filter):
         def process_batch(self, batch):
             # batch is a list of frame dicts, each as would be passed to process()
-            features = self.model.encode_batch([extract_image(f) for f in batch])
-            return [self.decode(f, feat) for f, feat in zip(batch, features)]
+            images = [f["main"].img for f in batch]  # extract image from each frame dict
+            features = self.model.encode_batch(images)
+            return [self.process(f) for f in batch]  # return one result per input frame
 
 Config options:
 

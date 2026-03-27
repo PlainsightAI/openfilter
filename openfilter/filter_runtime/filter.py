@@ -333,8 +333,6 @@ class FilterContext:
 
 
 class Filter:
-    _batch_size: int = 1
-
     """Filter base class. All filters derive from this and can override any of these config options but in practice
     mostly override `sources` and `outputs` to specify other sources or outputs than the filter pipeline.
 
@@ -615,6 +613,7 @@ class Filter:
     _EMA_ALPHA = (
         0.05  # smoothing factor for exponential moving averages (timing metrics)
     )
+    _batch_size: int = 1
     metric_specs: List[MetricSpec] = []  # subclasses override this to declare metrics
 
     @property
@@ -682,7 +681,8 @@ class Filter:
         self._frame_buffer: list[dict[str, Frame]] = []
         self._batch_lock = threading.Lock()
         self._batch_timer: threading.Timer | None = None
-        self._batch_flush_needed = False
+        self._batch_flush_event = threading.Event()
+        self._batch_pending_results: list[dict[str, Frame]] = []
 
         try:
             self.telemetry_enabled: bool = (
@@ -1152,10 +1152,13 @@ class Filter:
         self, frames: dict[str, Frame]
     ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
 
+        # Wrap process() with timing
         t_in = time.time()
         processed_frames = self.process(frames)
         t_out = time.time()
 
+        # Update per-filter timing unless process() returned a callable,
+        # in which case _timed_callable will record the real duration later.
         process_time_ms = (t_out - t_in) * 1000
         if not callable(processed_frames):
             self._filter_time_in = t_in
@@ -1179,7 +1182,7 @@ class Filter:
             try:
                 self._metadata_queue.put_nowait((final_frames, self.emitter))
             except queue.Full:
-                pass
+                pass  # metadata is best-effort; drop if queue is full
 
         if callable(processed_frames):
 
@@ -1208,6 +1211,8 @@ class Filter:
     def _process_frames_batched(
         self, frames: dict[str, Frame]
     ) -> dict[str, Frame] | None:
+        if not frames:
+            return None
         with self._batch_lock:
             self._cancel_batch_timer()
             self._frame_buffer.append(frames)
@@ -1218,48 +1223,73 @@ class Filter:
 
             batch = list(self._frame_buffer)
             self._frame_buffer.clear()
-            self._batch_flush_needed = False
+            self._batch_flush_event.clear()
 
-        return self._execute_batch(batch)
+        results = self._execute_batch(batch)
+        # Stash intermediate results for loop_once to drain.
+        # _batch_pending_results is only accessed from the loop_once thread,
+        # so no lock is needed here.
+        if len(results) > 1:
+            self._batch_pending_results = results[:-1]
+        return results[-1] if results else None
 
-    def _process_batch_flush(self) -> dict[str, Frame] | None:
+    def _process_batch_flush(self) -> list[dict[str, Frame]] | None:
         batch = self._take_flush_batch()
         if batch is None:
             return None
-        return self._execute_batch(batch)
+        results = self._execute_batch(batch)
+        return results if results else None
 
-    def _execute_batch(self, batch: list[dict[str, Frame]]) -> dict[str, Frame] | None:
+    def _execute_batch(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[dict[str, Frame]]:
+        """Run process_batch() and return normalized, timing-injected results.
+
+        Returns a list of frame dicts (possibly empty). The caller is
+        responsible for sending each result downstream.
+        """
         t_in = time.time()
         results = self.process_batch(batch)
+        if results is None:
+            results = [None] * len(batch)
         t_out = time.time()
+        if len(results) != len(batch):
+            logger.debug(
+                "process_batch returned %d results for %d input frames",
+                len(results), len(batch),
+            )
 
         process_time_ms = (t_out - t_in) * 1000
+        # Use full batch duration for each frame: batch processing is indivisible,
+        # so per-frame timing should reflect the actual batch wall-clock time.
         self._filter_time_in = t_in
         self._filter_time_out = t_out
         self._update_process_time_ema(process_time_ms)
 
-        last_result = None
+        # Normalize results: wrap bare Frames, skip Nones
+        normalized = []
         for result in results:
             if result is None:
                 continue
             if isinstance(result, Frame):
-                last_result = {"main": result}
+                normalized.append({"main": result})
             else:
-                last_result = result
+                normalized.append(result)
 
-        if last_result is None:
+        if not normalized:
             if self._is_last_filter and batch:
                 self._inject_timings(batch[-1], t_in, t_out, process_time_ms)
-            return None
+            return []
 
-        self._inject_timings(last_result, t_in, t_out, process_time_ms)
+        # Inject per-frame timing metadata into every result
+        for frames in normalized:
+            self._inject_timings(frames, t_in, t_out, process_time_ms)
+            try:
+                self._metadata_queue.put_nowait((frames, self.emitter))
+            except queue.Full:
+                pass  # metadata is best-effort; drop if queue is full
 
-        try:
-            self._metadata_queue.put_nowait((last_result, self.emitter))
-        except queue.Full:
-            pass
-
-        return last_result
+        return normalized
 
     def _send_frames(self, frames, outputs_timeout: float) -> None:
         while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
@@ -1286,10 +1316,11 @@ class Filter:
             if self.stop_evt.is_set():
                 self.exit()
 
-            if batch_mode and self._batch_flush_needed:
+            if batch_mode and self._batch_flush_event.is_set():
                 flushed = self._process_batch_flush()
                 if flushed is not None:
-                    self._send_frames(flushed, outputs_timeout)
+                    for result in flushed:
+                        self._send_frames(result, outputs_timeout)
                     if (
                         exit_after_t := self.exit_after_t
                     ) is not None and time() >= exit_after_t:
@@ -1301,9 +1332,34 @@ class Filter:
 
                 break
 
+        # Flush any partial batch before processing the timeout empty-frames
+        if batch_mode:
+            with self._batch_lock:
+                if self._frame_buffer:
+                    batch = list(self._frame_buffer)
+                    self._frame_buffer.clear()
+                    self._batch_flush_event.clear()
+                    self._cancel_batch_timer()
+                else:
+                    batch = None
+            if batch is not None:
+                flushed_results = self._execute_batch(batch)
+                for r in flushed_results:
+                    self._send_frames(r, outputs_timeout)
+
         frames = self.process_frames(frames)
 
-        self._send_frames(frames, outputs_timeout)
+        # In batch mode, send any intermediate results that were stashed
+        # by _process_frames_batched before the final result.
+        if self._batch_pending_results:
+            for pending in self._batch_pending_results:
+                self._send_frames(pending, outputs_timeout)
+            self._batch_pending_results.clear()
+
+        # In batch mode, None means "batch not full yet" — don't send.
+        # In non-batch mode, None from sink filters must still be sent (metrics accounting).
+        if not (batch_mode and frames is None):
+            self._send_frames(frames, outputs_timeout)
 
         if (exit_after_t := self.exit_after_t) is not None and time() >= exit_after_t:
             self.exit("exit_after")
@@ -1583,6 +1639,15 @@ class Filter:
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
         self._cancel_batch_timer()
+        if self._frame_buffer:
+            batch = list(self._frame_buffer)
+            self._frame_buffer.clear()
+            try:
+                results = self._execute_batch(batch)
+                for r in results:
+                    self.mq.send(r, POLL_TIMEOUT_MS)
+            except Exception:
+                logger.warning("Failed to flush partial batch on shutdown")
         self._stop_metadata_worker()
         if hasattr(self, "emitter") and self.emitter is not None:
             self.emitter.emit_stop()
@@ -1712,7 +1777,13 @@ class Filter:
             as process() return values (dict, Frame, None). Callables are NOT supported
             in batch mode.
         """
-        return [self.process(frames) for frames in batch]
+        results = []
+        for frames in batch:
+            r = self.process(frames)
+            if callable(r):
+                r = r()
+            results.append(r)
+        return results
 
     def _cancel_batch_timer(self) -> None:
         if self._batch_timer is not None:
@@ -1730,18 +1801,18 @@ class Filter:
 
     def _on_batch_timeout(self) -> None:
         with self._batch_lock:
-            self._batch_flush_needed = True
+            self._batch_flush_event.set()
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
         """If a flush is pending and buffer is non-empty, return the batch and reset state."""
         with self._batch_lock:
-            if self._batch_flush_needed and self._frame_buffer:
+            if self._batch_flush_event.is_set() and self._frame_buffer:
                 batch = list(self._frame_buffer)
                 self._frame_buffer.clear()
-                self._batch_flush_needed = False
+                self._batch_flush_event.clear()
                 self._cancel_batch_timer()
                 return batch
-            self._batch_flush_needed = False
+            self._batch_flush_event.clear()
             return None
 
     # - PUBLIC ---------------------------------------------------------------------------------------------------------

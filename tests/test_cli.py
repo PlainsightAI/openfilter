@@ -9,6 +9,14 @@ import unittest
 from time import sleep
 
 from openfilter.filter_runtime.filter import Filter
+
+
+def _has_vidgear():
+    try:
+        import vidgear  # noqa: F401
+        return True
+    except ImportError:
+        return False
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 
 logger = logging.getLogger(__name__)
@@ -139,6 +147,9 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(actual["Util"]["log"], "pretty")
         self.assertIn("Webvis", actual)
 
+    @unittest.skipUnless(
+        _has_vidgear(), "vidgear not installed"
+    )
     def test_run(self):
         quiet_unlink(TEST_VIDEO_OUT_FNM)
 

@@ -179,11 +179,11 @@ class TestBatchAccumulation(unittest.TestCase):
         f.process_frames({"main": Frame({"val": 2})})
 
         self.assertEqual(len(f._frame_buffer), 2)
-        self.assertFalse(f._batch_flush_needed)
+        self.assertFalse(f._batch_flush_event.is_set())
 
         time.sleep(0.1)
 
-        self.assertTrue(f._batch_flush_needed)
+        self.assertTrue(f._batch_flush_event.is_set())
 
     def test_flush_returns_partial_batch(self):
         f = self._make_filter(batch_size=5, timeout_ms=50.0)
