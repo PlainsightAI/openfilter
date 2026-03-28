@@ -5,7 +5,6 @@ import inspect
 import logging
 import os
 import subprocess
-import textwrap
 import unittest
 from time import sleep
 
