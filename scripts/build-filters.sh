@@ -56,11 +56,7 @@ if [[ "${DRY_RUN}" != "true" ]]; then
   # which is invalid — google-auth's authorized_user type requires client_id,
   # client_secret, and refresh_token (not a raw access token). In Cloud Build
   # there is no ADC file, so the fallback always ran and always failed.
-  # The token is passed as --build-arg GAR_TOKEN to filter_base builds.
-  # NOTE: Dockerfile.filter_base in filter-runtime must be updated to declare
-  #   ONBUILD ARG GAR_TOKEN
-  # and replace the --mount=type=secret pip call with:
-  #   --extra-index-url https://oauth2accesstoken:${GAR_TOKEN}@us-west1-python.pkg.dev/plainsightai-prod/python/simple
+  # The token is passed as --build-arg GAR_TOKEN to builds that need GAR access.
   # Done once here to avoid concurrent gcloud calls from parallel workers.
   GAR_ACCESS_TOKEN=$(gcloud auth print-access-token)
 fi
@@ -359,12 +355,6 @@ else
     local FILTER_VERSION
     FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
 
-    # Detect build type
-    local BUILD_TYPE="standard"
-    if grep -qE 'FROM.*filter_base' Dockerfile 2>/dev/null; then
-      BUILD_TYPE="filter_base"
-    fi
-
     # Determine push targets
     local GAR_IMAGE="${GAR_REGION}-docker.pkg.dev/${GAR_PROJECT}/${GAR_REPO}/${REPO}"
     local DOCKERHUB_IMAGE="${DOCKERHUB_ORG}/${IMAGE}"
@@ -375,21 +365,15 @@ else
       TAGS="${TAGS} -t ${DOCKERHUB_IMAGE}:${FILTER_VERSION} -t ${DOCKERHUB_IMAGE}:latest"
     fi
 
-    # Build args
+    # Build args — always pass GAR_TOKEN and RESOURCE_BUNDLE_VERSION.
+    # Dockerfiles that don't declare these ARGs silently ignore them.
     local BUILD_ARGS=""
     local BUILD_SECRETS=""
-    if [[ "${BUILD_TYPE}" == "filter_base" ]]; then
-      local RBV
-      RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
-      BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
-      # Issue 2 fix: pass the GAR access token as a build arg instead of a
-      # credential file. The credential-file approach always fell through to
-      # an invalid authorized_user JSON in Cloud Build. Dockerfile.filter_base
-      # must be updated to use ARG GAR_TOKEN and inline the token in the pip
-      # index URL (see the GAR_ACCESS_TOKEN comment block above for details).
-      if [[ -n "${GAR_ACCESS_TOKEN:-}" ]]; then
-        BUILD_ARGS="${BUILD_ARGS} --build-arg GAR_TOKEN=${GAR_ACCESS_TOKEN}"
-      fi
+    local RBV
+    RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
+    BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
+    if [[ -n "${GAR_ACCESS_TOKEN:-}" ]]; then
+      BUILD_ARGS="${BUILD_ARGS} --build-arg GAR_TOKEN=${GAR_ACCESS_TOKEN}"
     fi
 
     # Push and cache flags
@@ -411,7 +395,7 @@ else
     fi
 
     local LOG_FILE="${WORKSPACE}/results/${REPO}.log"
-    echo "[${REPO}] Building ${BUILD_TYPE} ${FILTER_VERSION} (${VISIBILITY})"
+    echo "[${REPO}] Building ${FILTER_VERSION} (${VISIBILITY})"
     docker buildx build \
       --platform "${PLATFORMS}" \
       ${CACHE_FROM} \
