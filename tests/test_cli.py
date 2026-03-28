@@ -159,7 +159,11 @@ class TestCLI(unittest.TestCase):
         )
 
         try:
-            sleep(0.5)  # maybe ffmpeg didn't finish writing out the file yet
+            # Wait for ffmpeg to finish writing the output file (up to 10 seconds)
+            for _ in range(20):
+                if os.path.isfile(TEST_VIDEO_OUT_FNM) and os.stat(TEST_VIDEO_OUT_FNM).st_size > 0:
+                    break
+                sleep(0.5)
 
             self.assertEqual(res.returncode, 0)
             self.assertTrue(os.path.isfile(TEST_VIDEO_OUT_FNM))
