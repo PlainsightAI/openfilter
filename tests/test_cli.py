@@ -104,7 +104,8 @@ class TestCLI(unittest.TestCase):
         )
 
         self.assertEqual(res.returncode, 0)
-        self.assertTrue(inspect.cleandoc(Filter.__doc__).strip() in res.stdout)
+        doc = Filter.__doc__ or ""
+        self.assertTrue(inspect.cleandoc(doc).strip() in res.stdout)
 
     def test_run_dry(self):
         res = subprocess.run(
