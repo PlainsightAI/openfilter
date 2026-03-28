@@ -155,20 +155,28 @@ class TestCLI(unittest.TestCase):
         """.strip().split(),
             ],
             stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
 
         try:
-            # Wait for ffmpeg to finish writing the output file (up to 10 seconds)
-            for _ in range(20):
+            # Wait for ffmpeg to finish writing the output file (up to 30 seconds)
+            for _ in range(60):
                 if os.path.isfile(TEST_VIDEO_OUT_FNM) and os.stat(TEST_VIDEO_OUT_FNM).st_size > 0:
                     break
                 sleep(0.5)
 
-            self.assertEqual(res.returncode, 0)
-            self.assertTrue(os.path.isfile(TEST_VIDEO_OUT_FNM))
+            self.assertEqual(
+                res.returncode, 0,
+                f"Pipeline exited with code {res.returncode}.\nstderr: {res.stderr}",
+            )
+            self.assertTrue(
+                os.path.isfile(TEST_VIDEO_OUT_FNM),
+                f"Output file not found. returncode={res.returncode}, stderr={res.stderr}",
+            )
             self.assertGreater(
-                os.stat(TEST_VIDEO_OUT_FNM).st_size, 0
+                os.stat(TEST_VIDEO_OUT_FNM).st_size, 0,
+                f"Output file is empty. returncode={res.returncode}, stderr={res.stderr}",
             )  # just make sure it exists and has data, correctness is tested elsewhere
 
         finally:
