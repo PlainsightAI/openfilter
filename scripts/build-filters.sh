@@ -56,7 +56,7 @@ if [[ "${DRY_RUN}" != "true" ]]; then
   # which is invalid — google-auth's authorized_user type requires client_id,
   # client_secret, and refresh_token (not a raw access token). In Cloud Build
   # there is no ADC file, so the fallback always ran and always failed.
-  # The token is passed as --build-arg GAR_TOKEN to builds that need GAR access.
+  # The token is passed as a Docker secret (--secret id=gar_token) to builds that need GAR access.
   # Done once here to avoid concurrent gcloud calls from parallel workers.
   GAR_ACCESS_TOKEN=$(gcloud auth print-access-token)
 fi
@@ -285,7 +285,7 @@ for REPO in ${FILTER_REPOS}; do
   # {{REPO_NAME_KEBABCASE}} in a FROM line causes BuildKit "invalid reference format"
   # immediately. This check catches any future repo that skips templatize, beyond
   # the explicit exclude list above.
-  if grep -q '{{' Dockerfile 2>/dev/null; then
+  if grep -E '^FROM|^From' Dockerfile 2>/dev/null | grep -q '{{'; then
     echo "  ${REPO}: skip (unresolved template placeholders in Dockerfile)"
     echo "${REPO}: SKIPPED (unrendered template)" >> "${WORKSPACE}/results/summary.txt"
     continue
@@ -365,15 +365,20 @@ else
       TAGS="${TAGS} -t ${DOCKERHUB_IMAGE}:${FILTER_VERSION} -t ${DOCKERHUB_IMAGE}:latest"
     fi
 
-    # Build args — always pass GAR_TOKEN and RESOURCE_BUNDLE_VERSION.
-    # Dockerfiles that don't declare these ARGs silently ignore them.
+    # Build args and secrets — RESOURCE_BUNDLE_VERSION is a build-arg (non-sensitive),
+    # GAR_TOKEN is a Docker secret (sensitive — must not leak into image layers).
     local BUILD_ARGS=""
     local BUILD_SECRETS=""
     local RBV
     RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
     BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
     if [[ -n "${GAR_ACCESS_TOKEN:-}" ]]; then
-      BUILD_ARGS="${BUILD_ARGS} --build-arg GAR_TOKEN=${GAR_ACCESS_TOKEN}"
+      # Pass GAR token as a Docker secret so it does NOT leak into image layer
+      # metadata (visible via `docker history --no-trunc`). Filter Dockerfiles
+      # must use: RUN --mount=type=secret,id=gar_token ...
+      local GAR_TOKEN_FILE="${WORKSPACE}/.gar_token_${REPO}"
+      printf '%s' "${GAR_ACCESS_TOKEN}" > "${GAR_TOKEN_FILE}"
+      BUILD_SECRETS="--secret id=gar_token,src=${GAR_TOKEN_FILE}"
     fi
 
     # Push and cache flags
@@ -405,6 +410,9 @@ else
       ${TAGS} \
       ${PUSH_FLAG} \
       . > "${LOG_FILE}" 2>&1
+
+    # Clean up GAR token temp file immediately after build
+    rm -f "${WORKSPACE}/.gar_token_${REPO}"
 
     if [[ "${DRY_RUN}" == "true" ]]; then
       echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
