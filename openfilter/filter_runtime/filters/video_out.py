@@ -5,6 +5,7 @@ from statistics import median_high, stdev
 from time import time_ns, strftime
 from typing import Any, Literal
 
+import av
 import cv2
 
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, once
@@ -28,6 +29,15 @@ is_video_file     = lambda name: name.startswith('file://')
 is_video_webcam   = lambda name: name.startswith('webcam://')
 is_video_stream   = lambda name: bool(re_video_stream.match(name))
 
+# PyAV stream properties set directly on the stream object (not via stream.options)
+_STREAM_PROPS = {
+    'pix_fmt':  'pix_fmt',
+    'g':        'gop_size',
+    'gop_size': 'gop_size',
+    'bitrate':  'bit_rate',
+    'bit_rate': 'bit_rate',
+}
+
 
 class VideoWriter:
     def __init__(self,
@@ -38,12 +48,12 @@ class VideoWriter:
         segtime: int | float | None = None,
         params:  dict | None = None
     ):
-        """Write a single aegmented video file or rtsp stream.
+        """Write a single segmented video file or rtsp stream.
 
         Args:
-            output: Destination video stream, can be file or RTSP stream. If file, then can be segmented int `setgime` second
-                long chunks in which case output filename is first formatted using time.strftime() then potentially a
-                segment index specified with '%d'.
+            output: Destination video stream, can be file or RTSP stream. If file, then can be segmented into `segtime`
+                minute-long chunks in which case output filename is first formatted using time.strftime() then
+                potentially a segment index specified with '%d'.
 
             bgr: True means images in BGR mode, False means RGB. Has env var default.
 
@@ -56,31 +66,17 @@ class VideoWriter:
                 length in minutes. If specified, the source filename can be treated as a template to use 'strftime()' on
                 and a segment index will be added as well.
 
-            params: Dictionary of parameter to pass on as keyword arguments of WriteGear(). Some useful params:
+            params: Dictionary of encoding parameters. Keys may be prefixed with '-' (WriteGear compat) or bare.
                 "crf":     Sets the constant rate factor for controlling video quality (0=best quality, 51=worst). Example: "crf": 23
-                "preset":  Sets the encoding preset for balancing speed and compression. Example: "preset": "ultrafast" (other options: superfast, fast, medium, slow, veryslow)
+                "preset":  Sets the encoding preset for balancing speed and compression. Example: "preset": "ultrafast"
                 "bitrate": Sets the video bitrate. Example: "bitrate": "1M" (1 megabit per second)
                 "pix_fmt": Sets the pixel format. Example: "pix_fmt": "yuv420p"
                 "g":       Sets the group of pictures (GOP) size. Example: "g": 50
-                "vf":      Sets the video filter. Example: "vf": "scale=1280:720"
         """
-
-        from vidgear.gears import WriteGear
-
-        try:
-            from vidgear.gears import writegear
-
-            writegear_logging_level = writegear.logger.getEffectiveLevel()
-            self.stfu               = lambda: writegear.logger.setLevel(logging.ERROR)
-            self.unstfu             = lambda: writegear.logger.setLevel(writegear_logging_level)
-
-        except Exception:
-            self.stfu = self.unstfu = lambda: None
 
         if segtime and is_video_stream(output):
             raise ValueError(f'an RTSP output can not have segments: {output!r}')
 
-        self.WriteGear = WriteGear
         self.output    = output
         self.params    = {**{f'-{p}': v for p, v in (VIDEO_OUT_PARAMS or {}).items()}, **(params or {})}
         self.is_bgr    = bool(VIDEO_OUT_BGR if bgr is None else bgr)
@@ -90,7 +86,9 @@ class VideoWriter:
         self.segidx    = 0
         self.segend    = float('inf')  # if segtime is None then this makes sure the current output file never ends
         self.segfrm    = 0
-        self.writer    = None
+        self.container = None
+        self.stream    = None
+        self.pts       = 0
 
         if ((fps := VIDEO_OUT_FPS or 15) if fps is None else fps) is True:  # None -> VIDEO_OUT_FPS, True -> 15/adaptive
             self.fps     = 15
@@ -102,14 +100,50 @@ class VideoWriter:
 
             self.new_writer()
 
+    @staticmethod
+    def _parse_params(params):
+        """Split params dict into (codec_name, container_format, container_options, stream_props, stream_options).
+
+        Handles both bare keys and '-' prefixed keys (WriteGear compat).
+        """
+        codec_name        = 'libx264'
+        container_format  = None
+        container_options = {}
+        stream_props      = {}
+        stream_options    = {}
+
+        for key, value in params.items():
+            k = key.lstrip('-')
+
+            if k == 'vcodec':
+                codec_name = value
+            elif k == 'f':
+                container_format = value
+            elif k in ('rtsp_transport',):
+                container_options[k] = str(value)
+            elif k == 'input_framerate':
+                pass  # handled via stream rate, not a real param
+            elif k in _STREAM_PROPS:
+                stream_props[_STREAM_PROPS[k]] = value
+            else:
+                stream_options[k] = str(value)
+
+        return codec_name, container_format, container_options, stream_props, stream_options
+
     def start(self):  # idempotent and safe to call whenever
         pass
 
     def stop(self):  # idempotent and safe to call whenever
-        if self.writer is not None:
-            self.writer.close()
+        if self.container is not None:
+            # flush encoder
+            if self.stream is not None:
+                for packet in self.stream.encode():
+                    self.container.mux(packet)
 
-            self.writer = None
+            self.container.close()
+            self.container = None
+            self.stream    = None
+            self.pts       = 0
 
     def new_writer(self):
         self.stop()
@@ -117,9 +151,9 @@ class VideoWriter:
         if is_stream := self.is_stream:
             output = self.output
             params = {
-                '-vcodec':         'libx264',
-                '-f':              'rtsp',
-                '-rtsp_transport': 'tcp',
+                '-vcodec':          'libx264',
+                '-f':               'rtsp',
+                '-rtsp_transport':  'tcp',
                 '-input_framerate': self.fps,
                 **self.params,
             }
@@ -145,18 +179,43 @@ class VideoWriter:
 
             logger.info(f'video create: {output[7:]}  ({self.fps:.1f} fps)')
 
-        self.stfu()
-        self.writer = self.WriteGear(output=output if is_stream else output[7:], **params)
-        self.unstfu()
+        codec_name, container_format, container_options, stream_props, stream_options = self._parse_params(params)
+
+        file_path       = output if is_stream else output[7:]  # strip file:// prefix for local files
+        self.container  = av.open(file_path, mode='w', format=container_format, options=container_options or None)
+        self.stream     = stream = self.container.add_stream(codec_name, rate=int(round(self.fps)))
+        self.pts        = 0
+
+        # apply stream properties
+        for prop, value in stream_props.items():
+            if prop == 'bit_rate' and isinstance(value, str):
+                # parse "1M", "500K" etc
+                value = value.strip()
+                multiplier = {'k': 1000, 'm': 1_000_000}.get(value[-1:].lower(), 1)
+                value = int(float(value.rstrip('kKmM')) * multiplier)
+            setattr(stream, prop, value)
+
+        # apply codec options (crf, preset, etc)
+        for opt, value in stream_options.items():
+            stream.options[opt] = value
+
+        # default pix_fmt if not set
+        if 'pix_fmt' not in stream_props:
+            stream.pix_fmt = 'yuv420p'
 
     def write(self, image):  # image: np.ndarray
-        if (writer := self.writer) is None:
+        if (container := self.container) is None:
             raise RuntimeError('can not write to a closed video')
 
         if not self.is_bgr and len(image.shape) == 3:
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        writer.write(image)
+        frame     = av.VideoFrame.from_ndarray(image, format='bgr24')
+        frame.pts = self.pts
+        self.pts += 1
+
+        for packet in self.stream.encode(frame):
+            container.mux(packet)
 
         self.segfrm = segfrm = self.segfrm + 1
 
@@ -326,7 +385,7 @@ class VideoOut(Filter):
             a normal filename.
 
         params:
-            Dictionary of parameter to pass on as keyword arguments of WriteGear(). Some useful params:
+            Dictionary of encoding parameters passed to PyAV. Some useful params:
 
             "crf":     Sets the constant rate factor for controlling video quality (0=best quality, 51=smallest).
                 Example: {"crf": 23}
@@ -334,7 +393,6 @@ class VideoOut(Filter):
                 (other options: superfast, fast, medium, slow, veryslow)
             "pix_fmt": Sets the pixel format. Example: {"pix_fmt": "yuv420p"}
             "g":       Sets the group of pictures (GOP) size. Example: {"g": 50}
-            "vf":      Sets the video filter. Example: "vf": "scale=1280:720"
 
     Environment variables (FILTER_* or legacy VIDEO_OUT_* prefix, legacy takes precedence):
         FILTER_BGR      / VIDEO_OUT_BGR

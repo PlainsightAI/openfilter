@@ -96,8 +96,7 @@ video_in = [
 ]
 
 video_out = [
-  "setuptools~=80.10.1",
-  "vidgear[core]~=0.3.4",
+  "av~=16.1.0",
 ]
 
 webvis = [
@@ -117,6 +116,7 @@ all = [
   "google-cloud-monitoring~=2.29.0",
   "google-cloud-storage~=3.8.0",
 
+  "av~=16.1.0",
   "vidgear[core]~=0.3.4",
   "boto3>=1.42.31",
 ]
