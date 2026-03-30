@@ -137,8 +137,11 @@ class VideoWriter:
         if self.container is not None:
             # flush encoder
             if self.stream is not None:
-                for packet in self.stream.encode():
-                    self.container.mux(packet)
+                try:
+                    for packet in self.stream.encode():
+                        self.container.mux(packet)
+                except Exception:
+                    logger.debug('flush failed (stream may have disconnected)')
 
             self.container.close()
             self.container = None
@@ -183,7 +186,9 @@ class VideoWriter:
 
         file_path       = output if is_stream else output[7:]  # strip file:// prefix for local files
         self.container  = av.open(file_path, mode='w', format=container_format, options=container_options or None)
-        self.stream     = stream = self.container.add_stream(codec_name, rate=int(round(self.fps)))
+        # NOTE: stream width/height are not set here because dimensions are unknown until the first frame arrives.
+        # PyAV infers them from the first encoded frame automatically.
+        self.stream     = stream = self.container.add_stream(codec_name, rate=int(round(self.fps)), options=stream_options or None)
         self.pts        = 0
 
         # apply stream properties
@@ -194,10 +199,6 @@ class VideoWriter:
                 multiplier = {'k': 1000, 'm': 1_000_000}.get(value[-1:].lower(), 1)
                 value = int(float(value.rstrip('kKmM')) * multiplier)
             setattr(stream, prop, value)
-
-        # apply codec options (crf, preset, etc)
-        for opt, value in stream_options.items():
-            stream.options[opt] = value
 
         # default pix_fmt if not set
         if 'pix_fmt' not in stream_props:
