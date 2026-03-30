@@ -51,23 +51,30 @@ if [[ "${DRY_RUN}" != "true" ]]; then
     echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
   fi
 
-  # Pre-generate ADC credentials for filter_base builds (shared by all workers).
-  # Done once here to avoid concurrent gcloud calls from parallel builds.
-  CRED_FILE="${WORKSPACE}/google_credentials.json"
-  gcloud auth application-default print-access-token &>/dev/null && \
-    cp "$(gcloud info --format='value(config.paths.global_config_dir)')/application_default_credentials.json" "${CRED_FILE}" 2>/dev/null || \
-    python3 -c "
-import json, subprocess, sys
-token = subprocess.check_output(['gcloud','auth','print-access-token'], text=True).strip()
-json.dump({'type':'authorized_user','token':token}, sys.stdout)
-" > "${CRED_FILE}"
+  # Issue 2 fix: replace the credential-file approach with a raw access token.
+  # The previous fallback generated {"type":"authorized_user","token":"ya29.xxx"}
+  # which is invalid — google-auth's authorized_user type requires client_id,
+  # client_secret, and refresh_token (not a raw access token). In Cloud Build
+  # there is no ADC file, so the fallback always ran and always failed.
+  # The token is passed as a Docker secret (--secret id=gar_token) to builds that need GAR access.
+  # Done once here to avoid concurrent gcloud calls from parallel workers.
+  GAR_ACCESS_TOKEN=$(gcloud auth print-access-token)
 fi
 
-# Ensure buildx builder exists (reuse if present from a prior step or local env)
-if docker buildx inspect multiarch &>/dev/null; then
-  docker buildx use multiarch
-else
+# Issue 1 fix: always destroy and recreate the buildx builder AFTER docker login.
+# The docker-container driver bakes the Docker config (including credentials) into
+# the BuildKit container at creation time. A pre-existing builder created before
+# docker login (e.g. cloudbuild-cascade.yaml Step 3) would NOT have GAR or
+# DockerHub credentials — it would get 401 on every push. Recreating here ensures
+# the builder inherits the freshly-written config.json with both registries.
+if [[ "${DRY_RUN}" != "true" ]]; then
+  docker buildx rm multiarch 2>/dev/null || true
   docker buildx create --name multiarch --driver docker-container --use
+else
+  # Dry-run: no push, no registry credentials needed — reuse if present.
+  docker buildx inspect multiarch &>/dev/null || \
+    docker buildx create --name multiarch --driver docker-container --use
+  docker buildx use multiarch
 fi
 docker buildx inspect --bootstrap
 
@@ -191,8 +198,15 @@ fi
 ELIGIBLE_REPOS=""
 for REPO in ${FILTER_REPOS}; do
   case "${REPO}" in
-    *-old|filter-template)
-      echo "Excluding ${REPO} (matches exclude pattern)"
+    *-old|filter-template|\
+    filter-mocktext|filter-timescaledb|filter-pytorch-model|\
+    filter-florence|filter-pytorch|filter-facedetector|\
+    filter-nov-pilot|filter-tracking-reid)
+      # Issue 3 fix (Fix A): explicitly exclude repos where templatize was never
+      # run. Their Dockerfiles still contain {{REPO_NAME_KEBABCASE}} in FROM lines,
+      # which BuildKit rejects as "invalid reference format". These repos will be
+      # re-enabled once their templatize scripts have been run and merged.
+      echo "Excluding ${REPO} (matches exclude pattern or unrendered template)"
       continue ;;
   esac
   ELIGIBLE_REPOS="${ELIGIBLE_REPOS:+${ELIGIBLE_REPOS} }${REPO}"
@@ -267,6 +281,16 @@ for REPO in ${FILTER_REPOS}; do
     continue
   fi
 
+  # Issue 3 fix (Fix C): skip repos with unrendered Jinja template placeholders.
+  # {{REPO_NAME_KEBABCASE}} in a FROM line causes BuildKit "invalid reference format"
+  # immediately. This check catches any future repo that skips templatize, beyond
+  # the explicit exclude list above.
+  if grep -E '^FROM|^From' Dockerfile 2>/dev/null | grep -q '{{'; then
+    echo "  ${REPO}: skip (unresolved template placeholders in Dockerfile)"
+    echo "${REPO}: SKIPPED (unrendered template)" >> "${WORKSPACE}/results/summary.txt"
+    continue
+  fi
+
   # Skip repos without a version
   FILTER_VERSION=""
   if [[ -f VERSION ]]; then
@@ -331,12 +355,6 @@ else
     local FILTER_VERSION
     FILTER_VERSION=$(tr -d '[:space:]' < VERSION | sed 's/^v//')
 
-    # Detect build type
-    local BUILD_TYPE="standard"
-    if grep -qE 'FROM.*filter_base' Dockerfile 2>/dev/null; then
-      BUILD_TYPE="filter_base"
-    fi
-
     # Determine push targets
     local GAR_IMAGE="${GAR_REGION}-docker.pkg.dev/${GAR_PROJECT}/${GAR_REPO}/${REPO}"
     local DOCKERHUB_IMAGE="${DOCKERHUB_ORG}/${IMAGE}"
@@ -347,18 +365,20 @@ else
       TAGS="${TAGS} -t ${DOCKERHUB_IMAGE}:${FILTER_VERSION} -t ${DOCKERHUB_IMAGE}:latest"
     fi
 
-    # Build args
+    # Build args and secrets — RESOURCE_BUNDLE_VERSION is a build-arg (non-sensitive),
+    # GAR_TOKEN is a Docker secret (sensitive — must not leak into image layers).
     local BUILD_ARGS=""
     local BUILD_SECRETS=""
-    if [[ "${BUILD_TYPE}" == "filter_base" ]]; then
-      local RBV
-      RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
-      BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
-      # filter_base ONBUILD mounts secret id=google_credentials for GAR PyPI auth.
-      local CRED_FILE="${WORKSPACE}/google_credentials.json"
-      if [[ -f "${CRED_FILE}" ]]; then
-        BUILD_SECRETS="--secret id=google_credentials,src=${CRED_FILE}"
-      fi
+    local RBV
+    RBV=$(cat RESOURCE_BUNDLE_VERSION 2>/dev/null | tr -d '[:space:]' || echo "latest")
+    BUILD_ARGS="--build-arg RESOURCE_BUNDLE_VERSION=${RBV}"
+    if [[ -n "${GAR_ACCESS_TOKEN:-}" ]]; then
+      # Pass GAR token as a Docker secret so it does NOT leak into image layer
+      # metadata (visible via `docker history --no-trunc`). Filter Dockerfiles
+      # must use: RUN --mount=type=secret,id=gar_token ...
+      local GAR_TOKEN_FILE="${WORKSPACE}/.gar_token_${REPO}"
+      printf '%s' "${GAR_ACCESS_TOKEN}" > "${GAR_TOKEN_FILE}"
+      BUILD_SECRETS="--secret id=gar_token,src=${GAR_TOKEN_FILE}"
     fi
 
     # Push and cache flags
@@ -380,7 +400,7 @@ else
     fi
 
     local LOG_FILE="${WORKSPACE}/results/${REPO}.log"
-    echo "[${REPO}] Building ${BUILD_TYPE} ${FILTER_VERSION} (${VISIBILITY})"
+    echo "[${REPO}] Building ${FILTER_VERSION} (${VISIBILITY})"
     docker buildx build \
       --platform "${PLATFORMS}" \
       ${CACHE_FROM} \
@@ -390,6 +410,9 @@ else
       ${TAGS} \
       ${PUSH_FLAG} \
       . > "${LOG_FILE}" 2>&1
+
+    # Clean up GAR token temp file immediately after build
+    rm -f "${WORKSPACE}/.gar_token_${REPO}"
 
     if [[ "${DRY_RUN}" == "true" ]]; then
       echo "${REPO}: SUCCESS/DRY-RUN (${FILTER_VERSION})" >> "${WORKSPACE}/results/summary.txt"
@@ -404,7 +427,7 @@ else
   }
   export -f build_one_filter
   export WORKSPACE VISIBILITY_FILE OF_VERSION GAR_REGION GAR_PROJECT GAR_REPO
-  export DOCKERHUB_ORG DRY_RUN PYTHON
+  export DOCKERHUB_ORG DRY_RUN PYTHON GAR_ACCESS_TOKEN
 
   # Run builds in parallel, capping concurrency
   ACTIVE_PIDS=()
