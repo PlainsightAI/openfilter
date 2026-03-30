@@ -205,6 +205,8 @@ class VideoReader:
         self.deque    = Deque(maxlen=1)
         self.thread   = Thread(target=self.thread_reader, daemon=True)
         self.cap      = cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            raise RuntimeError(f'failed to open video source: {self.source!r}')
         fps           = cap.get(cv2.CAP_PROP_FPS) or None
 
         if is_file and not sync:
@@ -317,6 +319,8 @@ class VideoReader:
 
                     self.cap.release()
                     self.cap = cv2.VideoCapture(self.ssource)
+                    if not self.cap.isOpened():
+                        raise RuntimeError(f'failed to reopen video source: {self.source!r}')
 
                 except Exception:
                     wait()
