@@ -1240,9 +1240,7 @@ class Filter:
         results = self._execute_batch(batch)
         return results if results else None
 
-    def _execute_batch(
-        self, batch: list[dict[str, Frame]]
-    ) -> list[dict[str, Frame]]:
+    def _execute_batch(self, batch: list[dict[str, Frame]]) -> list[dict[str, Frame]]:
         """Run process_batch() and return normalized, timing-injected results.
 
         Returns a list of frame dicts (possibly empty). The caller is
@@ -1256,7 +1254,8 @@ class Filter:
         if len(results) != len(batch):
             logger.debug(
                 "process_batch returned %d results for %d input frames",
-                len(results), len(batch),
+                len(results),
+                len(batch),
             )
 
         process_time_ms = (t_out - t_in) * 1000
@@ -1731,7 +1730,13 @@ class Filter:
     ) -> (
         dict[str, Frame] | Frame | Callable[[], dict[str, Frame] | Frame | None] | None
     ):
-        """Main processing thingy, this is the only method which MUST be implemented by a user Filter.
+        """Main per-frame processing method. Must be implemented unless the filter exclusively uses
+        ``process_batch()`` with ``batch_size`` always > 1.
+
+        When ``batch_size`` is 1 (the default), the runtime calls this method for every incoming
+        frame. When ``batch_size`` > 1, the default ``process_batch()`` implementation delegates to
+        this method for each frame in the batch, so ``process()`` is still required unless you
+        override ``process_batch()`` and never run with ``batch_size=1``.
 
         Return:
             A dictionary of Frames, which will be sent downstream with topics as set by dict keys. An empty dictionary
