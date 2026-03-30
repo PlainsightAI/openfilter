@@ -123,6 +123,8 @@ class VideoWriter:
                 container_options[k] = str(value)
             elif k == 'input_framerate':
                 pass  # handled via stream rate, not a real param
+            elif k == 'vf':
+                logger.warning(f'param {key!r} is not supported by PyAV (FFmpeg filter graphs require subprocess); ignoring')
             elif k in _STREAM_PROPS:
                 stream_props[_STREAM_PROPS[k]] = value
             else:
@@ -196,7 +198,11 @@ class VideoWriter:
             if prop == 'bit_rate' and isinstance(value, str):
                 # parse "1M", "500K" etc
                 value = value.strip()
-                multiplier = {'k': 1000, 'm': 1_000_000}.get(value[-1:].lower(), 1)
+                suffix = value[-1:].lower()
+                multipliers = {'k': 1000, 'm': 1_000_000}
+                if suffix.isalpha() and suffix not in multipliers:
+                    logger.warning(f'unrecognized bitrate suffix {value[-1:]!r} in {value!r}, treating as raw number')
+                multiplier = multipliers.get(suffix, 1)
                 value = int(float(value.rstrip('kKmM')) * multiplier)
             setattr(stream, prop, value)
 
