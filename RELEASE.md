@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## v0.1.25 - 2026-03-30
+
+### Added
+
+- **Frame accumulation (batched processing)**: Filters can now set `batch_size` (config or `FILTER_BATCH_SIZE` env var) to accumulate N frames before calling `process_batch()` instead of `process()`. This lets GPU-bound filters amortize expensive operations (e.g. backbone inference) across multiple frames. Partial batches are flushed after `accumulate_timeout_ms` (default 100ms) or on shutdown. The default `process_batch()` delegates to `process()` per frame, so existing filters work without changes.
+
 ## v0.1.24 - 2026-03-27
 
 ### Added
