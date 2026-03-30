@@ -186,10 +186,10 @@ class VideoWriter:
 
         file_path       = output if is_stream else output[7:]  # strip file:// prefix for local files
         self.container  = av.open(file_path, mode='w', format=container_format, options=container_options or None)
-        # NOTE: stream width/height are not set here because dimensions are unknown until the first frame arrives.
-        # PyAV infers them from the first encoded frame automatically.
+        # stream width/height are set from the first frame in write() since dimensions are unknown here
         self.stream     = stream = self.container.add_stream(codec_name, rate=int(round(self.fps)), options=stream_options or None)
         self.pts        = 0
+        self._dims_set  = False
 
         # apply stream properties
         for prop, value in stream_props.items():
@@ -210,6 +210,12 @@ class VideoWriter:
 
         if not self.is_bgr and len(image.shape) == 3:
             image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        if not self._dims_set:
+            h, w = image.shape[:2]
+            self.stream.width  = w
+            self.stream.height = h
+            self._dims_set = True
 
         frame     = av.VideoFrame.from_ndarray(image, format='bgr24')
         frame.pts = self.pts
