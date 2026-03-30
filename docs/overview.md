@@ -55,6 +55,26 @@ Finally, the `process()` function will be called on each frame or multiple frame
 
 Other functions you may find useful to overload is `shutdown()`, this is called on exit (clean or exception) and lets you clean up after yourself.
 
+### Frame Accumulation (Batched Processing)
+
+When `batch_size` is set to a value greater than 1 in the filter config, the runtime accumulates incoming frames and delivers them as a list to `process_batch()` instead of calling `process()` individually. This allows GPU-bound filters to amortize expensive operations (e.g. backbone inference) across multiple frames.
+
+    class MyGPUFilter(Filter):
+        def process_batch(self, batch):
+            # batch is a list of frame dicts, each as would be passed to process()
+            images = [f["main"].img for f in batch]  # extract image from each frame dict
+            features = self.model.encode_batch(images)
+            return [self.process(f) for f in batch]  # return one result per input frame
+
+Config options:
+
+| Environment Variable | Config Key | Default | Description |
+|---|---|---|---|
+| `FILTER_BATCH_SIZE` | `batch_size` | `1` | Number of frames to accumulate before calling `process_batch()`. Set to 1 to disable (uses `process()` as usual). |
+| `FILTER_ACCUMULATE_TIMEOUT_MS` | `accumulate_timeout_ms` | `100` | Maximum time in ms to wait for a full batch. Partial batches are flushed after this timeout. |
+
+The default `process_batch()` implementation calls `process()` for each frame individually, so existing filters work without changes.
+
 ## Frame
 
 A `Frame` object encapsulates an image possibly or `None` and a (possibly empty) dictionary of key/value pairs associated with that image. It is perfectly fine to pass data without passing an image, but if there is data to be passed which relates to an image then it should be passed in the dictionary of the `Frame` containing that image.

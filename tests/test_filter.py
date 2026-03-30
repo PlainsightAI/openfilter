@@ -851,7 +851,7 @@ version = "3.0.0"
             if original_models_toml.exists():
                 original_models_toml.rename("models.toml.backup")
             
-            Path(temp_file).rename("models.toml")
+            import shutil; shutil.copy2(temp_file, "models.toml"); Path(temp_file).unlink()
             
             try:
                 result = FilterContext._read_models_toml()
@@ -902,7 +902,7 @@ invalid_field = "value"
             if original_models_toml.exists():
                 original_models_toml.rename("models.toml.backup")
             
-            Path(temp_file).rename("models.toml")
+            import shutil; shutil.copy2(temp_file, "models.toml"); Path(temp_file).unlink()
             
             try:
                 result = FilterContext._read_models_toml()
