@@ -358,5 +358,38 @@ class TestVideoOut(unittest.TestCase):
             shutil.rmtree(TEST_DIR)
 
 
+    def test_bitrate_unrecognized_suffix(self):
+        """Unrecognized bitrate suffixes (e.g. '1G', '500x') should warn but not raise."""
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            # '1G' has an unrecognized suffix — should not raise, should treat as raw number 1
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '1G'})
+            self.assertEqual(writer.stream.bit_rate, 1)
+            writer.stop()
+
+            # '500x' has an unrecognized suffix — should treat as raw number 500
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '500x'})
+            self.assertEqual(writer.stream.bit_rate, 500)
+            writer.stop()
+        finally:
+            shutil.rmtree(TEST_DIR)
+
+    def test_bitrate_known_suffixes(self):
+        """Known suffixes k/K/m/M should still work correctly."""
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '1k'})
+            self.assertEqual(writer.stream.bit_rate, 1000)
+            writer.stop()
+
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '2M'})
+            self.assertEqual(writer.stream.bit_rate, 2_000_000)
+            writer.stop()
+        finally:
+            shutil.rmtree(TEST_DIR)
+
+
 if __name__ == '__main__':
     unittest.main()

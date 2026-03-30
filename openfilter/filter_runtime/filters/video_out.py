@@ -203,7 +203,8 @@ class VideoWriter:
                 if suffix.isalpha() and suffix not in multipliers:
                     logger.warning(f'unrecognized bitrate suffix {value[-1:]!r} in {value!r}, treating as raw number')
                 multiplier = multipliers.get(suffix, 1)
-                value = int(float(value.rstrip('kKmM')) * multiplier)
+                numeric = value[:-1] if suffix.isalpha() else value
+                value = int(float(numeric) * multiplier)
             setattr(stream, prop, value)
 
         # default pix_fmt if not set
