@@ -2,6 +2,13 @@
 
 OpenFilter Library release notes
 
+## v0.1.25 - 2026-03-30
+
+### Fixed
+
+- **Cascade build repaired**: Fixed credential timing, docker secrets mount, and template skip logic in `cloudbuild-cascade.yaml`. Cascade builds now correctly authenticate to GAR and skip repos with their own `cloudbuild.yaml`.
+- **Test diagnostics improved**: `test_run` now captures stdout/stderr from subprocess and reports exit codes for easier debugging of CI failures.
+
 ## v0.1.24 - 2026-03-27
 
 ### Added
