@@ -4,7 +4,6 @@ import logging
 import multiprocessing as mp
 import os
 import shutil
-import subprocess
 import unittest
 
 from openfilter.filter_runtime import Filter, Frame
@@ -20,12 +19,6 @@ logger = logging.getLogger(__name__)
 log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper()))
 
 setLogLevelGlobal(log_level)
-
-try:  # if not present then internal vidgear writer is used which has different output
-    subprocess.run(["ffmpeg", "-version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    FFMPEG = True
-except Exception:
-    FFMPEG = False
 
 TEST_DIR            = 'test_video'
 TEST_VIDEO_FNM      = 'test_video.mp4'
@@ -103,9 +96,7 @@ class TestVideoOut(unittest.TestCase):
 
                 fps, images = read_video(TEST_VIDEO_PATH)
 
-                if FFMPEG:
-                    self.assertEqual(fps, 19)  # if ffmpeg not present then vidgear default writer seems to set everything to 25 fps
-
+                self.assertEqual(fps, 19)
                 self.assertEqual(len(images), 3)
                 self.assertEqual(images[0].shape, (200, 320, 3))
                 self.assertTrue(is_image_very_red(images[0]))
@@ -186,91 +177,90 @@ class TestVideoOut(unittest.TestCase):
             shutil.rmtree(TEST_DIR)
 
 
-    if FFMPEG:  # only makes sense if default vidgear writer is not setting everything to 25 fps
-        def test_fps(self):
-            os.makedirs(TEST_DIR, exist_ok=True)
+    def test_fps(self):
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            runner = Filter.Runner([
+                (QueueToFilters, dict(
+                    outputs = 'ipc://test-Q2F',
+                    queue   = (queue := mp.Queue()),
+                )),
+                (VideoOut, dict(
+                    sources = 'ipc://test-Q2F',
+                    outputs = f'file://{TEST_VIDEO_PATH}!fps=13',
+                )),
+            ], exit_time=10)
 
             try:
-                runner = Filter.Runner([
-                    (QueueToFilters, dict(
-                        outputs = 'ipc://test-Q2F',
-                        queue   = (queue := mp.Queue()),
-                    )),
-                    (VideoOut, dict(
-                        sources = 'ipc://test-Q2F',
-                        outputs = f'file://{TEST_VIDEO_PATH}!fps=13',
-                    )),
-                ], exit_time=10)
+                queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))  # src_fps here will be ignored
+                queue.put(False)
 
-                try:
-                    queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 19}}, 'BGR'))  # src_fps here will be ignored
-                    queue.put(False)
+                self.assertEqual(runner.wait(), [0, 0])
 
-                    self.assertEqual(runner.wait(), [0, 0])
+                fps, _ = read_video(TEST_VIDEO_PATH)
 
-                    fps, _ = read_video(TEST_VIDEO_PATH)
-
-                    self.assertTrue(fps == 13)
-
-                finally:
-                    runner.stop()
-                    queue.close()
+                self.assertTrue(fps == 13)
 
             finally:
-                shutil.rmtree(TEST_DIR)
+                runner.stop()
+                queue.close()
+
+        finally:
+            shutil.rmtree(TEST_DIR)
 
 
-        def test_fps_adaptive(self):
-            os.makedirs(TEST_DIR, exist_ok=True)
+    def test_fps_adaptive(self):
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            ORIGINAL_FPS_ADAPT_T_WAIT    = VideoWriter.FPS_ADAPT_T_WAIT  # so we don't have to wait 10 seconds for adapt
+            VideoWriter.FPS_ADAPT_T_WAIT = 1 * 1_000_000_000
+
+            runner = Filter.Runner([
+                (QueueToFilters, dict(
+                    outputs = 'ipc://test-Q2F',
+                    queue   = (queue := mp.Queue()),
+                )),
+                (VideoOut, dict(
+                    sources = 'ipc://test-Q2F',
+                    outputs = f'file://{TEST_VIDEO_PATH}!fps!segtime=0.1',  # segtime to create different videos so they can have different fps
+                )),
+            ], exit_time=10)
 
             try:
-                ORIGINAL_FPS_ADAPT_T_WAIT    = VideoWriter.FPS_ADAPT_T_WAIT  # so we don't have to wait 10 seconds for adapt
-                VideoWriter.FPS_ADAPT_T_WAIT = 1 * 1_000_000_000
+                for _ in range(12):
+                    for _ in range(30):  # 6 * 30 frames total so we trigger the adapt algo at some point (needs a certain number of frames)
+                        queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))  # src_fps here will be ignored
+                        queue.put(Frame(GREEN_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))
+                        queue.put(Frame(BLUE_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))
 
-                runner = Filter.Runner([
-                    (QueueToFilters, dict(
-                        outputs = 'ipc://test-Q2F',
-                        queue   = (queue := mp.Queue()),
-                    )),
-                    (VideoOut, dict(
-                        sources = 'ipc://test-Q2F',
-                        outputs = f'file://{TEST_VIDEO_PATH}!fps!segtime=0.1',  # segtime to create different videos so they can have different fps
-                    )),
-                ], exit_time=10)
+                    queue.put(0.1)
 
-                try:
-                    for _ in range(12):
-                        for _ in range(30):  # 6 * 30 frames total so we trigger the adapt algo at some point (needs a certain number of frames)
-                            queue.put(Frame(RED_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))  # src_fps here will be ignored
-                            queue.put(Frame(GREEN_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))
-                            queue.put(Frame(BLUE_IMAGE, {'meta': {'src_fps': 1}}, 'BGR'))
+                queue.put(False)
 
-                        queue.put(0.1)
+                self.assertEqual(runner.wait(), [0, 0])
 
-                    queue.put(False)
+                fps0, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000000.mp4')  # not all of these will be present but try to grab as many in case more written
+                fps1, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000001.mp4')
+                fps2, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000002.mp4')
+                fps3, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000003.mp4')
+                fps4, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000004.mp4')
+                fps5, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000005.mp4')
+                fps6, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000006.mp4')
+                fps7, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000007.mp4')
 
-                    self.assertEqual(runner.wait(), [0, 0])
-
-                    fps0, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000000.mp4')  # not all of these will be present but try to grab as many in case more written
-                    fps1, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000001.mp4')
-                    fps2, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000002.mp4')
-                    fps3, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000003.mp4')
-                    fps4, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000004.mp4')
-                    fps5, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000005.mp4')
-                    fps6, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000006.mp4')
-                    fps7, _ = read_video(TEST_VIDEO_PATH[:-4] + '_000007.mp4')
-
-                    self.assertFalse(fps0 == (fps1 or fps0) == (fps2 or fps0) == (fps3 or fps0) == (fps4 or fps0) ==
-                        (fps5 or fps0) == (fps6 or fps0) == (fps7 or fps0))  # we don't test for correctness, just that they change, some of them will be 0 due to not existing so use first guaranteed fps in place
-
-                finally:
-                    runner.stop()
-                    queue.close()
+                self.assertFalse(fps0 == (fps1 or fps0) == (fps2 or fps0) == (fps3 or fps0) == (fps4 or fps0) ==
+                    (fps5 or fps0) == (fps6 or fps0) == (fps7 or fps0))  # we don't test for correctness, just that they change, some of them will be 0 due to not existing so use first guaranteed fps in place
 
             finally:
-                VideoWriter.FPS_ADAPT_T_WAIT = ORIGINAL_FPS_ADAPT_T_WAIT
+                runner.stop()
+                queue.close()
 
-                shutil.rmtree(TEST_DIR)
+        finally:
+            VideoWriter.FPS_ADAPT_T_WAIT = ORIGINAL_FPS_ADAPT_T_WAIT
+
+            shutil.rmtree(TEST_DIR)
 
 
     def test_segtime(self):
@@ -364,6 +354,39 @@ class TestVideoOut(unittest.TestCase):
                 runner.stop()
                 queue.close()
 
+        finally:
+            shutil.rmtree(TEST_DIR)
+
+
+    def test_bitrate_unrecognized_suffix(self):
+        """Unrecognized bitrate suffixes (e.g. '1G', '500x') should warn but not raise."""
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            # '1G' has an unrecognized suffix — should not raise, should treat as raw number 1
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '1G'})
+            self.assertEqual(writer.stream.bit_rate, 1)
+            writer.stop()
+
+            # '500x' has an unrecognized suffix — should treat as raw number 500
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '500x'})
+            self.assertEqual(writer.stream.bit_rate, 500)
+            writer.stop()
+        finally:
+            shutil.rmtree(TEST_DIR)
+
+    def test_bitrate_known_suffixes(self):
+        """Known suffixes k/K/m/M should still work correctly."""
+        os.makedirs(TEST_DIR, exist_ok=True)
+
+        try:
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '1k'})
+            self.assertEqual(writer.stream.bit_rate, 1000)
+            writer.stop()
+
+            writer = VideoWriter(f'file://{TEST_VIDEO_PATH}', fps=15, params={'-bitrate': '2M'})
+            self.assertEqual(writer.stream.bit_rate, 2_000_000)
+            writer.stop()
         finally:
             shutil.rmtree(TEST_DIR)
 
