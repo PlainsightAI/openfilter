@@ -153,12 +153,9 @@ class VideoReader:
             resize: Straight resize always, can not be specified together with `maxsize`, it is one or the other.
         """
 
-        from vidgear.gears import VideoGear
-
         if not isinstance((loop := VIDEO_IN_LOOP if loop is None else loop), (bool, int)) or loop < 0:
             raise ValueError(f"invalid loop '{loop}', must be a bool or nonnegative integer")
 
-        self.VideoGear     = VideoGear
         self.source        = hide_uri_users_and_pwds(source)
         self.cond          = cond
         self.loop          = 0 if loop is True else 1 if loop is False else loop
@@ -203,15 +200,17 @@ class VideoReader:
             elif not is_video_stream(source):
                 raise ValueError(f'invalid source {self.source!r}')
 
-        self.ssource  = source  # for VideoGear with 'file://' stripped and 'webcam://num' converted to num
+        self.ssource  = source  # with 'file://' stripped and 'webcam://num' converted to num
         self.stop_evt = Event()
         self.deque    = Deque(maxlen=1)
-        self.thread   = Thread(target=self.thread_reader, daemon=True)  # vidgear will not skip images in a stream to stay realtime so we have to do it ourselves
-        self.stream   = vid = VideoGear(source=source)
-        fps           = vid.stream.framerate
+        self.thread   = Thread(target=self.thread_reader, daemon=True)
+        self.cap      = cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            raise RuntimeError(f'failed to open video source: {self.source!r}')
+        fps           = cap.get(cv2.CAP_PROP_FPS) or None
 
         if is_file and not sync:
-            self.ns_per_fps = 1_000_000_000 // (fps or 15)  # vidgear reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
+            self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
 
         self.fps = fps
 
@@ -249,7 +248,6 @@ class VideoReader:
         self.state = 1
         self.tfps  = self.tmaxfps = time_ns()
 
-        self.stream.start()
         self.thread.start()
 
     def stop(self):  # idempotent and safe to call whenever
@@ -259,7 +257,7 @@ class VideoReader:
         self.state = 2
 
         self.stop_evt.set()
-        self.stream.stop()
+        self.cap.release()
 
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
@@ -296,15 +294,17 @@ class VideoReader:
             return True
 
         while True:
-            if (image := self.stream.read()) is None:
+            ret, image = self.cap.read()
+
+            if not ret or image is None:
                 if not self.is_file:
                     return None
 
                 # We do the wait()s below in order to maintain the last frame for the same amount of time as others
-                # because otherwise vidgear returns None immediately after the last frame has been read from a file
-                # which does not allow enough time for the last frame to be picked up, thus losing it. The last frame
-                # may be lost on a realtime video if it takes too long to query it but it will never be lost on a `sync`
-                # video.
+                # because otherwise cv2 returns (False, None) immediately after the last frame has been read from a
+                # file which does not allow enough time for the last frame to be picked up, thus losing it. The last
+                # frame may be lost on a realtime video if it takes too long to query it but it will never be lost on
+                # a `sync` video.
 
                 if loop := self.loop:
                     self.loop = loop - 1
@@ -317,16 +317,19 @@ class VideoReader:
                 try:
                     logger.info(f'video loop: {self.source}{f"  (last loop)" if loop == 2 else f"  ({self.loop} left)" if loop else ""}')
 
-                    self.stream.stop()
-                    self.stream = self.VideoGear(source=self.ssource)
-                    self.stream.start()
+                    self.cap.release()
+                    self.cap = cv2.VideoCapture(self.ssource)
+                    if not self.cap.isOpened():
+                        raise RuntimeError(f'failed to reopen video source: {self.source!r}')
 
                 except Exception:
                     wait()
 
                     return None
 
-                if (image := self.stream.read()) is None:  # no wait() here because if first frame is None then nothing means anything anymore and we might as well just end it
+                ret, image = self.cap.read()
+
+                if not ret or image is None:  # no wait() here because if first frame fails then nothing means anything anymore and we might as well just end it
                     return None
 
             if wait():
@@ -334,7 +337,7 @@ class VideoReader:
 
         return image
 
-    def thread_reader(self):  # vidgear will not skip images in a stream to stay realtime so we have to do it ourselves
+    def thread_reader(self):
         cond = self.cond
 
         if size := (maxsize := self.maxsize) or self.resize:
@@ -425,7 +428,7 @@ class VideoReader:
         if (image_n_tframe := self.deque.popleft()) is None:
             self.state = 2
 
-            self.stream.stop()
+            self.cap.release()
 
             return None
 

@@ -90,8 +90,6 @@ util = []
 video = []
 
 video_in = [
-  "setuptools~=80.10.1",
-  "vidgear[core]~=0.3.4",
   "boto3>=1.42.31",
 ]
 
@@ -105,8 +103,6 @@ webvis = [
 ]
 
 all = [
-  "setuptools~=80.10.1",
-
   "paho-mqtt~=2.1.0",
 
   "fastapi~=0.128.0",
@@ -117,7 +113,6 @@ all = [
   "google-cloud-storage~=3.8.0",
 
   "av~=16.1.0",
-  "vidgear[core]~=0.3.4",
   "boto3>=1.42.31",
 ]
 
