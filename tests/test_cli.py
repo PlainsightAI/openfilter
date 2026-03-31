@@ -157,6 +157,7 @@ class TestCLI(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=120,
         )
 
         try:
