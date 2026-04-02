@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## v0.1.26 - 2026-04-02
+
+### Added
+
+- **`OPENFILTER_APPEND_LD_LIBRARY_PATH` and `OPENFILTER_APPEND_PATH` env vars**: Read at filter startup (before torch import) and appended to the existing `LD_LIBRARY_PATH` / `PATH` values. Allows Kubernetes controllers to inject GPU driver paths without overriding container-image-baked paths. On GKE, the NVIDIA device plugin mounts drivers but does not set `LD_LIBRARY_PATH`; the pipelines controller can now inject the paths automatically via these variables.
+
 ## v0.1.25 - 2026-03-30
 
 ### Fixed
