@@ -40,6 +40,47 @@ _APPEND_ENV_VARS = {
     "OPENFILTER_APPEND_PATH": "PATH",
 }
 
+_GPU_LIBS = ["libcuda.so.1", "libnvidia-ml.so.1"]
+_preloaded_gpu_libs: set = set()
+
+
+def _preload_gpu_libs():
+    """Preload NVIDIA GPU driver libraries using ctypes with absolute paths.
+
+    On Kubernetes (GKE), the NVIDIA device plugin mounts driver libraries at
+    /usr/local/nvidia/lib64/ but does NOT add this path to LD_LIBRARY_PATH.
+
+    The dynamic linker (ld.so) reads LD_LIBRARY_PATH once at process startup
+    and caches it. Setting os.environ['LD_LIBRARY_PATH'] from Python has NO
+    effect on dlopen() — the cached value is used (see CPython issue #100567).
+
+    However, dlopen() with an ABSOLUTE PATH bypasses LD_LIBRARY_PATH entirely.
+    By preloading libcuda.so.1 with RTLD_GLOBAL before torch is imported,
+    PyTorch's CUDA initialization can find the already-loaded driver library.
+
+    References:
+    - dlopen(3): absolute path bypasses search
+    - CPython #100567: os.environ LD_LIBRARY_PATH doesn't affect dlopen
+    - GKE GPU docs: /usr/local/nvidia/lib64 must be in LD_LIBRARY_PATH
+    """
+    import ctypes
+
+    ld_path = os.environ.get("OPENFILTER_APPEND_LD_LIBRARY_PATH")
+    if not ld_path:
+        return
+
+    for search_dir in ld_path.split(":"):
+        for lib_name in _GPU_LIBS:
+            lib_path = os.path.join(search_dir, lib_name)
+            if lib_path in _preloaded_gpu_libs:
+                continue
+            if os.path.exists(lib_path):
+                try:
+                    ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                    _preloaded_gpu_libs.add(lib_path)
+                except OSError:
+                    pass  # Library exists but can't be loaded — continue
+
 
 def _apply_append_env_vars():
     """Read OPENFILTER_APPEND_* env vars and append their values to the target env vars.
@@ -66,7 +107,8 @@ def _apply_append_env_vars():
                 os.environ[target_var] = new_val
 
 
-_apply_append_env_vars()
+_preload_gpu_libs()   # Must run BEFORE any torch import
+_apply_append_env_vars()  # Still useful for child processes and PATH
 
 logger = logging.getLogger(__name__)
 
