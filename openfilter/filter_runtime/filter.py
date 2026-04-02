@@ -60,13 +60,10 @@ def _apply_append_env_vars():
         if value:
             existing = os.environ.get(target_var, "")
             parts = existing.split(":") if existing else []
-            if value not in parts:
-                new_val = f"{existing}:{value}" if existing else value
+            new_parts = [p for p in value.split(":") if p not in parts]
+            if new_parts:
+                new_val = ":".join(parts + new_parts)
                 os.environ[target_var] = new_val
-                logging.getLogger(__name__).debug(
-                    "OPENFILTER_APPEND: %s set to %r (appended %r to %r)",
-                    target_var, new_val, value, existing,
-                )
 
 
 _apply_append_env_vars()
