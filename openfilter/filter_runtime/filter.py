@@ -47,15 +47,26 @@ def _apply_append_env_vars():
     This allows Kubernetes controllers to hint at additional paths without
     overriding existing values. For example, on GKE the NVIDIA device plugin
     mounts GPU libraries but doesn't set LD_LIBRARY_PATH.
+
+    Must be called before any native library imports (cv2, torch) so that the
+    dynamic linker sees the updated paths. Moving this call site after those
+    imports will silently have no effect on already-loaded shared libraries.
+
+    Idempotent: if the value is already present in the target variable it is
+    not appended again, so module reloads do not duplicate path entries.
     """
     for append_var, target_var in _APPEND_ENV_VARS.items():
         value = os.environ.get(append_var)
         if value:
             existing = os.environ.get(target_var, "")
-            if existing:
-                os.environ[target_var] = f"{existing}:{value}"
-            else:
-                os.environ[target_var] = value
+            parts = existing.split(":") if existing else []
+            if value not in parts:
+                new_val = f"{existing}:{value}" if existing else value
+                os.environ[target_var] = new_val
+                logging.getLogger(__name__).debug(
+                    "OPENFILTER_APPEND: %s set to %r (appended %r to %r)",
+                    target_var, new_val, value, existing,
+                )
 
 
 _apply_append_env_vars()

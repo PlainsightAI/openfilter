@@ -9,7 +9,6 @@ description: Base library for building modular, event-driven filters using ZeroM
 For installation, go directly to [Installation](#installation). Examples, [Examples](#examples).
 
 More in depth guides can be found here:
-
 * [Your First Filter](./your-first-filter.md)
 
 This is a framework for `Filter` components which compose an image processing pipeline. It mostly takes care of setup, serialization and communication between the components and various outher quality-of-life things. There are also some basic utility components included for stuff like reading and writing video, REST endpoint input, MQTT Bridge, Web Viewer and more.
@@ -45,6 +44,7 @@ The `Filter` class is the base class for all filters. A filter is just a compone
             ...
             return frames
 
+
 The config class (in this case `MyFilterConfig`) is at base just a dictionary of key/value pairs which can be accessed as attributes for convenience. It is parsed for you from environment variables or command line arguments or passed in from another function executing your filter.
 
 The `normalize_config()` function is called on filter instantiation to validate and normalize a config object. It is the job of this function to put the config into a state you will use and make sure the options make sense. The function should only check for correctness, not presence or absence of outside resources like files or network connections.
@@ -68,12 +68,12 @@ If you need a writable image because you will be modifying it or passing it to s
 If you need an image from an incoming frame in a specific format / writable state you should always assume the incoming frame is in an unknown state and access it in the way you will want the image. `frame.rw_rgb`, `frame.rw_bgr`, `frame.ro_rgb` and `frame.ro_bgr` will give you the a `Frame` object with the kind of image you want in the most optimal manner from what the `Frame` currently is, including returning the same exact `Frame` object if it is already in the desired format. Likewise, if possible, it will preserve any JPG encoding to pass on downstream.
 
 <a id="installation"></a>
-
 # Installation
 
 ## Quick install with ALL dependencies
 
 These installation instructions will install all the dependencies used by all builtin utility filters. If you wish to install without those dependencies then simply omit the `[all]`.
+
 
 ### From PyPI
 
@@ -94,7 +94,6 @@ If you want to edit the code:
     pip install -e .[all]
 
 <a id="examples"></a>
-
 # Examples
 
 ## Show a video
@@ -460,6 +459,7 @@ Webvis video at `http://localhost:8000/yet_another`.
         )),
     ])
 
+
 # OpenLineage Events in OpenFilter
 
 OpenFilter uses the OpenLineage protocol to emit standardized metadata about filter executions. These events help track data lineage, system observability, and job health.
@@ -469,36 +469,32 @@ OpenFilter uses the OpenLineage protocol to emit standardized metadata about fil
 OpenFilter emits three main types of lineage events:
 
 ### 1. `START`
-* **When it's sent**: Right before the filter starts processing data.
-* **Purpose**: Signals the beginning of a new run.
-* **Metadata**:
-  * `eventType`: `"START"`
-  * `runId`: A new UUID for this run
-  * `job.name`: Filter name
-  * `run.facets`: Initial filter metadata (e.g., model name, filter name, etc.)
-
+- **When it's sent**: Right before the filter starts processing data.
+- **Purpose**: Signals the beginning of a new run.
+- **Metadata**:
+  - `eventType`: `"START"`
+  - `runId`: A new UUID for this run
+  - `job.name`: Filter name
+  - `run.facets`: Initial filter metadata (e.g., model name, filter name, etc.)
 ---
-
 ### 2. `RUNNING` (Heartbeat)
-* **When it's sent**: Periodically during execution (default every 10 seconds).
-* **Purpose**: Keeps the lineage system aware that the filter is active.
-* **Metadata**:
-  * `eventType`: `"RUNNING"`
-  * Includes dynamic and updated facets like:
-    * `filter_name`
-    * `model_name`
-    * Frame/video metadata (e.g., source path, timestamp, FPS)
-    * runId matches the original ID from START (as with COMPLETE)
-
+- **When it's sent**: Periodically during execution (default every 10 seconds).
+- **Purpose**: Keeps the lineage system aware that the filter is active.
+- **Metadata**:
+  - `eventType`: `"RUNNING"`
+  - Includes dynamic and updated facets like:
+    - `filter_name`
+    - `model_name`
+    - Frame/video metadata (e.g., source path, timestamp, FPS)
+    - runId matches the original ID from START (as with COMPLETE)
 ---
-
 ### 3. `COMPLETE`
-* **When it's sent**: After the filter completes successfully.
-* **Purpose**: Marks the end of a successful execution.
-* **Metadata**:
-  * `eventType`: `"COMPLETE"`
-  * `runId`: Matches the original ID from `START`
-  * Can include summary facets or statistics
+- **When it's sent**: After the filter completes successfully.
+- **Purpose**: Marks the end of a successful execution.
+- **Metadata**:
+  - `eventType`: `"COMPLETE"`
+  - `runId`: Matches the original ID from `START`
+  - Can include summary facets or statistics
 
 > ⚠️ In case of interruption or failure, a fourth optional event `ABORT` can also be emitted to indicate early termination.
 
@@ -529,18 +525,19 @@ The `OpenFilterLineage` class relies on several environment variables to configu
 |----------------------------------|------------------------------------------------------------|
 | `OPENLINEAGE_PRODUCER`    | URL identifying the producer of the lineage events         |
 | `OPENLINEAGE__HEART__BEAT__INTERVAL` | Interval in seconds between `RUNNING` events (default: 10) |
-| `OPENLINEAGE_URL`        | URL of the OpenLineage backend (e.g., <http://localhost:5000>) |
+| `OPENLINEAGE_URL`        | URL of the OpenLineage backend (e.g., http://localhost:5000) |
 | `OPENLINEAGE_API_KEY`     | API key used for authentication with the HTTP transport    |
 | `OPENLINEAGE_ENDPOINT` | Optional endpoint path (e.g., `/api/v1/lineage`)          |
 | `OPENLINEAGE_VERIFY_CLIENT_URL` | `true` or `false` for SSL verification of the HTTP URL     |
 | `OPENLINEAGE_DISABLED` | `true` or `false` for enabling OpenLineage events. By default is set to False     |
 | `[FILTER_NAME_]MODEL_NAME`        | Model name used by the filter (e.g., `WEBVISMODEL_NAME`)   |
 
+
 ---
 
 ## Setting Variables by Platform Example
 
-### On **Linux/macOS** (Bash or Zsh)
+### On **Linux/macOS** (Bash or Zsh):
 
 ```bash
 export OPENLINEAGE_PRODUCER="https://my-company.com/openlineage"
@@ -552,8 +549,7 @@ export OPENLINEAGE_VERIFY_CLIENT_URL=false
 export WEBVIS_MODEL_NAME="my-model-v1"
 ```
 
-### On Windows (CMD)
-
+### On Windows (CMD):
 ```bash
 set OPENLINEAGE_PRODUCER=https://my-company.com/openlineage
 set OPENLINEAGE__HEART__BEAT__INTERVAL=10
@@ -563,12 +559,12 @@ set OPENLINEAGE_ENDPOINT=/api/v1/lineage
 set OPENLINEAGE_VERIFY_CLIENT_URL=false
 set WEBVIS_MODEL_NAME=my-model-v1
 ```
-
 > **Note:** These variables for Windows will only persist for the current CMD session.
 
 ## 📊 Visualizing Events in Marquez
 
 `OpenFilterLineage` emits OpenLineage-compliant events that can be visualized using **Marquez**, an open-source data lineage backend with a web-based UI. Marquez can be used locally as a testing and observability tool, allowing developers to inspect and validate lineage events generated by OpenFilter pipelines in real time.
+
 
 ---
 
@@ -595,9 +591,9 @@ cd marquez
 
 | Component   | URL                                     |
 |-------------|------------------------------------------|
-| Web UI      | <http://localhost:3000>                   |
-| REST API    | <http://localhost:5000>                   |
-| Healthcheck | <http://localhost:5001/healthcheck>       |
+| Web UI      | http://localhost:3000                   |
+| REST API    | http://localhost:5000                   |
+| Healthcheck | http://localhost:5001/healthcheck       |
 
 ---
 
@@ -627,10 +623,10 @@ Once your pipeline is emitting events, open the Marquez UI:
 
 You’ll be able to:
 
-* **Browse Jobs** – Each filter is registered as a job (`filter_name`)
-* **Inspect Runs** – Executions with unique `runId`
-* **View Facets** – Metadata like model name, frame rate, etc.
-* **Explore the Lineage Graph** – Dependencies between jobs and datasets
+- **Browse Jobs** – Each filter is registered as a job (`filter_name`)
+- **Inspect Runs** – Executions with unique `runId`
+- **View Facets** – Metadata like model name, frame rate, etc.
+- **Explore the Lineage Graph** – Dependencies between jobs and datasets
 
 ---
 
@@ -706,12 +702,12 @@ To test Marquez with a real OpenFilter pipeline, you can clone the demo reposito
 
 This example includes:
 
-* `Video Source`: reads a sample video
-* `DriveID`: detects license plates
-* `Clipper`: crops the plate region
-* `TextScan`: runs OCR
-* `Plate ID OCR`: annotates frames with detected text
-* `Web Viewer`: visualizes frames in the browser
+- `Video Source`: reads a sample video
+- `DriveID`: detects license plates
+- `Clipper`: crops the plate region
+- `TextScan`: runs OCR
+- `Plate ID OCR`: annotates frames with detected text
+- `Web Viewer`: visualizes frames in the browser
 
 ### 🧪 Pipeline Runner Script
 
@@ -762,6 +758,7 @@ if __name__ == '__main__':
     ])
 ```
 
+
 **After Executing the code it will be possible to access Marquez Client and visualize the events and the metadata sent from filters**
 
 ![alt text](image.png)
@@ -790,9 +787,9 @@ This example showcases a complete license plate recognition pipeline using OpenF
 
 ### ✅ Requirements
 
-* Python **3.11**
-* Linux system (macOS may work, but is not officially supported)
-* [`ffmpeg`](https://ffmpeg.org/) installed and in your PATH
+- Python **3.11**
+- Linux system (macOS may work, but is not officially supported)
+- [`ffmpeg`](https://ffmpeg.org/) installed and in your PATH
 
 ---
 
@@ -805,19 +802,19 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-1. Install dependencies:
+2. Install dependencies:
 
 ```bash
 make install
 ```
 
-1. Run the pipeline:
+3. Run the pipeline:
 
 ```bash
 make run
 ```
 
-1. Open your browser at:
+4. Open your browser at:
 
 ```
 http://localhost:8000
@@ -872,6 +869,8 @@ Once the script is running, visit the Marquez UI:
 
 And explore the jobs, runs, and facets related to the pipeline above.
 
+
+
 # OpenTelemetryClient for OpenFilter
 
 This module provides a telemetry client for [OpenTelemetry](https://opentelemetry.io/) that integrates seamlessly with **OpenFilter**. It enables structured, periodic metric collection and export for filters running inside a pipeline — supporting observability across distributed processing components.
@@ -882,10 +881,10 @@ This module provides a telemetry client for [OpenTelemetry](https://opentelemetr
 
 The `OpenTelemetryClient` is used to **track, aggregate, and export runtime metrics** from OpenFilter components (called "filters"). It is intended to:
 
-* Collect runtime metrics (e.g. CPU, memory, FPS, latency) from each filter
-* Expose those metrics using OpenTelemetry instruments (`ObservableGauge`)
-* Export them periodically to external systems (Google Cloud Monitoring, OTLP, Console, etc.)
-* Aggregate metrics for each filter for  observability and health monitoring
+- Collect runtime metrics (e.g. CPU, memory, FPS, latency) from each filter
+- Expose those metrics using OpenTelemetry instruments (`ObservableGauge`)
+- Export them periodically to external systems (Google Cloud Monitoring, OTLP, Console, etc.)
+- Aggregate metrics for each filter for  observability and health monitoring
 
 This is crucial for **monitoring pipeline performance**, **troubleshooting**, and **scaling decision-making** in production environments using OpenFilter.
 
@@ -893,16 +892,16 @@ This is crucial for **monitoring pipeline performance**, **troubleshooting**, an
 
 ## ✨ Features
 
-* 🕒 **Periodic metric export** (default: every 3 seconds)
-* 🧩 **Built-in support for multiple exporters**:
-  * `console`: print metrics to stdout
-  * `gcm`: Google Cloud Monitoring
-  * `otlp_grpc` and `otlp_http`: OpenTelemetry Protocol via gRPC or HTTP
-* ⚙️ **Customizable via environment variables or constructor params**
-* 🧠 **Auto-creation of observable gauges** for each filter + metric
-* 📈 **Aggregation of metrics**  (e.g., mean CPU per pipeline)
-* 🔒 **Thread-safe metric updates**
-* ⛔ **Export skipping logic** to avoid redundant updates per interval
+- 🕒 **Periodic metric export** (default: every 3 seconds)
+- 🧩 **Built-in support for multiple exporters**:
+  - `console`: print metrics to stdout
+  - `gcm`: Google Cloud Monitoring
+  - `otlp_grpc` and `otlp_http`: OpenTelemetry Protocol via gRPC or HTTP
+- ⚙️ **Customizable via environment variables or constructor params**
+- 🧠 **Auto-creation of observable gauges** for each filter + metric
+- 📈 **Aggregation of metrics**  (e.g., mean CPU per pipeline)
+- 🔒 **Thread-safe metric updates**
+- ⛔ **Export skipping logic** to avoid redundant updates per interval
 
 ---
 
@@ -936,11 +935,8 @@ export PROJECT_ID=my-gcp-project
 export EXPORT_INTERVAL=10000
 export OTEL_EXPORTER_OTLP_HTTP_ENDPOINT=http://localhost:4318
 ```
-
 ### 🪟 Windows
-
 ---
-
 #### ⏱ Temporary (valid only for the current CMD session)
 
 Run these commands directly in the Command Prompt:
@@ -955,7 +951,6 @@ set OTEL_EXPORTER_OTLP_HTTP_ENDPOINT=http://localhost:4318
 ```
 
 ---
-
 ## S3 Integration Example
 
 Process video files stored in Amazon S3 with OCR analysis. This example demonstrates downloading video from S3, processing with optical character recognition, and visualizing results. You can get a sample video file to test from `examples/hello-ocr/hello.mov`.
@@ -976,15 +971,14 @@ Replace `<profile>` with your AWS profile name and `<bucket_name>` with your S3 
 * The `!loop` option continuously replays the video for ongoing processing
 
 Prerequisites:
-
 * AWS credentials configured (via AWS CLI, environment variables, or IAM roles)
 * S3 bucket with read permissions for the specified video file
 * OpenFilter with S3 support: `pip install openfilter[all]`
 * OCR filter: `pip install filter-optical-character-recognition`
 
-<a id="other_stuff"></a>
 
-# Other stuff
+<a id="other_stuff"></a>
+# Other stuff:
 
 * Metrics are published for all individual filters on an invisible topic '_metrics'. You will only get this if you explicitly subscribe to it. 'fps', 'lat_in' and 'lat_out' are latencies in milliseconds of when frames were grabbed to the time of input to or output from that filter, 'cpu' is current process and all its children and 'mem' is memory usage in GB also process recursive. 'gpu0..7' and 'gpu0..7_mem' are GPU metrics in percent utilization and GB used, they are global so if you are running multiple filters in processes they will all show the same values.
 
@@ -1013,14 +1007,12 @@ OpenFilter includes a comprehensive observability system that provides safe, agg
 ## Quick Start
 
 ### 1. Enable Observability
-
 ```bash
 export TELEMETRY_EXPORTER_ENABLED=true
 export OF_SAFE_METRICS="frames_processed,frames_with_detections,detection_confidence_histogram"
 ```
 
 ### 2. Configure OpenLineage (Optional)
-
 ```bash
 export OPENLINEAGE_URL="https://oleander.dev"
 export OPENLINEAGE_API_KEY="your_api_key"
@@ -1028,7 +1020,6 @@ export OPENLINEAGE__HEART__BEAT__INTERVAL=10
 ```
 
 ### 3. Add Metrics to Your Filter
-
 ```python
 from openfilter.filter_runtime.filter import Filter
 from openfilter.observability import MetricSpec
@@ -1064,23 +1055,22 @@ class MyFilter(Filter):
 ## Key Features
 
 ### **Security First**
-* **Allowlist enforcement** - Only approved metrics leave the process
-* **Optional raw data** - Controlled export for debugging (`OPENLINEAGE_EXPORT_RAW_DATA`)
+- **Allowlist enforcement** - Only approved metrics leave the process
+- **Optional raw data** - Controlled export for debugging (`OPENLINEAGE_EXPORT_RAW_DATA`)
 
 ### **Smart Automation**
-* **Automatic histogram buckets** - Logarithmic spacing based on metric type
-* **Conditional initialization** - OpenLineage only starts when configured
-* **Backward compatibility** - Existing filters work without changes
+- **Automatic histogram buckets** - Logarithmic spacing based on metric type
+- **Conditional initialization** - OpenLineage only starts when configured
+- **Backward compatibility** - Existing filters work without changes
 
 ### **Metrics Types**
-* **Counters** - Running totals (frames processed, detections found)
-* **Histograms** - Distributions (confidence scores, processing times)
-* **Gauges** - Current values (memory usage, temperature)
+- **Counters** - Running totals (frames processed, detections found)
+- **Histograms** - Distributions (confidence scores, processing times)
+- **Gauges** - Current values (memory usage, temperature)
 
 ## Metric Types
 
 ### Counters
-
 ```python
 MetricSpec(
     name="frames_processed",
@@ -1090,7 +1080,6 @@ MetricSpec(
 ```
 
 ### Histograms (Auto-generated buckets)
-
 ```python
 MetricSpec(
     name="detection_confidence",
@@ -1101,7 +1090,6 @@ MetricSpec(
 ```
 
 ### Histograms (Custom buckets)
-
 ```python
 MetricSpec(
     name="processing_time_ms",
@@ -1112,7 +1100,6 @@ MetricSpec(
 ```
 
 ### Gauges
-
 ```python
 MetricSpec(
     name="memory_usage_mb",
@@ -1124,7 +1111,6 @@ MetricSpec(
 ## Configuration Options
 
 ### Core Environment Variables
-
 ```bash
 # Enable observability system
 export TELEMETRY_EXPORTER_ENABLED=true
@@ -1137,7 +1123,6 @@ export OF_SAFE_METRICS_FILE=/path/to/safe_metrics.yaml
 ```
 
 ### OpenLineage Integration
-
 ```bash
 # Server configuration
 export OPENLINEAGE_URL="https://oleander.dev"
@@ -1153,7 +1138,6 @@ export OPENLINEAGE_EXPORT_RAW_DATA=false
 ```
 
 ### OpenTelemetry Export
-
 ```bash
 # Export type: console, gcm, otlp_http, otlp_grpc, prometheus
 export TELEMETRY_EXPORTER_TYPE=console
@@ -1176,7 +1160,6 @@ export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
 ## Example Output
 
 ### OpenLineage Heartbeat Facets
-
 ```json
 {
   "frames_processed": 150,
@@ -1199,7 +1182,6 @@ export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
 **Note**: Histogram buckets and counts are sent as numeric values (floats/integers), not strings, for better compatibility with analysis tools.
 
 ### With Raw Data Export
-
 ```json
 {
   "frames_processed": 150,
@@ -1227,7 +1209,6 @@ export OTEL_EXPORTER_OTLP_GRPC_ENDPOINT="http://localhost:4317"
 ## Advanced Usage
 
 ### Complex Value Extraction
-
 ```python
 # Nested object access
 value_fn=lambda d: d.get("results", {}).get("confidence", 0.0)
@@ -1243,7 +1224,6 @@ value_fn=lambda d: d.get("processing_time", 0) * 1000  # Convert to ms
 ```
 
 ### YAML Allowlist Configuration
-
 ```yaml
 # safe_metrics.yaml
 safe_metrics:
@@ -1256,7 +1236,6 @@ safe_metrics:
 ```
 
 ### Debug Logging
-
 ```bash
 export FILTER_DEBUG=true
 export OPENLINEAGE_EXPORT_RAW_DATA=true
@@ -1267,34 +1246,31 @@ export OPENLINEAGE_EXPORT_RAW_DATA=true
 ### Common Issues
 
 1. **No metrics appearing**
-   * Check `TELEMETRY_EXPORTER_ENABLED=true`
-   * Verify `OF_SAFE_METRICS` includes your metric names
-   * Ensure `OPENLINEAGE_URL` is set correctly
+   - Check `TELEMETRY_EXPORTER_ENABLED=true`
+   - Verify `OF_SAFE_METRICS` includes your metric names
+   - Ensure `OPENLINEAGE_URL` is set correctly
 
 2. **Histogram bucket mismatch**
-   * Verify `len(counts) = len(boundaries) + 1`
-   * Use `num_buckets` for auto-generation or `boundaries` for custom
+   - Verify `len(counts) = len(boundaries) + 1`
+   - Use `num_buckets` for auto-generation or `boundaries` for custom
 
 3. **Raw data not appearing**
-   * Set `OPENLINEAGE_EXPORT_RAW_DATA=true`
-   * Check that frames have data in `frame.data`
+   - Set `OPENLINEAGE_EXPORT_RAW_DATA=true`
+   - Check that frames have data in `frame.data`
 
 4. **OpenLineage not starting**
-   * Ensure `OPENLINEAGE_URL` is set
-   * Check API key and endpoint configuration
+   - Ensure `OPENLINEAGE_URL` is set
+   - Check API key and endpoint configuration
 
 ### Expected Timeline
-
 With default settings (`OPENLINEAGE__HEART__BEAT__INTERVAL=10`):
-* **0-10 seconds**: Empty or minimal payloads (system warming up)
-* **10-20 seconds**: Some metrics start appearing
-* **20+ seconds**: Full metric payloads with meaningful data
+- **0-10 seconds**: Empty or minimal payloads (system warming up)
+- **10-20 seconds**: Some metrics start appearing
+- **20+ seconds**: Full metric payloads with meaningful data
 
 This is normal behavior and ensures that metrics are properly aggregated before being sent to Oleander.
 
 For detailed documentation, see the [Monitoring Guide](./monitoring.md).
-
----
 
 ## GPU / CUDA Path Configuration on Kubernetes (GKE)
 
