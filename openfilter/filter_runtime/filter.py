@@ -35,6 +35,31 @@ from scarf import ScarfEventLogger
 
 __all__ = ['is_cached_file', 'is_mq_addr', 'FilterConfig', 'Filter']
 
+_APPEND_ENV_VARS = {
+    "OPENFILTER_APPEND_LD_LIBRARY_PATH": "LD_LIBRARY_PATH",
+    "OPENFILTER_APPEND_PATH": "PATH",
+}
+
+
+def _apply_append_env_vars():
+    """Read OPENFILTER_APPEND_* env vars and append their values to the target env vars.
+
+    This allows Kubernetes controllers to hint at additional paths without
+    overriding existing values. For example, on GKE the NVIDIA device plugin
+    mounts GPU libraries but doesn't set LD_LIBRARY_PATH.
+    """
+    for append_var, target_var in _APPEND_ENV_VARS.items():
+        value = os.environ.get(append_var)
+        if value:
+            existing = os.environ.get(target_var, "")
+            if existing:
+                os.environ[target_var] = f"{existing}:{value}"
+            else:
+                os.environ[target_var] = value
+
+
+_apply_append_env_vars()
+
 logger = logging.getLogger(__name__)
 
 scarf_elogger = ScarfEventLogger(
