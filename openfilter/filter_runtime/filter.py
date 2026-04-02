@@ -469,6 +469,14 @@ class Filter:
             Automatically download "jfrog://..." resources in configs and replace names with cached "file://..." URIs.
             Default True.
 
+        FILTER_BATCH_SIZE:
+            Number of frames to accumulate before calling process_batch().
+            Default 1 (no batching).
+
+        FILTER_ACCUMULATE_TIMEOUT_MS:
+            Maximum milliseconds to wait for a full batch before flushing a
+            partial batch.  Default 100.
+
     From logging.py:
         LOG_PATH:
             Path for logs, set to 'false' to disable. Default 'false'.
@@ -682,6 +690,7 @@ class Filter:
         self._batch_lock = threading.Lock()
         self._batch_timer: threading.Timer | None = None
         self._batch_flush_event = threading.Event()
+        # Accessed only from the loop_once thread — no lock needed.
         self._batch_pending_results: list[dict[str, Frame]] = []
 
         try:
@@ -1148,6 +1157,22 @@ class Filter:
 
         return self._process_frames_single(frames)
 
+    def _normalize_frame_result(self, result):
+        """Wrap a bare Frame in {'main': frame}; pass dicts through unchanged."""
+        if isinstance(result, Frame):
+            return {"main": result}
+        return result
+
+    def _finalize_frames(
+        self, frames: dict[str, Frame], t_in: float, t_out: float, duration_ms: float
+    ) -> None:
+        """Inject timing metadata and enqueue for async processing."""
+        self._inject_timings(frames, t_in, t_out, duration_ms)
+        try:
+            self._metadata_queue.put_nowait((frames, self.emitter))
+        except queue.Full:
+            pass  # metadata is best-effort; drop if queue is full
+
     def _process_frames_single(
         self, frames: dict[str, Frame]
     ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
@@ -1171,18 +1196,8 @@ class Filter:
             return None
 
         if processed_frames and not callable(processed_frames):
-            final_frames = (
-                {"main": processed_frames}
-                if isinstance(processed_frames, Frame)
-                else processed_frames
-            )
-
-            self._inject_timings(final_frames, t_in, t_out, process_time_ms)
-
-            try:
-                self._metadata_queue.put_nowait((final_frames, self.emitter))
-            except queue.Full:
-                pass  # metadata is best-effort; drop if queue is full
+            final_frames = self._normalize_frame_result(processed_frames)
+            self._finalize_frames(final_frames, t_in, t_out, process_time_ms)
 
         if callable(processed_frames):
 
@@ -1192,7 +1207,7 @@ class Filter:
                 ct_out = time.time()
                 if f is None:
                     return None
-                result = {"main": f} if isinstance(f, Frame) else f
+                result = self._normalize_frame_result(f)
                 ct_ms = (ct_out - ct_in) * 1000
                 self._filter_time_in = ct_in
                 self._filter_time_out = ct_out
@@ -1202,11 +1217,7 @@ class Filter:
 
             return _timed_callable
         else:
-            return (
-                {"main": processed_frames}
-                if isinstance(processed_frames, Frame)
-                else processed_frames
-            )
+            return self._normalize_frame_result(processed_frames)
 
     def _process_frames_batched(
         self, frames: dict[str, Frame]
@@ -1270,10 +1281,7 @@ class Filter:
         for result in results:
             if result is None:
                 continue
-            if isinstance(result, Frame):
-                normalized.append({"main": result})
-            else:
-                normalized.append(result)
+            normalized.append(self._normalize_frame_result(result))
 
         if not normalized:
             if self._is_last_filter and batch:
@@ -1282,11 +1290,7 @@ class Filter:
 
         # Inject per-frame timing metadata into every result
         for frames in normalized:
-            self._inject_timings(frames, t_in, t_out, process_time_ms)
-            try:
-                self._metadata_queue.put_nowait((frames, self.emitter))
-            except queue.Full:
-                pass  # metadata is best-effort; drop if queue is full
+            self._finalize_frames(frames, t_in, t_out, process_time_ms)
 
         return normalized
 
@@ -1331,8 +1335,9 @@ class Filter:
 
                 break
 
-        # Flush any partial batch before processing the timeout empty-frames
-        if batch_mode:
+        # Timeout in batch mode — flush any partial batch and return early.
+        # Only runs when frames is empty (timeout case), not when real frames are received.
+        if batch_mode and not frames:
             with self._batch_lock:
                 if self._frame_buffer:
                     batch = list(self._frame_buffer)
@@ -1345,6 +1350,13 @@ class Filter:
                 flushed_results = self._execute_batch(batch)
                 for r in flushed_results:
                     self._send_frames(r, outputs_timeout)
+            # In batch mode, timeout means "flush partial" — already done above.
+            # No need to call process_frames({}) which would just return None.
+            if (
+                exit_after_t := self.exit_after_t
+            ) is not None and time() >= exit_after_t:
+                self.exit("exit_after")
+            return
 
         frames = self.process_frames(frames)
 
@@ -1637,10 +1649,14 @@ class Filter:
 
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
-        self._cancel_batch_timer()
-        if self._frame_buffer:
-            batch = list(self._frame_buffer)
-            self._frame_buffer.clear()
+        with self._batch_lock:
+            self._cancel_batch_timer()
+            if self._frame_buffer:
+                batch = list(self._frame_buffer)
+                self._frame_buffer.clear()
+            else:
+                batch = None
+        if batch is not None:
             try:
                 results = self._execute_batch(batch)
                 for r in results:

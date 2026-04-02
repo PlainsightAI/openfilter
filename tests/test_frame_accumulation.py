@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from openfilter.filter_runtime import Filter, FilterConfig, Frame
 from openfilter.filter_runtime.utils import setLogLevelGlobal
@@ -14,10 +14,6 @@ from openfilter.filter_runtime.utils import setLogLevelGlobal
 logger = logging.getLogger(__name__)
 log_level = int(getattr(logging, (os.getenv("LOG_LEVEL") or "CRITICAL").upper()))
 setLogLevelGlobal(log_level)
-
-
-def _strip_meta(d):
-    return {k: v for k, v in d.items() if k != "meta"}
 
 
 class CountingBatchFilter(Filter):

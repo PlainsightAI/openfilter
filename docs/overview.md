@@ -60,11 +60,14 @@ Other functions you may find useful to overload is `shutdown()`, this is called 
 When `batch_size` is set to a value greater than 1 in the filter config, the runtime accumulates incoming frames and delivers them as a list to `process_batch()` instead of calling `process()` individually. This allows GPU-bound filters to amortize expensive operations (e.g. backbone inference) across multiple frames.
 
     class MyGPUFilter(Filter):
-        def process_batch(self, batch):
-            # batch is a list of frame dicts, each as would be passed to process()
-            images = [f["main"].img for f in batch]  # extract image from each frame dict
-            features = self.model.encode_batch(images)
-            return [self.process(f) for f in batch]  # return one result per input frame
+         def process_batch(self, batch):
+             # batch is a list of frame dicts, each as would be passed to process()
+             images = [f["main"].image for f in batch]
+            detections = self.model.infer_batch(images)  # one GPU call for N frames
+            return [
+                {"main": Frame(data={**f["main"].data, "detections": d})}
+                for f, d in zip(batch, detections)
+            ]
 
 Config options:
 
