@@ -2,7 +2,7 @@
 
 OpenFilter Library release notes
 
-## Unreleased
+## v0.1.26 - 2026-04-02
 
 ### Added
 
