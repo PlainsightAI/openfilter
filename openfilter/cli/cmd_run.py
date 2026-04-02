@@ -4,6 +4,19 @@ import multiprocessing as mp
 import os
 from pprint import pp
 
+# IMPORTANT: Set multiprocessing start method BEFORE importing Filter, because importing Filter
+# initializes the multiprocessing context with the default start method. On Linux, this defaults
+# to 'fork', which in Python 3.12+ causes issues when fork() is called in a multi-threaded process
+# (threading is introduced by SignalStopper). This must be set with force=True since we can't know
+# if another module has already initialized the context.
+# See: https://github.com/PlainsightAI/openfilter/issues/XX
+if not os.environ.get('OPENFILTER_FORK'):
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # Context already set, continue with current method
+        pass
+
 from openfilter.filter_runtime.filter import Filter, PROP_EXIT_FLAGS, PROP_EXIT, OBEY_EXIT
 from openfilter.filter_runtime.utils import dict_without
 
@@ -91,9 +104,6 @@ notes:
     filters = parse_filters(args[:idx:-1], opts.ipc)
 
     # run
-
-    if not opts.fork:
-        mp.set_start_method('spawn')
 
     if opts.solo and len(filters) > 1:
         raise ValueError("can only run a single Filter '--solo'")
