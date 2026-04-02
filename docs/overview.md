@@ -1272,3 +1272,37 @@ This is normal behavior and ensures that metrics are properly aggregated before 
 
 For detailed documentation, see the [Monitoring Guide](./monitoring.md).
 
+## GPU / CUDA Path Configuration on Kubernetes (GKE)
+
+On Google Kubernetes Engine, the NVIDIA device plugin mounts GPU drivers into filter containers but does **not** automatically set `LD_LIBRARY_PATH` or `PATH` to include the driver paths. Kubernetes `env:` entries replace the entire variable rather than appending, so a naive override would discard paths already baked into the container image.
+
+OpenFilter solves this with two append-only environment variables that are read at startup (before any torch import) and **appended** to the existing values:
+
+| Variable | Appended to |
+|---|---|
+| `OPENFILTER_APPEND_LD_LIBRARY_PATH` | `LD_LIBRARY_PATH` |
+| `OPENFILTER_APPEND_PATH` | `PATH` |
+
+### Behaviour
+
+* If the target variable (`LD_LIBRARY_PATH` / `PATH`) already has a value, the append variable is joined with `:`.
+* If the target variable is not set, it is created with the append value directly.
+* If the append variable is empty or not set, nothing changes — the feature is a no-op by default.
+
+### Example: GKE NVIDIA driver paths
+
+Inject these into the filter's Kubernetes `env:` block (or via the pipelines controller):
+
+```yaml
+env:
+  - name: OPENFILTER_APPEND_LD_LIBRARY_PATH
+    value: /usr/local/nvidia/lib64
+  - name: OPENFILTER_APPEND_PATH
+    value: /usr/local/nvidia/bin
+```
+
+At startup, OpenFilter will append these to whatever `LD_LIBRARY_PATH` and `PATH` are already set in the container, making the GPU drivers visible to PyTorch and CUDA before any GPU detection occurs.
+
+### Controller auto-injection
+
+The Plainsight pipelines controller automatically injects `OPENFILTER_APPEND_LD_LIBRARY_PATH` and `OPENFILTER_APPEND_PATH` for GPU-enabled filter pods on GKE. No manual configuration is required when running through the controller.
