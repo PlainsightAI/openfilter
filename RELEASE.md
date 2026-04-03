@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## v0.1.27 - 2026-04-03
+
+### Fixed
+
+- **Remove eager imports from `filters/__init__.py`**: The package-level `__init__.py` eagerly imported `VideoOut`, `ImageOut`, and `ImageIn`, which pulled in optional dependencies like PyAV (`av`). This crashed containers that only needed a subset of filters (e.g., `video-in` containers that don't have `av` installed). Since no code uses package-level imports (all consumers import directly from submodules), the re-exports were removed entirely.
+
 ## v0.1.26 - 2026-04-02
 
 ### Added
