@@ -2,6 +2,13 @@
 
 OpenFilter Library release notes
 
+## v0.1.29 - 2026-04-14
+
+### Added
+
+- **Frame accumulation support for batched processing**: Filters can now set `batch_size > 1` to accumulate frames and process them in batches via `process_batch()`. Includes timeout-based flushing, proper locking, and backward compatibility with single-frame `process()`.
+- **Single batch watcher thread**: Replaced per-timeout `threading.Timer` with a single long-lived daemon thread for batch flush monitoring, reducing thread churn in high-throughput filters.
+
 ## v0.1.28 - 2026-04-13
 
 ### Changed
