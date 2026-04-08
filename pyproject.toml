@@ -119,6 +119,7 @@ all = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-benchmark>=5.1.0",
 ]
 
 [tool.pytest.ini_options]

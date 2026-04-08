@@ -19,7 +19,11 @@ build-wheel:  ## Build python wheel
 
 .PHONY: test
 test:  ## Run basic unit tests
-	pytest -v --cov=tests -s tests
+	pytest -v --cov=tests -s tests --benchmark-disable
+
+.PHONY: bench
+bench:  ## Run performance benchmarks
+	pytest tests/test_benchmarks.py -v --benchmark-group-by=group -s --benchmark-max-time=0.5
 
 .PHONY: test-all
 test-all:  ## Run all unit tests
