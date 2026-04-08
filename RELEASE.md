@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## v0.1.28 - 2026-04-12
+
+### Added
+
+- **OpenTelemetry distributed tracing for per-filter execution spans**: Filter runtime now emits OTel spans around each filter's processing step and propagates trace context through the observability client. A new `openfilter/observability/tracing.py` module wires up the SDK; `filter_runtime/filter.py` and `observability/client.py` were updated to start/stop spans and attach trace context. Trace context is consumed from standard OTel environment variables, allowing upstream controllers to stitch filter spans into a pipeline-wide trace.
+
 ## v0.1.27 - 2026-04-03
 
 ### Fixed

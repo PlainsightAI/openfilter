@@ -25,6 +25,10 @@ test:  ## Run basic unit tests
 bench:  ## Run performance benchmarks
 	pytest tests/test_benchmarks.py -v --benchmark-group-by=group -s --benchmark-max-time=0.5
 
+.PHONY: test-integration
+test-integration:  ## Run integration tests (requires a running docker daemon)
+	pytest -v tests/integration/ --benchmark-disable -m slow
+
 .PHONY: test-all
 test-all:  ## Run all unit tests
 	$(MAKE) test

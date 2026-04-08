@@ -25,6 +25,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
 from .bridge import OTelLineageExporter
+from .tracing import setup_tracer_provider, extract_parent_context
 
 
 def strtobool(val: str) -> bool:
@@ -191,11 +192,29 @@ class OpenTelemetryClient:
                         self.business_meter = None
                 else:
                     self.business_meter = None
+                # --- Distributed tracing ---
+                try:
+                    self.tracer_provider = setup_tracer_provider(
+                        resource=resource,
+                        exporter_type=exporter_type,
+                        exporter_config=exporter_config,
+                    )
+                    self.parent_context = extract_parent_context()
+                    self.tracer = self.tracer_provider.get_tracer(service_name)
+                except Exception as e:
+                    logging.error(f"Failed to initialise tracing: {e}")
+                    self.tracer_provider = None
+                    self.parent_context = None
+                    self.tracer = None
+
             except Exception as e:
                 logging.error(f"Error setting Open Telemetry: {e}")
         else:
             self.provider = None
             self.meter = None
+            self.tracer_provider = None
+            self.parent_context = None
+            self.tracer = None
             logging.info("telemetry is disabled")
 
         self._lock = threading.Lock()

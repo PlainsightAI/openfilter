@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import multiprocessing as mp
@@ -69,6 +70,28 @@ def _apply_append_env_vars():
 _apply_append_env_vars()
 
 logger = logging.getLogger(__name__)
+
+
+def _flush_tracer_provider(otel: Any) -> None:
+    """Force-flush and shut down the OTel TracerProvider attached to an
+    OpenTelemetryClient, if any. Safe to call when ``otel`` is None, when it
+    has no ``tracer_provider`` attribute, or when ``tracer_provider`` is None
+    (all of which happen when tracing is disabled). Logs but never re-raises
+    — this runs in shutdown / exception-handling paths and must not mask the
+    original exception."""
+
+    tracer_provider = getattr(otel, 'tracer_provider', None)
+    if tracer_provider is None:
+        return
+    try:
+        tracer_provider.force_flush(timeout_millis=5000)
+    except Exception as e:
+        logger.warning("tracer provider force_flush failed during shutdown: %s", e)
+    try:
+        tracer_provider.shutdown()
+    except Exception as e:
+        logger.warning("tracer provider shutdown failed: %s", e)
+
 
 scarf_elogger = ScarfEventLogger(
     endpoint_url=f"https://python.openfilter.io/openfilter"
@@ -1001,9 +1024,37 @@ class Filter:
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
 
-        # Wrap process() with timing
+        # Wrap process() with timing and optional tracing span
+        tracer = getattr(getattr(self, 'otel', None), 'tracer', None)
+        parent_ctx = getattr(getattr(self, 'otel', None), 'parent_context', None) if tracer else None
+        span_ctx_mgr = (
+            tracer.start_as_current_span(
+                f"{self.__class__.__name__}.process",
+                context=parent_ctx,
+                attributes={
+                    "filter.name": self.filter_name or self.__class__.__name__,
+                    "filter.id": self._filter_id or "",
+                    # `pipeline.id` is retained for backward compat with any
+                    # existing dashboards keyed on it, but its value is
+                    # actually the pipeline *instance* name (from the
+                    # PIPELINE_ID env var injected by the pipelines-controller
+                    # via `pipelineInstance.Name`). The canonical grouping
+                    # attribute used consistently across plainsight-api,
+                    # plainsight-deployment-agent, and here is
+                    # `pipeline_instance.id`, so we stamp both with the same
+                    # value. A single Cloud Trace query
+                    # `pipeline_instance.id = "<uuid>"` returns the full
+                    # api → agent → filter waterfall end-to-end.
+                    "pipeline.id": self.pipeline_id or "",
+                    "pipeline_instance.id": self.pipeline_id or "",
+                },
+            )
+            if tracer
+            else contextlib.nullcontext()
+        )
         t_in = time.time()
-        processed_frames = self.process(frames)
+        with span_ctx_mgr:
+            processed_frames = self.process(frames)
         t_out = time.time()
 
         # Update per-filter timing unless process() returned a callable,
@@ -1354,6 +1405,14 @@ class Filter:
 
     def shutdown(self) -> None:
         """Clean up resources used."""
+        # Flush any buffered spans to the OTel collector before the container exits.
+        # The BatchSpanProcessor in setup_tracer_provider() buffers spans on an
+        # interval; without an explicit flush on shutdown, spans emitted just
+        # before exit can be dropped silently. Gated on self.otel being
+        # initialised so filters with tracing disabled remain a no-op. Logs but
+        # never re-raises — shutdown runs in error paths and must not mask the
+        # original exception.
+        _flush_tracer_provider(getattr(self, 'otel', None))
 
     def process(self, frames: dict[str, Frame]) -> dict[str, Frame] | Frame | Callable[[], dict[str, Frame] | Frame | None] | None:
         """Main processing thingy, this is the only method which MUST be implemented by a user Filter.
