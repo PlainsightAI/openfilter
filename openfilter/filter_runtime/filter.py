@@ -176,15 +176,15 @@ POLL_TIMEOUT_SEC = POLL_TIMEOUT_MS / 1000
 
 if PROP_EXIT not in PROP_EXIT_FLAGS:
     raise ValueError(
-        f'invalid PROP_EXIT {PROP_EXIT!r}, can only be one of: {", ".join(PROP_EXIT_FLAGS)}'
+        f"invalid PROP_EXIT {PROP_EXIT!r}, can only be one of: {', '.join(PROP_EXIT_FLAGS)}"
     )
 if OBEY_EXIT not in PROP_EXIT_FLAGS:
     raise ValueError(
-        f'invalid OBEY_EXIT {OBEY_EXIT!r}, can only be one of: {", ".join(PROP_EXIT_FLAGS)}'
+        f"invalid OBEY_EXIT {OBEY_EXIT!r}, can only be one of: {', '.join(PROP_EXIT_FLAGS)}"
     )
 if STOP_EXIT not in PROP_EXIT_FLAGS:
     raise ValueError(
-        f'invalid STOP_EXIT {STOP_EXIT!r}, can only be one of: {", ".join(PROP_EXIT_FLAGS)}'
+        f"invalid STOP_EXIT {STOP_EXIT!r}, can only be one of: {', '.join(PROP_EXIT_FLAGS)}"
     )
 
 
@@ -220,6 +220,13 @@ class FilterConfig(
     device: str | int | None
     metrics_csv_path: str | None
     metrics_csv_interval: float | None
+
+    batch_size: (
+        int | None
+    )  # Number of frames to accumulate before calling process_batch() (default 1 = no batching)
+    accumulate_timeout_ms: (
+        float | None
+    )  # Max ms to wait for a full batch before flushing partial (default 100.0)
 
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
@@ -452,6 +459,16 @@ class Filter:
             is provided in case of advanced use with circular filter topologies. If you don't know what this means then
             don't touch this. Global env var default MQ_MSGID_SYNC. EXPERIMENTAL!
 
+        batch_size:
+            Number of frames to accumulate before calling process_batch() instead of process(). Default 1 means no
+            batching and preserves existing single-frame behavior. When > 1, incoming frames are buffered and
+            process_batch() is called with the full list once the batch is complete or the timeout fires.
+
+        accumulate_timeout_ms:
+            Maximum time in milliseconds to wait for a full batch before flushing a partial batch. Only used when
+            batch_size > 1. Default 100.0. If frames arrive slower than this window the partial batch is flushed
+            rather than waiting indefinitely.
+
     Environment variables:
         LOG_LEVEL:
             'critical', 'error', 'warning', 'info' or 'debug'.
@@ -484,6 +501,14 @@ class Filter:
         AUTO_DOWNLOAD:
             Automatically download "jfrog://..." resources in configs and replace names with cached "file://..." URIs.
             Default True.
+
+        FILTER_BATCH_SIZE:
+            Number of frames to accumulate before calling process_batch().
+            Default 1 (no batching).
+
+        FILTER_ACCUMULATE_TIMEOUT_MS:
+            Maximum milliseconds to wait for a full batch before flushing a
+            partial batch.  Default 100.
 
     From logging.py:
         LOG_PATH:
@@ -629,6 +654,7 @@ class Filter:
     _EMA_ALPHA = (
         0.05  # smoothing factor for exponential moving averages (timing metrics)
     )
+    _batch_size: int = 1
     metric_specs: List[MetricSpec] = []  # subclasses override this to declare metrics
 
     @property
@@ -688,6 +714,18 @@ class Filter:
         self._csv_exporter = None
         self._metadata_queue = queue.Queue(maxsize=64)
         self._metadata_worker_thread = None
+
+        self._batch_size = int(config.get("batch_size") or 1)
+        self._accumulate_timeout_ms = float(
+            config.get("accumulate_timeout_ms") or 100.0
+        )
+        self._frame_buffer: list[dict[str, Frame]] = []
+        self._batch_lock = threading.Lock()
+        self._batch_timer: threading.Timer | None = None
+        self._batch_flush_event = threading.Event()
+        # Accessed only from the loop_once thread — no lock needed.
+        self._batch_pending_results: list[dict[str, Frame]] = []
+
         try:
             self.telemetry_enabled: bool = (
                 bool(strtobool(TELEMETRY_EXPORTER_ENABLED))
@@ -909,7 +947,7 @@ class Filter:
                 failed.append(dlcuri)
 
         if failed:
-            raise RuntimeError(f'could not download: {", ".join(failed)}')
+            raise RuntimeError(f"could not download: {', '.join(failed)}")
 
     re_valid_option_name = re.compile(r"^(?:no-)?[a-zA-Z_]\w*(?:=|$)")
 
@@ -1147,7 +1185,33 @@ class Filter:
     def process_frames(
         self, frames: dict[str, Frame]
     ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
-        """Call process() and deal with it if returns a Callable."""
+        """Call process() and deal with it if returns a Callable.
+        When batch_size > 1, accumulates frames and delegates to process_batch()."""
+
+        if self._batch_size > 1:
+            return self._process_frames_batched(frames)
+
+        return self._process_frames_single(frames)
+
+    def _normalize_frame_result(self, result):
+        """Wrap a bare Frame in {'main': frame}; pass dicts through unchanged."""
+        if isinstance(result, Frame):
+            return {"main": result}
+        return result
+
+    def _finalize_frames(
+        self, frames: dict[str, Frame], t_in: float, t_out: float, duration_ms: float
+    ) -> None:
+        """Inject timing metadata and enqueue for async processing."""
+        self._inject_timings(frames, t_in, t_out, duration_ms)
+        try:
+            self._metadata_queue.put_nowait((frames, self.emitter))
+        except queue.Full:
+            pass  # metadata is best-effort; drop if queue is full
+
+    def _process_frames_single(
+        self, frames: dict[str, Frame]
+    ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
 
         # Wrap process() with timing
         t_in = time.time()
@@ -1163,26 +1227,13 @@ class Filter:
             self._update_process_time_ema(process_time_ms)
 
         if processed_frames is None:
-            # Sink filter — still inject aggregate timing for last-filter metrics
             if self._is_last_filter and frames:
                 self._inject_timings(frames, t_in, t_out, process_time_ms)
             return None
 
-        # Now emit heartbeat with the processed frames that include this filter's results
         if processed_frames and not callable(processed_frames):
-            final_frames = (
-                {"main": processed_frames}
-                if isinstance(processed_frames, Frame)
-                else processed_frames
-            )
-
-            # Inject timing metadata into output frames
-            self._inject_timings(final_frames, t_in, t_out, process_time_ms)
-
-            try:
-                self._metadata_queue.put_nowait((final_frames, self.emitter))
-            except queue.Full:
-                pass  # metadata is best-effort; drop if queue is full
+            final_frames = self._normalize_frame_result(processed_frames)
+            self._finalize_frames(final_frames, t_in, t_out, process_time_ms)
 
         if callable(processed_frames):
 
@@ -1192,7 +1243,7 @@ class Filter:
                 ct_out = time.time()
                 if f is None:
                     return None
-                result = {"main": f} if isinstance(f, Frame) else f
+                result = self._normalize_frame_result(f)
                 ct_ms = (ct_out - ct_in) * 1000
                 self._filter_time_in = ct_in
                 self._filter_time_out = ct_out
@@ -1202,11 +1253,90 @@ class Filter:
 
             return _timed_callable
         else:
-            return (
-                {"main": processed_frames}
-                if isinstance(processed_frames, Frame)
-                else processed_frames
+            return self._normalize_frame_result(processed_frames)
+
+    def _process_frames_batched(
+        self, frames: dict[str, Frame]
+    ) -> dict[str, Frame] | None:
+        if not frames:
+            return None
+        with self._batch_lock:
+            self._cancel_batch_timer()
+            self._frame_buffer.append(frames)
+
+            if len(self._frame_buffer) < self._batch_size:
+                self._start_batch_timer()
+                return None
+
+            batch = list(self._frame_buffer)
+            self._frame_buffer.clear()
+            self._batch_flush_event.clear()
+
+        results = self._execute_batch(batch)
+        # Stash intermediate results for loop_once to drain.
+        # _batch_pending_results is only accessed from the loop_once thread,
+        # so no lock is needed here.
+        if len(results) > 1:
+            self._batch_pending_results = results[:-1]
+        return results[-1] if results else None
+
+    def _process_batch_flush(self) -> list[dict[str, Frame]] | None:
+        batch = self._take_flush_batch()
+        if batch is None:
+            return None
+        results = self._execute_batch(batch)
+        return results if results else None
+
+    def _execute_batch(self, batch: list[dict[str, Frame]]) -> list[dict[str, Frame]]:
+        """Run process_batch() and return normalized, timing-injected results.
+
+        Returns a list of frame dicts (possibly empty). The caller is
+        responsible for sending each result downstream.
+        """
+        t_in = time.time()
+        results = self.process_batch(batch)
+        if results is None:
+            results = [None] * len(batch)
+        t_out = time.time()
+        if len(results) != len(batch):
+            logger.warning(
+                "process_batch returned %d results for %d input frames",
+                len(results),
+                len(batch),
             )
+
+        process_time_ms = (t_out - t_in) * 1000
+        # Use full batch duration for each frame: batch processing is indivisible,
+        # so per-frame timing should reflect the actual batch wall-clock time.
+        self._filter_time_in = t_in
+        self._filter_time_out = t_out
+        self._update_process_time_ema(process_time_ms)
+
+        # Normalize results: wrap bare Frames, skip Nones
+        normalized = []
+        for result in results:
+            if result is None:
+                continue
+            normalized.append(self._normalize_frame_result(result))
+
+        if not normalized:
+            if self._is_last_filter and batch:
+                self._inject_timings(batch[-1], t_in, t_out, process_time_ms)
+            return []
+
+        # Inject per-frame timing metadata into every result
+        for frames in normalized:
+            self._finalize_frames(frames, t_in, t_out, process_time_ms)
+
+        return normalized
+
+    def _send_frames(self, frames, outputs_timeout: float) -> None:
+        while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
+            if self.stop_evt.is_set():
+                self.exit()
+
+            if (outputs_timeout := outputs_timeout - POLL_TIMEOUT_MS) <= 0:
+                break
 
     def loop_once(self) -> None:
         """Loop twice."""
@@ -1214,23 +1344,69 @@ class Filter:
         sources_timeout = self.sources_timeout
         outputs_timeout = self.outputs_timeout
 
-        while (frames := self.mq.recv(min(POLL_TIMEOUT_MS, sources_timeout))) is None:
+        batch_mode = self._batch_size > 1
+        poll_ms = (
+            min(POLL_TIMEOUT_MS, self._accumulate_timeout_ms)
+            if batch_mode
+            else POLL_TIMEOUT_MS
+        )
+
+        while (frames := self.mq.recv(min(poll_ms, sources_timeout))) is None:
             if self.stop_evt.is_set():
                 self.exit()
 
-            if (sources_timeout := sources_timeout - POLL_TIMEOUT_MS) <= 0:
+            if batch_mode and self._batch_flush_event.is_set():
+                flushed = self._process_batch_flush()
+                if flushed is not None:
+                    for result in flushed:
+                        self._send_frames(result, outputs_timeout)
+                    if (
+                        exit_after_t := self.exit_after_t
+                    ) is not None and time() >= exit_after_t:
+                        self.exit("exit_after")
+                    return
+
+            if (sources_timeout := sources_timeout - poll_ms) <= 0:
                 frames = {}
 
                 break
 
+        # Timeout in batch mode — flush any partial batch and return early.
+        # Only runs when frames is empty (timeout case), not when real frames are received.
+        if batch_mode and not frames:
+            with self._batch_lock:
+                if self._frame_buffer:
+                    batch = list(self._frame_buffer)
+                    self._frame_buffer.clear()
+                    self._batch_flush_event.clear()
+                    self._cancel_batch_timer()
+                else:
+                    batch = None
+            if batch is not None:
+                flushed_results = self._execute_batch(batch)
+                for r in flushed_results:
+                    self._send_frames(r, outputs_timeout)
+            # In batch mode, timeout means "flush partial" — already done above.
+            # No need to call process_frames({}) which would just return None.
+            if (
+                exit_after_t := self.exit_after_t
+            ) is not None and time() >= exit_after_t:
+                self.exit("exit_after")
+            return
+
         frames = self.process_frames(frames)
 
-        while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
-            if self.stop_evt.is_set():
-                self.exit()
+        # In batch mode, send any intermediate results that were stashed
+        # by _process_frames_batched before the final result.
+        if self._batch_pending_results:
+            for pending in self._batch_pending_results:
+                self._send_frames(pending, outputs_timeout)
+            self._batch_pending_results.clear()
 
-            if (outputs_timeout := outputs_timeout - POLL_TIMEOUT_MS) <= 0:
-                break
+        # In batch mode, None means "batch not full yet" — don't send.
+        # In non-batch mode, None from sink filters must still be sent (metrics accounting).
+        if not (batch_mode and frames is None):
+            self._send_frames(frames, outputs_timeout)
 
         if (exit_after_t := self.exit_after_t) is not None and time() >= exit_after_t:
             self.exit("exit_after")
@@ -1441,7 +1617,7 @@ class Filter:
             self.exit_after_t = time() + exit_after
 
             logger.info(
-                f'exit scheduled after: {timestr(exit_after)}{"s" if exit_after < 60 else ""}'
+                f"exit scheduled after: {timestr(exit_after)}{'s' if exit_after < 60 else ''}"
             )
 
         else:  # exit_after str starts with '@'
@@ -1509,6 +1685,22 @@ class Filter:
 
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
+        with self._batch_lock:
+            self._cancel_batch_timer()
+            if self._frame_buffer:
+                batch = list(self._frame_buffer)
+                self._frame_buffer.clear()
+            else:
+                batch = None
+        if batch is not None:
+            try:
+                results = self._execute_batch(batch)
+                for r in results:
+                    self.mq.send(r, POLL_TIMEOUT_MS)
+            except Exception:
+                logger.warning(
+                    "Failed to flush partial batch on shutdown", exc_info=True
+                )
         self._stop_metadata_worker()
         if hasattr(self, "emitter") and self.emitter is not None:
             self.emitter.emit_stop()
@@ -1567,6 +1759,20 @@ class Filter:
             else:
                 config.mq_log = new_mq_log
 
+        if (batch_size := config.get("batch_size")) is not None:
+            batch_size = int(batch_size)
+            if batch_size < 1:
+                raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+            config.batch_size = batch_size
+
+        if (acc_timeout := config.get("accumulate_timeout_ms")) is not None:
+            acc_timeout = float(acc_timeout)
+            if acc_timeout <= 0:
+                raise ValueError(
+                    f"accumulate_timeout_ms must be > 0, got {acc_timeout}"
+                )
+            config.accumulate_timeout_ms = acc_timeout
+
         return config
 
     def setup(self, config: FilterConfig) -> None:
@@ -1581,7 +1787,13 @@ class Filter:
     ) -> (
         dict[str, Frame] | Frame | Callable[[], dict[str, Frame] | Frame | None] | None
     ):
-        """Main processing thingy, this is the only method which MUST be implemented by a user Filter.
+        """Main per-frame processing method. Must be implemented unless the filter exclusively uses
+        ``process_batch()`` with ``batch_size`` always > 1.
+
+        When ``batch_size`` is 1 (the default), the runtime calls this method for every incoming
+        frame. When ``batch_size`` > 1, the default ``process_batch()`` implementation delegates to
+        this method for each frame in the batch, so ``process()`` is still required unless you
+        override ``process_batch()`` and never run with ``batch_size=1``.
 
         Return:
             A dictionary of Frames, which will be sent downstream with topics as set by dict keys. An empty dictionary
@@ -1609,6 +1821,61 @@ class Filter:
         """
 
         raise NotImplementedError
+
+    def process_batch(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[dict[str, Frame] | Frame | None]:
+        """Process a batch of accumulated frames. Override this to implement batched processing.
+
+        Called when batch_size > 1 and the batch is full or the accumulate timeout fires.
+        Default implementation calls process() for each frame individually, preserving
+        backward compatibility.
+
+        Args:
+            batch: List of frame dicts, each as would be passed to process().
+
+        Returns:
+            List of results, one per input frame. Each element follows the same contract
+            as process() return values (dict, Frame, None). Callables are NOT supported
+            in batch mode.
+        """
+        results = []
+        for frames in batch:
+            r = self.process(frames)
+            if callable(r):
+                r = r()
+            results.append(r)
+        return results
+
+    def _cancel_batch_timer(self) -> None:
+        if self._batch_timer is not None:
+            self._batch_timer.cancel()
+            self._batch_timer = None
+
+    def _start_batch_timer(self) -> None:
+        self._cancel_batch_timer()
+        self._batch_timer = threading.Timer(
+            self._accumulate_timeout_ms / 1000.0,
+            self._on_batch_timeout,
+        )
+        self._batch_timer.daemon = True
+        self._batch_timer.start()
+
+    def _on_batch_timeout(self) -> None:
+        with self._batch_lock:
+            self._batch_flush_event.set()
+
+    def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
+        """If a flush is pending and buffer is non-empty, return the batch and reset state."""
+        with self._batch_lock:
+            if self._batch_flush_event.is_set() and self._frame_buffer:
+                batch = list(self._frame_buffer)
+                self._frame_buffer.clear()
+                self._batch_flush_event.clear()
+                self._cancel_batch_timer()
+                return batch
+            self._batch_flush_event.clear()
+            return None
 
     # - PUBLIC ---------------------------------------------------------------------------------------------------------
 
