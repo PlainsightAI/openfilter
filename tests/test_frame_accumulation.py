@@ -201,23 +201,26 @@ class TestBatchAccumulation(unittest.TestCase):
         result = f._process_batch_flush()
         self.assertIsNone(result)
 
-    def test_timer_cancelled_on_full_batch(self):
+    def test_watcher_started_on_partial_batch(self):
         f = self._make_filter(batch_size=2, timeout_ms=50.0)
 
         f.process_frames({"main": Frame({"val": 1})})
-        self.assertIsNotNone(f._batch_timer)
+        self.assertIsNotNone(f._batch_watcher)
+        self.assertTrue(f._batch_watcher.is_alive())
 
         f.process_frames({"main": Frame({"val": 2})})
-        self.assertIsNone(f._batch_timer)
+        # Watcher thread stays alive — it's reused across batches.
+        self.assertIsNotNone(f._batch_watcher)
 
-    def test_timer_cancelled_on_cleanup(self):
+    def test_watcher_stopped_on_cleanup(self):
         f = self._make_filter(batch_size=5, timeout_ms=1000.0)
 
         f.process_frames({"main": Frame({"val": 1})})
-        self.assertIsNotNone(f._batch_timer)
+        self.assertTrue(f._batch_watcher.is_alive())
 
-        f._cancel_batch_timer()
-        self.assertIsNone(f._batch_timer)
+        f._stop_batch_watcher()
+        f._batch_watcher.join(timeout=1.0)
+        self.assertFalse(f._batch_watcher.is_alive())
 
     def test_batch_with_none_results_skipped(self):
         """process_batch returning [None, Frame, None] should use the last non-None."""
@@ -316,10 +319,10 @@ class TestBatchSizeOneBackwardCompat(unittest.TestCase):
         self.assertEqual(len(f.process_calls), 1)
         self.assertIs(f.process_calls[0], frames)
 
-    def test_no_timer_started(self):
+    def test_no_watcher_started_for_single_mode(self):
         f = self._make_filter()
         f.process_frames({"main": Frame({"val": 1})})
-        self.assertIsNone(f._batch_timer)
+        self.assertIsNone(f._batch_watcher)
 
 
 if __name__ == "__main__":

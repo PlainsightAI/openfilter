@@ -721,8 +721,10 @@ class Filter:
         )
         self._frame_buffer: list[dict[str, Frame]] = []
         self._batch_lock = threading.Lock()
-        self._batch_timer: threading.Timer | None = None
         self._batch_flush_event = threading.Event()
+        self._batch_wakeup = threading.Event()
+        self._batch_stop = threading.Event()
+        self._batch_watcher: threading.Thread | None = None
         # Accessed only from the loop_once thread — no lock needed.
         self._batch_pending_results: list[dict[str, Frame]] = []
 
@@ -1265,7 +1267,7 @@ class Filter:
             self._frame_buffer.append(frames)
 
             if len(self._frame_buffer) < self._batch_size:
-                self._start_batch_timer()
+                self._reset_batch_timer()
                 return None
 
             batch = list(self._frame_buffer)
@@ -1685,8 +1687,8 @@ class Filter:
 
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
+        self._stop_batch_watcher()
         with self._batch_lock:
-            self._cancel_batch_timer()
             if self._frame_buffer:
                 batch = list(self._frame_buffer)
                 self._frame_buffer.clear()
@@ -1847,23 +1849,41 @@ class Filter:
             results.append(r)
         return results
 
-    def _cancel_batch_timer(self) -> None:
-        if self._batch_timer is not None:
-            self._batch_timer.cancel()
-            self._batch_timer = None
-
-    def _start_batch_timer(self) -> None:
-        self._cancel_batch_timer()
-        self._batch_timer = threading.Timer(
-            self._accumulate_timeout_ms / 1000.0,
-            self._on_batch_timeout,
+    def _ensure_batch_watcher(self) -> None:
+        """Start the batch watcher thread if not already running."""
+        if self._batch_watcher is not None and self._batch_watcher.is_alive():
+            return
+        self._batch_stop.clear()
+        self._batch_watcher = threading.Thread(
+            target=self._batch_watcher_loop, daemon=True
         )
-        self._batch_timer.daemon = True
-        self._batch_timer.start()
+        self._batch_watcher.start()
 
-    def _on_batch_timeout(self) -> None:
-        with self._batch_lock:
-            self._batch_flush_event.set()
+    def _stop_batch_watcher(self) -> None:
+        self._batch_stop.set()
+        self._batch_wakeup.set()  # unblock the wait
+
+    def _reset_batch_timer(self) -> None:
+        """Reset the accumulation timeout by waking the watcher."""
+        self._ensure_batch_watcher()
+        self._batch_wakeup.set()
+
+    def _cancel_batch_timer(self) -> None:
+        """Cancel any pending timeout without triggering a flush."""
+        self._batch_wakeup.clear()
+
+    def _batch_watcher_loop(self) -> None:
+        timeout = self._accumulate_timeout_ms / 1000.0
+        while not self._batch_stop.is_set():
+            # Wait for a signal that frames were added to the buffer.
+            self._batch_wakeup.wait()
+            if self._batch_stop.is_set():
+                break
+            self._batch_wakeup.clear()
+            # Sleep for the accumulation timeout, then set flush.
+            if not self._batch_stop.wait(timeout):
+                with self._batch_lock:
+                    self._batch_flush_event.set()
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
         """If a flush is pending and buffer is non-empty, return the batch and reset state."""
