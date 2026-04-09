@@ -46,8 +46,8 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
             # Check query parameter first
             request_token = request.query_params.get('token')
 
-            # Fall back to Authorization header
-            if not request_token:
+            # Fall back to Authorization header only if query param was absent
+            if request_token is None:
                 auth_header = request.headers.get('authorization', '')
                 if auth_header.lower().startswith('bearer '):
                     request_token = auth_header[7:].strip()
