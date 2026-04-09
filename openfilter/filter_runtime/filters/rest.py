@@ -79,6 +79,15 @@ class REST(Filter):
             If passing images via a filename it will be relative to this path which MUST be provided in order to pass
             images in this manner.
 
+        auth_token:
+            When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
+            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
+
+        cors_origins:
+            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
+            Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
+            Also settable via ``FILTER_CORS_ORIGINS`` env var.
+
     Example `sources`:
         Send everything that comes in GET or POST on http://0.0.0.0:8000/ to filter topic 'mytopic':
             'http://0.0.0.0:8000;>mytopic'

@@ -177,6 +177,15 @@ class TestAuthAndCorsTogether(unittest.TestCase):
         )
         self.assertIn(response.status_code, (200, 204))
 
+    def test_plain_options_without_cors_headers_requires_auth(self):
+        client = TestClient(make_app(
+            auth_token='secret123',
+            cors_origins='https://portal.plainsight.tech',
+        ))
+        # OPTIONS without Origin/Access-Control-Request-Method is NOT a preflight
+        response = client.options('/test')
+        self.assertEqual(response.status_code, 401)
+
     def test_actual_request_requires_auth(self):
         client = TestClient(make_app(
             auth_token='secret123',

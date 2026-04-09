@@ -39,6 +39,15 @@ class Webvis(Filter):
 
         port:
             Default 8000.
+
+        auth_token:
+            When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
+            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
+
+        cors_origins:
+            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
+            Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
+            Also settable via ``FILTER_CORS_ORIGINS`` env var.
     """
 
     FILTER_TYPE = 'Output'
