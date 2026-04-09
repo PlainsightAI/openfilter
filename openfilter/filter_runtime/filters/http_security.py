@@ -25,7 +25,8 @@ def parse_cors_origins(cors_origins: Optional[str]) -> list[str]:
     """Parse a comma-separated CORS origins string. Returns ['*'] if empty/None."""
     if not cors_origins or not cors_origins.strip():
         return ['*']
-    return [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
+    origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
+    return origins if origins else ['*']
 
 
 def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
@@ -81,6 +82,14 @@ def configure_http_security(
 
     origins = parse_cors_origins(cors_origins)
 
+    # Middleware order matters: add_middleware() prepends, so the last added
+    # runs outermost. Add token auth first, then CORS, so CORS wraps auth
+    # and applies Access-Control-Allow-Origin headers even on 401 responses.
+    token = auth_token.strip() if auth_token else None
+    if token:
+        add_token_auth_middleware(app, token)
+        logger.info('Token authentication enabled')
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -89,11 +98,7 @@ def configure_http_security(
         allow_headers=['*'],
     )
 
-    token = auth_token.strip() if auth_token else None
-    if token:
-        add_token_auth_middleware(app, token)
-        logger.info('Token authentication enabled')
-        if origins == ['*']:
-            logger.warning('Auth is enabled but CORS allows all origins — consider setting cors_origins')
-    else:
+    if token and origins == ['*']:
+        logger.warning('Auth is enabled but CORS allows all origins — consider setting cors_origins')
+    if not token:
         logger.info('No auth token configured — serving without authentication')

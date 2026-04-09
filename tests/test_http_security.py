@@ -56,6 +56,10 @@ class TestParseCorsOrigins(unittest.TestCase):
             ['https://a.com', 'https://b.com'],
         )
 
+    def test_returns_wildcard_when_only_separators(self):
+        self.assertEqual(parse_cors_origins(','), ['*'])
+        self.assertEqual(parse_cors_origins(', , '), ['*'])
+
 
 class TestNoAuth(unittest.TestCase):
     """When auth_token is not set, requests should pass through."""
