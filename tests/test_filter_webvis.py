@@ -4,6 +4,7 @@ import logging
 import os
 import unittest
 from time import sleep
+from unittest.mock import patch
 
 
 
@@ -84,22 +85,16 @@ class TestWebvisConfig(unittest.TestCase):
         self.assertIsNone(normalized.cors_origins)
 
     def test_auth_token_from_env_var(self):
-        os.environ['FILTER_AUTH_TOKEN'] = 'env-token'
-        try:
+        with patch.dict(os.environ, {'FILTER_AUTH_TOKEN': 'env-token'}):
             config = {'sources': 'tcp://localhost:5550'}
             normalized = Webvis.normalize_config(config)
             self.assertEqual(normalized.auth_token, 'env-token')
-        finally:
-            del os.environ['FILTER_AUTH_TOKEN']
 
     def test_cors_origins_from_env_var(self):
-        os.environ['FILTER_CORS_ORIGINS'] = 'https://a.com,https://b.com'
-        try:
+        with patch.dict(os.environ, {'FILTER_CORS_ORIGINS': 'https://a.com,https://b.com'}):
             config = {'sources': 'tcp://localhost:5550'}
             normalized = Webvis.normalize_config(config)
             self.assertEqual(normalized.cors_origins, 'https://a.com,https://b.com')
-        finally:
-            del os.environ['FILTER_CORS_ORIGINS']
 
 
 class TestWebvisCreateApp(unittest.TestCase):

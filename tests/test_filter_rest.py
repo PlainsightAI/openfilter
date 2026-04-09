@@ -158,10 +158,11 @@ class TestRESTConfigEnvVars(unittest.TestCase):
         self.assertEqual(config.base_path, 'api/v1')
 
     def test_defaults_to_none_when_unset(self):
-        for key in ('FILTER_AUTH_TOKEN', 'FILTER_CORS_ORIGINS', 'FILTER_PORT',
-                     'FILTER_DECLARED_FPS', 'FILTER_BASE_PATH', 'FILTER_RESOURCE_PATH'):
-            os.environ.pop(key, None)
-        config = self._normalize()
+        with patch.dict(os.environ, {}, clear=False):
+            for key in ('FILTER_AUTH_TOKEN', 'FILTER_CORS_ORIGINS', 'FILTER_PORT',
+                         'FILTER_DECLARED_FPS', 'FILTER_BASE_PATH', 'FILTER_RESOURCE_PATH'):
+                os.environ.pop(key, None)
+            config = self._normalize()
         self.assertIsNone(config.auth_token)
         self.assertIsNone(config.cors_origins)
 
