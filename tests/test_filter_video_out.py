@@ -6,6 +6,10 @@ import os
 import shutil
 import unittest
 
+import pytest
+
+pytest.importorskip("av", reason="av not installed — skipping video_out tests")
+
 from openfilter.filter_runtime import Filter, Frame
 from openfilter.filter_runtime.test import QueueToFilters
 from openfilter.filter_runtime.utils import setLogLevelGlobal
