@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 
+import os
 import unittest
 from queue import Queue
+from unittest.mock import patch
 
 from openfilter.filter_runtime.filters.rest import REST, RESTConfig
 from openfilter.filter_runtime.utils import adict
@@ -117,6 +119,51 @@ class TestRESTCreateApp(unittest.TestCase):
             'Access-Control-Request-Method': 'GET',
         })
         self.assertIn(response.status_code, (200, 204))
+
+
+class TestRESTConfigEnvVars(unittest.TestCase):
+    """Test that REST normalize_config reads config from FILTER_* env vars."""
+
+    def _normalize(self, **env_vars):
+        with patch.dict(os.environ, env_vars, clear=False):
+            return REST.normalize_config({
+                'sources': 'http://0.0.0.0:8000;>main',
+                'outputs': 'tcp://localhost:5551',
+            })
+
+    def test_auth_token_from_env(self):
+        config = self._normalize(FILTER_AUTH_TOKEN='rest-env-secret')
+        self.assertEqual(config.auth_token, 'rest-env-secret')
+
+    def test_cors_origins_from_env(self):
+        config = self._normalize(FILTER_CORS_ORIGINS='https://a.com,https://b.com')
+        self.assertEqual(config.cors_origins, 'https://a.com,https://b.com')
+
+    def test_port_from_env(self):
+        # When using sources, source URL overrides env var for host/port.
+        # Use endpoints config to test env var directly.
+        with patch.dict(os.environ, {'FILTER_PORT': '9090'}, clear=False):
+            config = REST.normalize_config({
+                'endpoints': [adict(methods=['GET'], path=None, topic='main')],
+                'outputs': 'tcp://localhost:5551',
+            })
+        self.assertEqual(config.port, 9090)
+
+    def test_declared_fps_from_env(self):
+        config = self._normalize(FILTER_DECLARED_FPS='30.0')
+        self.assertEqual(config.declared_fps, 30.0)
+
+    def test_base_path_from_env(self):
+        config = self._normalize(FILTER_BASE_PATH='api/v1')
+        self.assertEqual(config.base_path, 'api/v1')
+
+    def test_defaults_to_none_when_unset(self):
+        for key in ('FILTER_AUTH_TOKEN', 'FILTER_CORS_ORIGINS', 'FILTER_PORT',
+                     'FILTER_DECLARED_FPS', 'FILTER_BASE_PATH', 'FILTER_RESOURCE_PATH'):
+            os.environ.pop(key, None)
+        config = self._normalize()
+        self.assertIsNone(config.auth_token)
+        self.assertIsNone(config.cors_origins)
 
 
 if __name__ == '__main__':

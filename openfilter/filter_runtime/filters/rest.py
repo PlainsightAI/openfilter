@@ -81,11 +81,12 @@ class REST(Filter):
 
         auth_token:
             When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
-            Returns 401 if missing or invalid.
+            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
 
         cors_origins:
             Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
             Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
+            Also settable via ``FILTER_CORS_ORIGINS`` env var.
 
     Example `sources`:
         Send everything that comes in GET or POST on http://0.0.0.0:8000/ to filter topic 'mytopic':
@@ -256,6 +257,25 @@ class REST(Filter):
     def normalize_config(cls, config):
         sources = split_commas_maybe(config.get('sources'))  # we do not assume how Filter will normalize sources/outputs in the future
         config  = RESTConfig(super().normalize_config(dict_without(config, 'sources')))
+
+        env_mapping = {
+            'host': str,
+            'port': int,
+            'base_path': str,
+            'declared_fps': float,
+            'resource_path': str,
+            'auth_token': str,
+            'cors_origins': str,
+        }
+        for key, expected_type in env_mapping.items():
+            env_val = os.getenv(f'FILTER_{key.upper()}')
+            if env_val is not None:
+                if expected_type is float:
+                    setattr(config, key, float(env_val.strip()))
+                elif expected_type is int:
+                    setattr(config, key, int(env_val.strip()))
+                else:
+                    setattr(config, key, env_val.strip())
 
         if sources is not None:
             config.sources = sources
