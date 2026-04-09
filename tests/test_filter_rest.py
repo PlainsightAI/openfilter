@@ -1,16 +1,10 @@
 #!/usr/bin/env python
 
-import logging
-import os
 import unittest
 from queue import Queue
 
 from openfilter.filter_runtime.filters.rest import REST, RESTConfig
 from openfilter.filter_runtime.utils import adict
-
-logger = logging.getLogger(__name__)
-
-log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper()))
 
 
 class TestRESTConfig(unittest.TestCase):

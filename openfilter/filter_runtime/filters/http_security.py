@@ -15,6 +15,7 @@ Configuration (via filter config parameters, which support FILTER_* env vars):
 """
 
 import logging
+import secrets
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,10 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
 
     class TokenAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # Skip auth for CORS preflight requests
-            if request.method == 'OPTIONS':
+            # Skip auth for CORS preflight requests (must have Origin + Access-Control-Request-Method)
+            if (request.method == 'OPTIONS'
+                    and request.headers.get('origin')
+                    and request.headers.get('access-control-request-method')):
                 return await call_next(request)
 
             # Check query parameter first
@@ -48,7 +51,7 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
                 if auth_header.lower().startswith('bearer '):
                     request_token = auth_header[7:].strip()
 
-            if request_token != token:
+            if not request_token or not secrets.compare_digest(request_token, token):
                 return JSONResponse(
                     status_code=401,
                     content={'detail': 'Unauthorized'},
