@@ -1283,7 +1283,7 @@ class Filter:
         # _batch_pending_results is only accessed from the loop_once thread,
         # so no lock is needed here.
         if len(results) > 1:
-            self._batch_pending_results = results[:-1]
+            self._batch_pending_results.extend(results[:-1])
         return results[-1] if results else None
 
     def _process_batch_flush(self) -> list[dict[str, Frame]] | None:
@@ -1326,8 +1326,11 @@ class Filter:
             normalized.append(self._normalize_frame_result(result))
 
         if not normalized:
-            if self._is_last_filter and batch:
-                self._inject_timings(batch[-1], t_in, t_out, process_time_ms)
+            # Sink filter (all None results): inject timing into every input
+            # frame so EMA updates per-frame, matching _process_frames_single.
+            if self._is_last_filter:
+                for b_frames in batch:
+                    self._inject_timings(b_frames, t_in, t_out, process_time_ms)
             return []
 
         # Inject per-frame timing metadata into every result
@@ -1357,6 +1360,7 @@ class Filter:
             else POLL_TIMEOUT_MS
         )
 
+        deadline = time.time() + sources_timeout / 1000.0
         while (frames := self.mq.recv(min(poll_ms, sources_timeout))) is None:
             if self.stop_evt.is_set():
                 self.exit()
@@ -1372,10 +1376,11 @@ class Filter:
                         self.exit("exit_after")
                     return
 
-            if (sources_timeout := sources_timeout - poll_ms) <= 0:
+            remaining = deadline - time.time()
+            if remaining <= 0:
                 frames = {}
-
                 break
+            sources_timeout = remaining * 1000.0
 
         # Timeout in batch mode — flush any partial batch and return early.
         # Only runs when frames is empty (timeout case), not when real frames are received.
@@ -1706,6 +1711,11 @@ class Filter:
     def fini(self):
         """Shut down inter-filter communication and any other system level stuff."""
         self._stop_batch_watcher()
+        # Drain any already-processed results that loop_once hasn't sent yet.
+        if self._batch_pending_results:
+            for pending in self._batch_pending_results:
+                self.mq.send(pending, POLL_TIMEOUT_MS)
+            self._batch_pending_results.clear()
         with self._batch_lock:
             if self._frame_buffer:
                 batch = list(self._frame_buffer)
@@ -1823,6 +1833,9 @@ class Filter:
 
             A Callable will be called AT THE POINT WHEN IT IS REQUESTED by ALL downstream clients. This is to allow
             something like a video feed to return the freshest possible frames only when they are actually requested.
+            Note: when running in batch mode (batch_size > 1), the default process_batch() implementation calls
+            Callables eagerly, so the lazy-evaluation guarantee does not apply. Override process_batch() if you
+            need custom Callable handling.
 
             A return value of None will specify that nothing should be sent downstream. This is meant for cases when
             it is detected that nothing is happening and we do not want processing to occur downstream.
@@ -1898,10 +1911,19 @@ class Filter:
             if self._batch_stop.is_set():
                 break
             self._batch_wakeup.clear()
-            # Sleep for the accumulation timeout, then set flush.
-            if not self._batch_stop.wait(timeout):
+            # Sleep for the accumulation timeout.  If _batch_wakeup is set
+            # again mid-sleep (new frame arrived → _reset_batch_timer), restart
+            # the timeout so the batch keeps accumulating.
+            while True:
+                if self._batch_stop.wait(timeout):
+                    break  # stop requested
+                if self._batch_wakeup.is_set():
+                    # Timer was reset — restart the timeout
+                    self._batch_wakeup.clear()
+                    continue
                 with self._batch_lock:
                     self._batch_flush_event.set()
+                break
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
         """If a flush is pending and buffer is non-empty, return the batch and reset state."""
