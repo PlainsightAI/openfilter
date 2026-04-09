@@ -30,6 +30,9 @@ class RESTConfig(FilterConfig):
     declared_fps:  float | None
     resource_path: str | None   # Path to a resource directory that is accessible for local file loading.
 
+    auth_token:   str | None    # When set, require ?token= or Authorization: Bearer on all requests
+    cors_origins: str | None    # Comma-separated allowed CORS origins (default: '*')
+
 
 class REST(Filter):
     """Provide REST endpoint(s) and send incoming JSON data on down the filter pipeline. Can take individual parameters
@@ -98,7 +101,7 @@ class REST(Filter):
 
     def create_app(self, config: RESTConfig) -> 'FastAPI':
         from fastapi import FastAPI, Request, status, HTTPException
-        from fastapi.middleware.cors import CORSMiddleware
+        from openfilter.filter_runtime.filters.http_security import configure_http_security
         import json
 
         def multi_items_to_dict(items: list[tuple[str, str]]):
@@ -198,15 +201,9 @@ class REST(Filter):
 
             return frame
 
-        app = FastAPI(title='REST')#, version=version)
+        app = FastAPI(title='REST')
 
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=['*'],
-            allow_credentials=True,
-            allow_methods=['*'],
-            allow_headers=['*'],
-        )
+        configure_http_security(app, auth_token=config.auth_token, cors_origins=config.cors_origins)
 
         app_methods = {'GET': app.get, 'POST': app.post, 'PUT': app.put, 'DELETE': app.delete}
         base_path   = f'/{bt}' if (bt := config.base_path) else ''
