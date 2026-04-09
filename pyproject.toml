@@ -64,6 +64,7 @@ dev = [
   "pytest~=9.0.2",
   "jq~=1.11.0",
   "pytest-cov~=7.0.0",
+  "pytest-benchmark>=5.1.0",
 ]
 
 mqtt_out = [
@@ -123,4 +124,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = "src"
+pythonpath = ["src", "tests"]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]

@@ -3,7 +3,7 @@
 import logging
 import os
 import unittest
-from queue import Queue, Empty
+from queue import Queue
 from threading import Event, Thread
 
 from openfilter.filter_runtime import Frame
@@ -17,41 +17,7 @@ log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())
 setLogLevelGlobal(log_level)
 
 
-class ThreadMQSender(Thread):
-    def __init__(self, *args, **kwargs):
-        self.stop_evt = Event()
-        self.queue    = Queue()
-
-        super().__init__(target=self.thread_func, args=(args, kwargs), daemon=True)
-
-        self.start()
-
-    def destroy(self):
-        self.queue.put(False)  # to wake up queue getter
-        self.stop_evt.set()
-        self.join()
-
-    def send(self, frames: dict[str, Frame] | None = None):
-        self.queue.put(frames)
-
-    def thread_func(self, args, kwargs):
-        sender = MQSender(*args, **kwargs)  # important to create in this thread
-        frames = False
-
-        while not self.stop_evt.is_set():
-            if frames is False:
-                try:
-                    frames = self.queue.get(timeout=0.01)
-                except Empty:
-                    continue
-
-                if frames is False:
-                    break
-
-            if sender.send(frames, 10):
-                frames = False
-
-        sender.destroy()
+from helpers import ThreadMQSender
 
 
 class ThreadMQReceiver(Thread):
