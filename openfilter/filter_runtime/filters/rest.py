@@ -81,12 +81,11 @@ class REST(Filter):
 
         auth_token:
             When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
-            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
+            Returns 401 if missing or invalid.
 
         cors_origins:
             Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
             Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
-            Also settable via ``FILTER_CORS_ORIGINS`` env var.
 
     Example `sources`:
         Send everything that comes in GET or POST on http://0.0.0.0:8000/ to filter topic 'mytopic':
