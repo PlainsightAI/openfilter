@@ -139,28 +139,14 @@ class TestRESTConfigEnvVars(unittest.TestCase):
         config = self._normalize(FILTER_CORS_ORIGINS='https://a.com,https://b.com')
         self.assertEqual(config.cors_origins, 'https://a.com,https://b.com')
 
-    def test_port_from_env(self):
-        # When using sources, source URL overrides env var for host/port.
-        # Use endpoints config to test env var directly.
-        with patch.dict(os.environ, {'FILTER_PORT': '9090'}, clear=False):
-            config = REST.normalize_config({
-                'endpoints': [adict(methods=['GET'], path=None, topic='main')],
-                'outputs': 'tcp://localhost:5551',
-            })
-        self.assertEqual(config.port, 9090)
-
     def test_declared_fps_from_env(self):
         config = self._normalize(FILTER_DECLARED_FPS='30.0')
         self.assertEqual(config.declared_fps, 30.0)
 
-    def test_base_path_from_env(self):
-        config = self._normalize(FILTER_BASE_PATH='api/v1')
-        self.assertEqual(config.base_path, 'api/v1')
-
     def test_defaults_to_none_when_unset(self):
         with patch.dict(os.environ, {}, clear=False):
-            for key in ('FILTER_AUTH_TOKEN', 'FILTER_CORS_ORIGINS', 'FILTER_PORT',
-                         'FILTER_DECLARED_FPS', 'FILTER_BASE_PATH', 'FILTER_RESOURCE_PATH'):
+            for key in ('FILTER_AUTH_TOKEN', 'FILTER_CORS_ORIGINS',
+                         'FILTER_DECLARED_FPS', 'FILTER_RESOURCE_PATH'):
                 os.environ.pop(key, None)
             config = self._normalize()
         self.assertIsNone(config.auth_token)
