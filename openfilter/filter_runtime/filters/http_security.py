@@ -90,10 +90,15 @@ def configure_http_security(
         add_token_auth_middleware(app, token)
         logger.info('Token authentication enabled')
 
+    # CORS spec forbids allow_credentials=True with allow_origins=['*']: Starlette
+    # works around it by reflecting the request Origin, effectively allowing any
+    # origin with credentials. Only enable credentials when specific origins are set.
+    allow_credentials = origins != ['*']
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=['*'],
         allow_headers=['*'],
     )

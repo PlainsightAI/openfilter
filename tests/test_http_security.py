@@ -136,7 +136,22 @@ class TestCorsConfiguration(unittest.TestCase):
             '/test',
             headers={'Origin': 'https://evil.com', 'Access-Control-Request-Method': 'GET'},
         )
-        self.assertEqual(response.headers.get('access-control-allow-origin'), 'https://evil.com')
+        # With wildcard origins we return '*' and credentials are disabled
+        # (CORS spec forbids '*' + credentials=true).
+        self.assertEqual(response.headers.get('access-control-allow-origin'), '*')
+        self.assertIsNone(response.headers.get('access-control-allow-credentials'))
+
+    def test_restricted_cors_enables_credentials(self):
+        client = TestClient(make_app(cors_origins='https://portal.plainsight.tech'))
+        response = client.options(
+            '/test',
+            headers={
+                'Origin': 'https://portal.plainsight.tech',
+                'Access-Control-Request-Method': 'GET',
+            },
+        )
+        # When specific origins are configured, credentials are allowed.
+        self.assertEqual(response.headers.get('access-control-allow-credentials'), 'true')
 
     def test_restricted_cors_allows_configured_origin(self):
         client = TestClient(make_app(cors_origins='https://portal.plainsight.tech'))
