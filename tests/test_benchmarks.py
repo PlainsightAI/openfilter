@@ -421,23 +421,26 @@ class TestZmqIpcBenchmarks:
         )
         receiver = MQReceiver(addr, f"{mq_id}-recv")
 
-        # Warm up
-        for _ in range(2):
-            sender.send(frames)
-            result = receiver.recv(timeout=5000)
-            if result is None:
-                pytest.fail("receiver.recv() timed out during warm-up")
+        try:
+            # Warm up
+            for _ in range(2):
+                sender.send(frames)
+                result = receiver.recv(timeout=5000)
+                if result is None:
+                    pytest.fail("receiver.recv() timed out during warm-up")
 
-        t0 = time.perf_counter()
-        for _ in range(n):
-            sender.send(frames)
-            result = receiver.recv(timeout=5000)
-            if result is None:
-                pytest.fail("receiver.recv() timed out during measurement")
-        elapsed = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            for _ in range(n):
+                sender.send(frames)
+                result = receiver.recv(timeout=5000)
+                if result is None:
+                    pytest.fail("receiver.recv() timed out during measurement")
+            elapsed = time.perf_counter() - t0
+        finally:
+            # Cleanup: destroy sender before receiver to avoid ZMQ PUSH blocking
+            sender.destroy()
+            receiver.destroy()
 
-        sender.destroy()
-        receiver.destroy()
         return (elapsed / n) * 1000
 
     @pytest.mark.slow
