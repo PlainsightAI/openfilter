@@ -1,8 +1,7 @@
 """Tests for GPU library preloading via ctypes.CDLL."""
 
 import ctypes
-import os
-from unittest.mock import patch, call, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -125,12 +124,16 @@ class TestPreloadRunsBeforeApplyEnvVars:
 
     def test_preload_runs_before_apply_env_vars(self):
         """_preload_gpu_libs() is called before _apply_append_env_vars() at module level."""
+        import re
         import inspect
         from openfilter.filter_runtime import filter as filter_module
 
         source = inspect.getsource(filter_module)
-        preload_pos = source.index("_preload_gpu_libs()")
-        apply_pos = source.index("_apply_append_env_vars()")
-        assert preload_pos < apply_pos, (
+        # Match standalone calls (not function definitions starting with 'def ')
+        preload_match = re.search(r"^(?!.*\bdef\b).*_preload_gpu_libs\(\)", source, re.MULTILINE)
+        apply_match = re.search(r"^(?!.*\bdef\b).*_apply_append_env_vars\(\)", source, re.MULTILINE)
+        assert preload_match is not None, "_preload_gpu_libs() module-level call not found"
+        assert apply_match is not None, "_apply_append_env_vars() module-level call not found"
+        assert preload_match.start() < apply_match.start(), (
             "_preload_gpu_libs() must be called before _apply_append_env_vars()"
         )

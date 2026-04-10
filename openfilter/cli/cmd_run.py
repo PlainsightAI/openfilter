@@ -9,13 +9,14 @@ from pprint import pp
 # to 'fork', which in Python 3.12+ causes issues when fork() is called in a multi-threaded process
 # (threading is introduced by SignalStopper). This must be set with force=True since we can't know
 # if another module has already initialized the context.
-# See: https://github.com/PlainsightAI/openfilter/issues/XX
 if not os.environ.get('OPENFILTER_FORK'):
     try:
         mp.set_start_method('spawn', force=True)
     except RuntimeError:
         # Context already set, continue with current method
         pass
+
+import warnings
 
 from openfilter.filter_runtime.filter import Filter, PROP_EXIT_FLAGS, PROP_EXIT, OBEY_EXIT
 from openfilter.filter_runtime.utils import dict_without
@@ -96,6 +97,15 @@ notes:
     )
 
     opts = parser.parse_args(opts)
+
+    if opts.fork:
+        warnings.warn(
+            "The --fork / -f flag is deprecated. Set OPENFILTER_FORK=1 environment "
+            "variable instead. The flag will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        os.environ.setdefault('OPENFILTER_FORK', '1')
 
     logger.debug(f'opts: {opts}')
 

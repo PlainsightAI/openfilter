@@ -78,8 +78,10 @@ def _preload_gpu_libs():
                 try:
                     ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
                     _preloaded_gpu_libs.add(lib_path)
-                except OSError:
-                    pass  # Library exists but can't be loaded — continue
+                except OSError as exc:
+                    logging.getLogger(__name__).debug(
+                        "Failed to preload GPU library %s: %s", lib_path, exc
+                    )
 
 
 def _apply_append_env_vars():
@@ -89,9 +91,10 @@ def _apply_append_env_vars():
     overriding existing values. For example, on GKE the NVIDIA device plugin
     mounts GPU libraries but doesn't set LD_LIBRARY_PATH.
 
-    Must be called before any native library imports (cv2, torch) so that the
-    dynamic linker sees the updated paths. Moving this call site after those
-    imports will silently have no effect on already-loaded shared libraries.
+    Note: setting LD_LIBRARY_PATH from Python does NOT affect dlopen() in the
+    current process (the dynamic linker caches it at startup). This function
+    is still useful for PATH and for child processes that inherit the updated
+    environment.
 
     Idempotent: if the value is already present in the target variable it is
     not appended again, so module reloads do not duplicate path entries.
