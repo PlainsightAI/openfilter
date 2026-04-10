@@ -424,16 +424,20 @@ class TestZmqIpcBenchmarks:
         # Warm up
         for _ in range(2):
             sender.send(frames)
-            receiver.recv()
+            result = receiver.recv(timeout=5000)
+            if result is None:
+                pytest.fail("receiver.recv() timed out during warm-up")
 
         t0 = time.perf_counter()
         for _ in range(n):
             sender.send(frames)
-            receiver.recv()
+            result = receiver.recv(timeout=5000)
+            if result is None:
+                pytest.fail("receiver.recv() timed out during measurement")
         elapsed = time.perf_counter() - t0
 
-        receiver.destroy()
         sender.destroy()
+        receiver.destroy()
         return (elapsed / n) * 1000
 
     @pytest.mark.slow
@@ -498,73 +502,82 @@ class TestPipelineSimulation:
             n_frames: number of frames to push through.
             label: human-readable pipeline name.
         """
-        logging.getLogger().setLevel(logging.CRITICAL)
+        logger = logging.getLogger("openfilter")
+        original_level = logger.level
+        logger.setLevel(logging.CRITICAL)
 
-        # Build the ZMQ chain: stage[i] sender → stage[i+1] receiver
-        n_hops = len(stages) - 1
         senders = []
         receivers = []
+        try:
+            # Build the ZMQ chain: stage[i] sender → stage[i+1] receiver
+            n_hops = len(stages) - 1
 
-        for i in range(n_hops):
-            _, _, _, jpg = stages[i]
-            addr = f"ipc:///tmp/bench-pipe-{label}-{i}-{id(stages)}"
-            senders.append(
-                ThreadMQSender(addr, f"p{i}s", outs_jpg=jpg, outs_metrics=False)
-            )
-            receivers.append(MQReceiver(addr, f"p{i}r"))
+            for i in range(n_hops):
+                _, _, _, jpg = stages[i]
+                addr = f"ipc:///tmp/bench-pipe-{label}-{i}-{id(stages)}"
+                senders.append(
+                    ThreadMQSender(addr, f"p{i}s", outs_jpg=jpg, outs_metrics=False)
+                )
+                receivers.append(MQReceiver(addr, f"p{i}r"))
 
-        # Build source frame
-        src_name, src_process_ms, src_res, src_jpg = stages[0]
-        if src_res:
-            source_frame = _rgb_frame(*src_res)
-        else:
-            source_frame = Frame({"source": True})
+            # Build source frame
+            src_name, src_process_ms, src_res, src_jpg = stages[0]
+            if src_res:
+                source_frame = _rgb_frame(*src_res)
+            else:
+                source_frame = Frame({"source": True})
 
-        # Warm up
-        if senders:
-            for _ in range(2):
-                senders[0].send({"main": source_frame.ro})
-                f = receivers[0].recv()
-                for j in range(1, n_hops):
-                    senders[j].send(f)
-                    f = receivers[j].recv()
+            # Warm up
+            if senders:
+                for _ in range(2):
+                    senders[0].send({"main": source_frame.ro})
+                    f = receivers[0].recv(timeout=5000)
+                    if f is None:
+                        pytest.fail(f"Pipeline {label}: recv timed out during warm-up at hop 0")
+                    for j in range(1, n_hops):
+                        senders[j].send(f)
+                        f = receivers[j].recv(timeout=5000)
+                        if f is None:
+                            pytest.fail(f"Pipeline {label}: recv timed out during warm-up at hop {j}")
 
-        # Measure
-        per_stage_process = [0.0] * len(stages)
-        total_elapsed = 0.0
+            # Measure
+            per_stage_process = [0.0] * len(stages)
+            total_elapsed = 0.0
 
-        for _ in range(n_frames):
-            t0 = time.perf_counter()
+            for _ in range(n_frames):
+                t0 = time.perf_counter()
 
-            # Source stage: simulate VideoIn read + optional resample
-            if src_process_ms > 0:
-                tp = time.perf_counter()
-                time.sleep(src_process_ms / 1000)
-                per_stage_process[0] += time.perf_counter() - tp
-
-            # Send source frame into pipeline
-            current_frames = {"main": source_frame.ro}
-
-            for hop in range(n_hops):
-                # Send to next filter
-                senders[hop].send(current_frames)
-                current_frames = receivers[hop].recv()
-
-                # Simulate filter process()
-                _, proc_ms, _, _ = stages[hop + 1]
-                if proc_ms > 0:
+                # Source stage: simulate VideoIn read + optional resample
+                if src_process_ms > 0:
                     tp = time.perf_counter()
-                    time.sleep(proc_ms / 1000)
-                    per_stage_process[hop + 1] += time.perf_counter() - tp
+                    time.sleep(src_process_ms / 1000)
+                    per_stage_process[0] += time.perf_counter() - tp
 
-            total_elapsed += time.perf_counter() - t0
+                # Send source frame into pipeline
+                current_frames = {"main": source_frame.ro}
 
-        # Cleanup
-        for r in receivers:
-            r.destroy()
-        for s in senders:
-            s.destroy()
-        logging.getLogger().setLevel(logging.WARNING)
+                for hop in range(n_hops):
+                    # Send to next filter
+                    senders[hop].send(current_frames)
+                    current_frames = receivers[hop].recv(timeout=5000)
+                    if current_frames is None:
+                        pytest.fail(f"Pipeline {label}: recv timed out at hop {hop}")
+
+                    # Simulate filter process()
+                    _, proc_ms, _, _ = stages[hop + 1]
+                    if proc_ms > 0:
+                        tp = time.perf_counter()
+                        time.sleep(proc_ms / 1000)
+                        per_stage_process[hop + 1] += time.perf_counter() - tp
+
+                total_elapsed += time.perf_counter() - t0
+        finally:
+            # Cleanup: destroy senders first to avoid ZMQ PUSH blocking on missing PULL peer
+            for s in senders:
+                s.destroy()
+            for r in receivers:
+                r.destroy()
+            logger.setLevel(original_level)
 
         avg_total_ms = (total_elapsed / n_frames) * 1000
         avg_process_ms = sum(per_stage_process) / n_frames * 1000
