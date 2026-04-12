@@ -2,6 +2,7 @@ import argparse
 import logging
 import multiprocessing as mp
 import os
+import warnings
 from pprint import pp
 
 # IMPORTANT: Set multiprocessing start method BEFORE importing Filter, because importing Filter
@@ -15,8 +16,6 @@ if not os.environ.get('OPENFILTER_FORK'):
     except RuntimeError:
         # Context already set, continue with current method
         pass
-
-import warnings
 
 from openfilter.filter_runtime.filter import Filter, PROP_EXIT_FLAGS, PROP_EXIT, OBEY_EXIT
 from openfilter.filter_runtime.utils import dict_without
@@ -105,7 +104,10 @@ notes:
             DeprecationWarning,
             stacklevel=2,
         )
-        os.environ.setdefault('OPENFILTER_FORK', '1')
+        try:
+            mp.set_start_method('fork', force=True)
+        except RuntimeError:
+            pass
 
     logger.debug(f'opts: {opts}')
 
