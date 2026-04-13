@@ -1372,7 +1372,7 @@ class Filter:
                         self._send_frames(result, outputs_timeout)
                     if (
                         exit_after_t := self.exit_after_t
-                    ) is not None and time() >= exit_after_t:
+                    ) is not None and time.time() >= exit_after_t:
                         self.exit("exit_after")
                     return
 
@@ -1401,7 +1401,7 @@ class Filter:
             # No need to call process_frames({}) which would just return None.
             if (
                 exit_after_t := self.exit_after_t
-            ) is not None and time() >= exit_after_t:
+            ) is not None and time.time() >= exit_after_t:
                 self.exit("exit_after")
             return
 
@@ -1419,7 +1419,7 @@ class Filter:
         if not (batch_mode and frames is None):
             self._send_frames(frames, outputs_timeout)
 
-        if (exit_after_t := self.exit_after_t) is not None and time() >= exit_after_t:
+        if (exit_after_t := self.exit_after_t) is not None and time.time() >= exit_after_t:
             self.exit("exit_after")
 
     # - FOR SPECIAL SUBCLASS -------------------------------------------------------------------------------------------
@@ -1639,7 +1639,7 @@ class Filter:
             not exit_after.startswith("@")
             and (exit_after := parse_time_interval(exit_after)) is exit_after
         ):
-            self.exit_after_t = time() + exit_after
+            self.exit_after_t = time.time() + exit_after
 
             logger.info(
                 f"exit scheduled after: {timestr(exit_after)}{'s' if exit_after < 60 else ''}"
@@ -1713,8 +1713,16 @@ class Filter:
         self._stop_batch_watcher()
         # Drain any already-processed results that loop_once hasn't sent yet.
         if self._batch_pending_results:
-            for pending in self._batch_pending_results:
-                self.mq.send(pending, POLL_TIMEOUT_MS)
+            pending_count = len(self._batch_pending_results)
+            try:
+                for pending in self._batch_pending_results:
+                    self.mq.send(pending, POLL_TIMEOUT_MS)
+            except Exception:
+                logger.warning(
+                    "Failed to flush %d pending batch result(s) on shutdown",
+                    pending_count,
+                    exc_info=True,
+                )
             self._batch_pending_results.clear()
         with self._batch_lock:
             if self._frame_buffer:
@@ -1729,7 +1737,9 @@ class Filter:
                     self.mq.send(r, POLL_TIMEOUT_MS)
             except Exception:
                 logger.warning(
-                    "Failed to flush partial batch on shutdown", exc_info=True
+                    "Failed to flush partial batch of %d frame(s) on shutdown",
+                    len(batch),
+                    exc_info=True,
                 )
         self._stop_metadata_worker()
         if hasattr(self, "emitter") and self.emitter is not None:
@@ -1906,24 +1916,29 @@ class Filter:
     def _batch_watcher_loop(self) -> None:
         timeout = self._accumulate_timeout_ms / 1000.0
         while not self._batch_stop.is_set():
-            # Wait for a signal that frames were added to the buffer.
-            self._batch_wakeup.wait()
-            if self._batch_stop.is_set():
-                break
-            self._batch_wakeup.clear()
-            # Sleep for the accumulation timeout.  If _batch_wakeup is set
-            # again mid-sleep (new frame arrived → _reset_batch_timer), restart
-            # the timeout so the batch keeps accumulating.
-            while True:
-                if self._batch_stop.wait(timeout):
-                    break  # stop requested
-                if self._batch_wakeup.is_set():
-                    # Timer was reset — restart the timeout
-                    self._batch_wakeup.clear()
-                    continue
-                with self._batch_lock:
-                    self._batch_flush_event.set()
-                break
+            try:
+                # Wait for a signal that frames were added to the buffer.
+                self._batch_wakeup.wait()
+                if self._batch_stop.is_set():
+                    break
+                self._batch_wakeup.clear()
+                # Sleep for the accumulation timeout.  If _batch_wakeup is set
+                # again mid-sleep (new frame arrived → _reset_batch_timer), restart
+                # the timeout so the batch keeps accumulating.
+                while True:
+                    if self._batch_stop.wait(timeout):
+                        break  # stop requested
+                    if self._batch_wakeup.is_set():
+                        # Timer was reset — restart the timeout
+                        self._batch_wakeup.clear()
+                        continue
+                    with self._batch_lock:
+                        self._batch_flush_event.set()
+                    break
+            except Exception:
+                # Never let the watcher thread die silently — a dead watcher
+                # means partial batches would sit in the buffer forever.
+                logger.exception("batch watcher loop raised; continuing")
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
         """If a flush is pending and buffer is non-empty, return the batch and reset state."""
