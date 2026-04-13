@@ -86,8 +86,6 @@ def _load_libcuda():
         return _libcuda
 
     path = _find_gpu_lib("libcuda.so.1")
-    if path is None:
-        return None
     try:
         _libcuda = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
         return _libcuda
@@ -103,8 +101,6 @@ def _load_libnvml():
         return _libnvml
 
     path = _find_gpu_lib("libnvidia-ml.so.1")
-    if path is None:
-        return None
     try:
         _libnvml = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
         return _libnvml
