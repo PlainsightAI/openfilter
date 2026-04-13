@@ -40,6 +40,8 @@ _APPEND_ENV_VARS = {
     "OPENFILTER_APPEND_PATH": "PATH",
 }
 
+from .gpu import preload_gpu_libs, detect_gpu
+
 
 def _apply_append_env_vars():
     """Read OPENFILTER_APPEND_* env vars and append their values to the target env vars.
@@ -48,9 +50,10 @@ def _apply_append_env_vars():
     overriding existing values. For example, on GKE the NVIDIA device plugin
     mounts GPU libraries but doesn't set LD_LIBRARY_PATH.
 
-    Must be called before any native library imports (cv2, torch) so that the
-    dynamic linker sees the updated paths. Moving this call site after those
-    imports will silently have no effect on already-loaded shared libraries.
+    Note: setting LD_LIBRARY_PATH from Python does NOT affect dlopen() in the
+    current process (the dynamic linker caches it at startup). This function
+    is still useful for PATH and for child processes that inherit the updated
+    environment.
 
     Idempotent: if the value is already present in the target variable it is
     not appended again, so module reloads do not duplicate path entries.
@@ -66,7 +69,8 @@ def _apply_append_env_vars():
                 os.environ[target_var] = new_val
 
 
-_apply_append_env_vars()
+preload_gpu_libs()  # Must run BEFORE any torch import
+_apply_append_env_vars()  # Still useful for child processes and PATH
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +486,7 @@ class Filter:
             Set to 'false'ish to turn off GPU metrics.
 
         GPU_METRICS_INTERVAL:
-            Default number of seconds between poll of GPU metrics (using nvidia-smi tool).
+            Default number of seconds between poll of GPU metrics (via NVML ctypes).
 
         CPU_METRICS_INTERVAL:
             Default number of seconds between poll of CPU and memory metrics.
@@ -1103,28 +1107,56 @@ class Filter:
             return  # cpu or unrecognized -- nothing to check
 
         try:
-            import torch
-        except ImportError:
-            return  # torch not installed, non-GPU filter
-
-        try:
-            cuda_available = torch.cuda.is_available()
+            gpu_info = detect_gpu()
         except Exception as exc:
-            logger.warning("FILTER_DEVICE=%s but torch.cuda.is_available() raised: %s", device, exc)
+            logger.warning("FILTER_DEVICE=%s but GPU detection raised: %s", device, exc)
             if is_auto:
                 config['device'] = 'cpu'
                 return
             raise RuntimeError(
-                f"FILTER_DEVICE={device} but torch.cuda.is_available() raised: {exc}. "
+                f"FILTER_DEVICE={device} but GPU detection raised: {exc}. "
                 f"Check GPU driver and CUDA installation."
             ) from exc
 
-        if cuda_available:
-            device_count = torch.cuda.device_count()
-            device_name = torch.cuda.get_device_name(0) if device_count > 0 else 'unknown'
+        if gpu_info.available:
+            # Driver is present. If torch is installed, also verify torch can
+            # actually use CUDA (catches CPU-only wheels, incompatible runtime).
+            torch_cuda_ok = True
+            try:
+                import torch
+
+                try:
+                    torch_cuda_ok = torch.cuda.is_available()
+                except Exception as exc:
+                    logger.warning(
+                        "GPU driver detected but torch.cuda.is_available() raised: %s",
+                        exc,
+                    )
+                    torch_cuda_ok = False
+            except ImportError:
+                pass  # torch not installed; trust the driver detection
+
+            if not torch_cuda_ok:
+                if is_auto:
+                    logger.warning(
+                        "FILTER_DEVICE=auto: GPU driver present (%s) but torch CUDA "
+                        "is not available. Falling back to CPU.",
+                        gpu_info.device_name,
+                    )
+                    config['device'] = 'cpu'
+                    return
+                raise RuntimeError(
+                    f"FILTER_DEVICE={device}: GPU driver present ({gpu_info.device_name}) "
+                    f"but torch CUDA is not available. Check that PyTorch was built with "
+                    f"CUDA support compatible with driver version {gpu_info.driver_version}. "
+                    f"Use FILTER_DEVICE=cpu or FILTER_DEVICE=auto to run on CPU."
+                )
+
             logger.info(
-                "CUDA available: device_count=%d, device_name=%s, cuda_version=%s",
-                device_count, device_name, torch.version.cuda,
+                "CUDA available: device_count=%d, device_name=%s, driver_version=%s",
+                gpu_info.device_count,
+                gpu_info.device_name,
+                gpu_info.driver_version,
             )
             if not is_auto:
                 # Validate explicit device index is in range
@@ -1134,29 +1166,26 @@ class Filter:
                         idx = int(device_str.split(':', 1)[1])
                     except ValueError:
                         pass
-                if idx is not None and idx >= device_count:
+                if idx is not None and idx >= gpu_info.device_count:
                     raise RuntimeError(
                         f"FILTER_DEVICE={device} requested device index {idx} but only "
-                        f"{device_count} CUDA device(s) available (indices 0-{device_count - 1})."
+                        f"{gpu_info.device_count} CUDA device(s) available (indices 0-{gpu_info.device_count - 1})."
                     )
             else:
                 config['device'] = 'cuda'
         else:
-            cuda_version = getattr(torch.version, 'cuda', 'unknown')
-            cuda_built = torch.backends.cuda.is_built() if hasattr(torch.backends, 'cuda') else False
-
             if is_auto:
                 logger.warning(
                     "FILTER_DEVICE=auto but CUDA is not available "
-                    "(PyTorch CUDA version: %s, CUDA built: %s). Falling back to CPU.",
-                    cuda_version, cuda_built,
+                    "(driver_version=%s). Falling back to CPU.",
+                    gpu_info.driver_version,
                 )
                 config['device'] = 'cpu'
             else:
                 raise RuntimeError(
                     f"FILTER_DEVICE={device} but CUDA is not available. "
-                    f"PyTorch CUDA version: {cuda_version}, CUDA built: {cuda_built}. "
-                    f"Check that the GPU node driver is compatible with CUDA {cuda_version}. "
+                    f"Driver version: {gpu_info.driver_version}. "
+                    f"Check that the GPU driver is installed and working. "
                     f"Use FILTER_DEVICE=cpu or FILTER_DEVICE=auto to run on CPU."
                 )
 

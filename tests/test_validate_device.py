@@ -1,36 +1,39 @@
 #!/usr/bin/env python
-"""Tests for Filter._validate_device() -- CUDA/GPU availability validation."""
+"""Tests for Filter._validate_device() -- CUDA/GPU availability validation.
+
+These tests mock openfilter.filter_runtime.filter.detect_gpu (the ctypes-based
+GPU detection) and optionally torch.cuda (secondary framework check).
+"""
 
 import logging
 import unittest
 from unittest.mock import patch, MagicMock
 
 from openfilter.filter_runtime import Filter, FilterConfig
+from openfilter.filter_runtime.gpu import GPUInfo
 
 logger = logging.getLogger(__name__)
 
 
-def _mock_torch(**overrides):
-    """Return a MagicMock pre-configured as a torch module.
+def _gpu_info(**overrides):
+    """Return a GPUInfo with sensible defaults.
 
-    Defaults: CUDA available, 1 device (Tesla T4), CUDA 12.2.
-    Pass keyword overrides to change any default.
+    Defaults: available, 1 device (Tesla T4), driver 12.2.
     """
     defaults = dict(
-        is_available=True,
+        available=True,
         device_count=1,
         device_name='Tesla T4',
-        cuda_version='12.2',
-        cuda_built=True,
+        driver_version='12.2',
     )
     defaults.update(overrides)
+    return GPUInfo(**defaults)
 
+
+def _mock_torch_available():
+    """Return a MagicMock that acts as torch with cuda.is_available() == True."""
     m = MagicMock()
-    m.cuda.is_available.return_value = defaults['is_available']
-    m.cuda.device_count.return_value = defaults['device_count']
-    m.cuda.get_device_name.return_value = defaults['device_name']
-    m.version.cuda = defaults['cuda_version']
-    m.backends.cuda.is_built.return_value = defaults['cuda_built']
+    m.cuda.is_available.return_value = True
     return m
 
 
@@ -45,10 +48,6 @@ class TestValidateDevice(unittest.TestCase):
         f = object.__new__(Filter)
         return f, config
 
-    # -------------------------------------------------------------------------
-    # No-op cases -- should not raise and should not require torch
-    # -------------------------------------------------------------------------
-
     def test_noop_devices(self):
         """Devices that need no validation: None, 'cpu', '', -1."""
         noop_cases = [
@@ -62,12 +61,9 @@ class TestValidateDevice(unittest.TestCase):
                 f, config = self._make(device)
                 f._validate_device(config)
 
-    # -------------------------------------------------------------------------
-    # CUDA available -- happy paths
-    # -------------------------------------------------------------------------
-
-    @patch.dict('sys.modules', {'torch': _mock_torch()})
-    def test_device_cuda_available(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch('openfilter.filter_runtime.filter.detect_gpu', return_value=_gpu_info())
+    def test_device_cuda_available(self, _mock):
         """device=cuda + CUDA available = passes, logs GPU info with all fields."""
         f, config = self._make('cuda')
         with self.assertLogs('openfilter.filter_runtime.filter', level='INFO') as cm:
@@ -80,20 +76,29 @@ class TestValidateDevice(unittest.TestCase):
         self.assertIn('12.2', log_text)
         self.assertEqual(config['device'], 'cuda')
 
-    @patch.dict('sys.modules', {'torch': _mock_torch()})
-    def test_device_cuda_colon_0_available(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch('openfilter.filter_runtime.filter.detect_gpu', return_value=_gpu_info())
+    def test_device_cuda_colon_0_available(self, _mock):
         """device=cuda:0 + CUDA available + 1 GPU = passes."""
         f, config = self._make('cuda:0')
         f._validate_device(config)
 
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=4, device_name='A100')})
-    def test_device_cuda_colon_3_available_with_4_gpus(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(device_count=4, device_name='A100'),
+    )
+    def test_device_cuda_colon_3_available_with_4_gpus(self, _mock):
         """device=cuda:3 + 4 GPUs = passes (index in range)."""
         f, config = self._make('cuda:3')
         f._validate_device(config)
 
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=2, device_name='A100')})
-    def test_multiple_gpus_logs_correct_info(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(device_count=2, device_name='A100'),
+    )
+    def test_multiple_gpus_logs_correct_info(self, _mock):
         """Multiple GPUs: log message includes device_count=2 and first device name."""
         f, config = self._make('cuda')
         with self.assertLogs('openfilter.filter_runtime.filter', level='INFO') as cm:
@@ -102,10 +107,6 @@ class TestValidateDevice(unittest.TestCase):
         log_text = '\n'.join(cm.output)
         self.assertIn('device_count=2', log_text)
         self.assertIn('A100', log_text)
-
-    # -------------------------------------------------------------------------
-    # CUDA unavailable -- error paths
-    # -------------------------------------------------------------------------
 
     def test_cuda_unavailable_raises_for_explicit_devices(self):
         """Explicit CUDA devices raise RuntimeError when CUDA is unavailable."""
@@ -116,27 +117,28 @@ class TestValidateDevice(unittest.TestCase):
             (0, 'FILTER_DEVICE=0'),
             (1, 'FILTER_DEVICE=1'),
         ]
-        mock = _mock_torch(is_available=False, cuda_version='12.8')
+        gpu = _gpu_info(available=False, driver_version='unknown')
         for device, expected_substring in cases:
             with self.subTest(device=device):
                 f, config = self._make(device)
-                with patch.dict('sys.modules', {'torch': mock}):
+                with patch(
+                    'openfilter.filter_runtime.filter.detect_gpu', return_value=gpu
+                ):
                     with self.assertRaises(RuntimeError) as ctx:
                         f._validate_device(config)
 
                 msg = str(ctx.exception)
                 self.assertIn(expected_substring, msg)
                 self.assertIn('CUDA is not available', msg)
-                self.assertIn('12.8', msg)
                 self.assertIn('FILTER_DEVICE=cpu', msg)
                 self.assertIn('FILTER_DEVICE=auto', msg)
 
-    # -------------------------------------------------------------------------
-    # Auto mode
-    # -------------------------------------------------------------------------
-
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=2, device_name='A100')})
-    def test_device_auto_cuda_available(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(device_count=2, device_name='A100'),
+    )
+    def test_device_auto_cuda_available(self, _mock):
         """device=auto + CUDA available = sets config to 'cuda', logs info."""
         f, config = self._make('auto')
         with self.assertLogs('openfilter.filter_runtime.filter', level='INFO') as cm:
@@ -145,8 +147,11 @@ class TestValidateDevice(unittest.TestCase):
         self.assertEqual(config['device'], 'cuda')
         self.assertTrue(any('CUDA available' in msg for msg in cm.output))
 
-    @patch.dict('sys.modules', {'torch': _mock_torch(is_available=False, cuda_built=False)})
-    def test_device_auto_cuda_unavailable_falls_back(self):
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(available=False),
+    )
+    def test_device_auto_cuda_unavailable_falls_back(self, _mock):
         """device=auto + CUDA unavailable = warns, sets config to 'cpu'."""
         f, config = self._make('auto')
         with self.assertLogs('openfilter.filter_runtime.filter', level='WARNING') as cm:
@@ -155,12 +160,12 @@ class TestValidateDevice(unittest.TestCase):
         self.assertEqual(config['device'], 'cpu')
         self.assertTrue(any('Falling back to CPU' in msg for msg in cm.output))
 
-    # -------------------------------------------------------------------------
-    # Device index out-of-range validation
-    # -------------------------------------------------------------------------
-
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=1)})
-    def test_device_cuda_index_out_of_range(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(device_count=1),
+    )
+    def test_device_cuda_index_out_of_range(self, _mock):
         """device=cuda:2 but only 1 GPU = RuntimeError with index info."""
         f, config = self._make('cuda:2')
         with self.assertRaises(RuntimeError) as ctx:
@@ -170,8 +175,12 @@ class TestValidateDevice(unittest.TestCase):
         self.assertIn('device index 2', msg)
         self.assertIn('1 CUDA device(s)', msg)
 
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=2)})
-    def test_device_integer_index_out_of_range(self):
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(device_count=2),
+    )
+    def test_device_integer_index_out_of_range(self, _mock):
         """device=3 (integer) but only 2 GPUs = RuntimeError."""
         f, config = self._make(3)
         with self.assertRaises(RuntimeError) as ctx:
@@ -179,54 +188,96 @@ class TestValidateDevice(unittest.TestCase):
 
         self.assertIn('device index 3', str(ctx.exception))
 
-    # -------------------------------------------------------------------------
-    # Edge cases: device_count=0, is_available raises, torch missing
-    # -------------------------------------------------------------------------
-
-    @patch.dict('sys.modules', {'torch': _mock_torch(device_count=0)})
-    def test_device_count_zero_with_cuda_available(self):
-        """CUDA available but device_count=0 -- logs 'unknown', never calls get_device_name."""
-        import sys
-        mock_torch = sys.modules['torch']
-
+    @patch.dict('sys.modules', {'torch': _mock_torch_available()})
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(available=True, device_count=0),
+    )
+    def test_device_count_zero_with_cuda_available(self, _mock):
+        """CUDA available but device_count=0 -- logs info with device_count=0."""
         f, config = self._make('cuda')
         with self.assertLogs('openfilter.filter_runtime.filter', level='INFO') as cm:
             f._validate_device(config)
 
-        mock_torch.cuda.get_device_name.assert_not_called()
-        self.assertTrue(any('unknown' in msg for msg in cm.output))
+        self.assertTrue(any('device_count=0' in msg for msg in cm.output))
 
-    def test_is_available_raises_exception_cuda_device(self):
-        """torch.cuda.is_available() raises -- raises RuntimeError for explicit cuda."""
-        mock_torch = _mock_torch()
-        mock_torch.cuda.is_available.side_effect = RuntimeError("CUDA driver error")
-
+    def test_detect_gpu_raises_exception_cuda_device(self):
+        """detect_gpu() raises -- raises RuntimeError for explicit cuda."""
         f, config = self._make('cuda')
-        with patch.dict('sys.modules', {'torch': mock_torch}):
-            with self.assertLogs('openfilter.filter_runtime.filter', level='WARNING') as cm:
+        with patch(
+            'openfilter.filter_runtime.filter.detect_gpu',
+            side_effect=RuntimeError("CUDA driver error"),
+        ):
+            with self.assertLogs(
+                'openfilter.filter_runtime.filter', level='WARNING'
+            ) as cm:
                 with self.assertRaises(RuntimeError) as ctx:
                     f._validate_device(config)
 
         self.assertIn('CUDA driver error', str(ctx.exception))
         self.assertTrue(any('CUDA driver error' in msg for msg in cm.output))
 
-    def test_is_available_raises_exception_auto_falls_back(self):
-        """device=auto + is_available() raises -- falls back to cpu."""
-        mock_torch = _mock_torch()
-        mock_torch.cuda.is_available.side_effect = RuntimeError("CUDA init failed")
-
+    def test_detect_gpu_raises_exception_auto_falls_back(self):
+        """device=auto + detect_gpu() raises -- falls back to cpu."""
         f, config = self._make('auto')
-        with patch.dict('sys.modules', {'torch': mock_torch}):
-            with self.assertLogs('openfilter.filter_runtime.filter', level='WARNING') as cm:
+        with patch(
+            'openfilter.filter_runtime.filter.detect_gpu',
+            side_effect=RuntimeError("CUDA init failed"),
+        ):
+            with self.assertLogs('openfilter.filter_runtime.filter', level='WARNING'):
                 f._validate_device(config)
 
         self.assertEqual(config['device'], 'cpu')
 
-    def test_torch_not_installed(self):
-        """device=cuda but torch not importable -- no error (non-GPU filter)."""
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(),
+    )
+    def test_driver_present_torch_cuda_unavailable_explicit_raises(self, _mock):
+        """Driver detected but torch.cuda.is_available()=False raises for explicit cuda."""
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+
+        f, config = self._make('cuda')
+        with patch.dict('sys.modules', {'torch': mock_torch}):
+            with self.assertRaises(RuntimeError) as ctx:
+                f._validate_device(config)
+
+        msg = str(ctx.exception)
+        self.assertIn('torch CUDA is not available', msg)
+        self.assertIn('FILTER_DEVICE=cpu', msg)
+
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(),
+    )
+    def test_driver_present_torch_cuda_unavailable_auto_falls_back(self, _mock):
+        """Driver detected but torch.cuda.is_available()=False falls back for auto."""
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = False
+
+        f, config = self._make('auto')
+        with patch.dict('sys.modules', {'torch': mock_torch}):
+            with self.assertLogs(
+                'openfilter.filter_runtime.filter', level='WARNING'
+            ) as cm:
+                f._validate_device(config)
+
+        self.assertEqual(config['device'], 'cpu')
+        self.assertTrue(any('torch CUDA is not available' in msg for msg in cm.output))
+
+    @patch(
+        'openfilter.filter_runtime.filter.detect_gpu',
+        return_value=_gpu_info(),
+    )
+    def test_driver_present_torch_not_installed_passes(self, _mock):
+        """Driver detected, torch not importable -- trusts driver detection."""
         f, config = self._make('cuda')
         with patch.dict('sys.modules', {'torch': None}):
-            f._validate_device(config)
+            with self.assertLogs('openfilter.filter_runtime.filter', level='INFO'):
+                f._validate_device(config)
+
+        self.assertEqual(config['device'], 'cuda')
 
 
 if __name__ == '__main__':
