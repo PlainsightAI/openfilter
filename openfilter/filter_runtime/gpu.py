@@ -116,8 +116,9 @@ def _load_libnvml():
 def preload_gpu_libs():
     """Preload NVIDIA GPU driver libraries using ctypes with absolute paths.
 
-    Must be called before any framework (torch, etc.) import so that the
-    already-loaded libraries are visible to downstream dlopen() calls.
+    Must be called before any CUDA consumer is imported (PyTorch, TensorRT,
+    ONNX Runtime, CuPy, etc.) so that the already-loaded libraries are visible
+    to downstream dlopen() calls.
     """
     ld_path = os.environ.get("OPENFILTER_APPEND_LD_LIBRARY_PATH")
     if not ld_path:

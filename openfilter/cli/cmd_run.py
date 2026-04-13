@@ -12,7 +12,7 @@ from pprint import pp
 #
 # OPENFILTER_FORK=1 explicitly forces 'fork' mode (e.g. for non-CUDA filters
 # where fork is faster). Without it, 'spawn' is used for CUDA compatibility.
-if os.environ.get("OPENFILTER_FORK"):
+if os.environ.get("OPENFILTER_FORK") == "1":
     try:
         mp.set_start_method("fork", force=True)
     except RuntimeError:
@@ -82,7 +82,7 @@ notes:
     )
     parser.add_argument('-f', '--fork',
         action = 'store_true',
-        help   = "run Filters using 'fork' method instead of 'spawn', doesn't work with CUDA",
+        help   = "(deprecated: use OPENFILTER_FORK=1 env var) use fork method instead of spawn",
     )
     parser.add_argument('-p', '--prop-exit',
         type    = str,
