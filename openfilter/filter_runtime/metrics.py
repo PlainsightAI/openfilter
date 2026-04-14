@@ -3,7 +3,7 @@
 Environment variables:
     GPU_METRICS: Set to 'false'ish to turn off GPU metrics.
 
-    GPU_METRICS_INTERVAL: Default number of seconds between poll of GPU metrics (using nvidia-smi tool).
+    GPU_METRICS_INTERVAL: Default number of seconds between poll of GPU metrics (via NVML ctypes).
 
     CPU_METRICS_INTERVAL: Default number of seconds between poll of CPU and memory metrics.
 """
@@ -11,7 +11,6 @@ Environment variables:
 import logging
 import os
 import shutil
-import subprocess
 from pprint import pformat
 from threading import Event, Thread
 from time import time
@@ -19,6 +18,7 @@ from time import time
 from psutil import Process, cpu_count, virtual_memory
 
 from .frame import Frame
+from .gpu import get_gpu_metrics, nvml_shutdown
 from .utils import JSONType, json_getval, sizestr, secstr, timestr
 
 __all__ = ['Metrics']
@@ -65,6 +65,7 @@ class Metrics:
 
         if GPU_METRICS:
             self.gpu_thread.join()
+            nvml_shutdown()
 
         self.cpu_thread.join()
 
@@ -116,33 +117,20 @@ class Metrics:
         try:
             while not stop_evt.wait(max(0, GPU_METRICS_INTERVAL - (time() - last_t))):  # GPU metrics max once per GPU_METRICS_INTERVAL
                 last_t = time()  # time() again because Event.wait() can be inaccurate
-                gpu    = {}
+                gpu = {}
 
-                try:
-                    result = subprocess.run(['nvidia-smi', '--query-gpu=index,utilization.gpu,memory.used',  # TODO: better way to do 'gpu'?
-                        '--format=csv,nounits,noheader'], stdout=subprocess.PIPE, text=True)
-
-                except Exception:
-                    logger.debug('failed to run nvidia-smi for GPU metrics')
-                    self.gpu_accessible = 0
-
-                    break
-
-                if result.returncode or not (data := result.stdout.strip()):
+                metrics = get_gpu_metrics()
+                if metrics is None:
+                    logger.debug('failed to get GPU metrics via NVML')
                     self.gpu_accessible = 0
                     break
 
-                for line in data.split('\n'):
-                    if len(vals := [int(s.strip()) for s in line.split(',')]) != 3:
-                        raise ValueError(f'expected three comma-separated numbers, not {line!r}')
+                for m in metrics:
+                    if not 0 <= m.index <= 7:
+                        raise ValueError(f'unexpected GPU index {m.index!r}')
 
-                    gpu_idx, gpu_util, gpu_mem = vals
-
-                    if not 0 <= gpu_idx <= 7:
-                        raise ValueError(f'unexpected GPU index {vals[0]!r}')
-
-                    gpu[gpu_name := f'gpu{gpu_idx}'] = gpu_util
-                    gpu[f'{gpu_name}_mem']           = gpu_mem / 1000
+                    gpu[gpu_name := f'gpu{m.index}'] = m.gpu_util
+                    gpu[f'{gpu_name}_mem'] = m.mem_used_mb / 1000
 
                 self.gpu = gpu
                 self.gpu_accessible = 1

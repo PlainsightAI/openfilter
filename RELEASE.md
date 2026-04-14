@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## v0.1.28 - 2026-04-13
+
+### Changed
+
+- **Framework-agnostic GPU detection via ctypes**: Replaced `torch.cuda` and `nvidia-smi` subprocess calls with direct `ctypes.CDLL` probing of CUDA/NVML shared libraries. Filters no longer need PyTorch installed just for GPU detection.
+
 ## v0.1.27 - 2026-04-03
 
 ### Fixed

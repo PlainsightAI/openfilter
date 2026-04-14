@@ -2,6 +2,7 @@ import argparse
 import logging
 import multiprocessing as mp
 import os
+import warnings
 from pprint import pp
 
 from openfilter.filter_runtime.filter import Filter, PROP_EXIT_FLAGS, PROP_EXIT, OBEY_EXIT
@@ -16,7 +17,25 @@ logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'INFO').upper())
 
 # --- run --------------------------------------------------------------------------------------------------------------
 
+def _configure_start_method():
+    """Set multiprocessing start method.
+
+    On Linux, the default is 'fork', which in Python 3.12+ causes issues when
+    fork() is called in a multi-threaded process (threading is introduced by
+    SignalStopper). OPENFILTER_FORK=1 explicitly forces 'fork' mode (e.g. for
+    non-CUDA filters where fork is faster). Without it, 'spawn' is used for
+    CUDA compatibility.
+    """
+    method = "fork" if os.environ.get("OPENFILTER_FORK") else "spawn"
+    try:
+        mp.set_start_method(method, force=True)
+    except RuntimeError:
+        pass
+
+
 def cmd_run(args):
+    _configure_start_method()
+
     try:
         idx = args.index('-')
     except ValueError:
@@ -84,6 +103,18 @@ notes:
 
     opts = parser.parse_args(opts)
 
+    if opts.fork:
+        warnings.warn(
+            "The --fork / -f flag is deprecated. Set OPENFILTER_FORK=1 environment "
+            "variable instead. The flag will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        try:
+            mp.set_start_method("fork", force=True)
+        except RuntimeError:
+            pass
+
     logger.debug(f'opts: {opts}')
 
     # parse filters
@@ -91,9 +122,6 @@ notes:
     filters = parse_filters(args[:idx:-1], opts.ipc)
 
     # run
-
-    if not opts.fork:
-        mp.set_start_method('spawn')
 
     if opts.solo and len(filters) > 1:
         raise ValueError("can only run a single Filter '--solo'")
