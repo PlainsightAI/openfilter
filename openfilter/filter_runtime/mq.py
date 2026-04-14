@@ -242,7 +242,10 @@ class MQ:
             if (lmsg := len(msg)) > dataidx + 1:
                 raise RuntimeError(f'incorrect number of messages: {lmsg}')
 
-            data  = json_loads(msg[dataidx].decode()) if lmsg > dataidx else None
+            # Payload parts may be raw bytes (metrics/OOB path) or zmq.Frame
+            # (the main recv path uses copy=False). bytes(...) handles both;
+            # the data JSON is small so the copy is negligible.
+            data  = json_loads(bytes(msg[dataidx]).decode()) if lmsg > dataidx else None
             frame = (
                 Frame(data)
                 if xtra is None else
