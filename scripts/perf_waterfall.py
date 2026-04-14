@@ -54,6 +54,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from rich.bar import Bar
 from rich.box import HEAVY_HEAD, ROUNDED, SIMPLE
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -223,14 +224,6 @@ def _pct_delta_text(curr: float, base: float) -> Text:
     return Text(f"{pct:+5.1f}%", style=style)
 
 
-def _bar_text(value: float, max_value: float, width: int, style: str) -> Text:
-    if max_value <= 0 or width <= 0:
-        return Text("")
-    n = round(value / max_value * width)
-    n = max(0, min(width, n))
-    return Text("█" * n, style=style)
-
-
 # ---------------------------------------------------------------------------
 # Summary panel
 # ---------------------------------------------------------------------------
@@ -241,51 +234,51 @@ def build_summary_table(baseline: dict, current: dict) -> Table:
     names   = [p["name"] for p in current["summary"] if p["name"] in base_by]
 
     table = Table(
-        title=Text("IPC overhead per frame (ms)", style=TITLE_STYLE),
+        title=Text("IPC overhead — per-pipeline gains", style=TITLE_STYLE),
         title_justify="left",
         box=SIMPLE,
-        border_style=BRAND_GREY,
-        show_header=True,
-        show_lines=True,
         header_style=f"bold {BRAND_SEAGULL}",
         pad_edge=False,
-        padding=(0, 1, 0, 0),
     )
-    table.add_column("pipeline",      style="bold", no_wrap=True)
-    table.add_column("",              no_wrap=True)  # "before"/"after" label
-    table.add_column("bar",           no_wrap=True)
-    table.add_column("ms",            justify="right", no_wrap=True)
-    table.add_column("fps",           justify="right", no_wrap=True)
-    table.add_column("Δ",             justify="right", no_wrap=True)
+    table.add_column("pipeline",   style="bold", no_wrap=True)
+    table.add_column("",           ratio=1)  # bar column expands to fill available width
+    table.add_column("ms saved",   justify="right", no_wrap=True)
+    table.add_column("fps gained", justify="right", no_wrap=True)
+    table.add_column("change",     justify="right", no_wrap=True)
 
     if not names:
         table.add_row(Text("(no overlapping pipelines between refs)", style=NEUTRAL_STYLE))
         return table
 
-    max_ipc = max(max(base_by[n]["ipc_ms"], curr_by[n]["ipc_ms"]) for n in names)
-    term_w  = console.size.width
-    bar_w   = max(20, min(40, term_w - 70))
+    # Gain = (baseline - current). Positive across all three columns == win.
+    gains = [
+        (curr_by[n]["label"],
+         base_by[n]["ipc_ms"]  - curr_by[n]["ipc_ms"],
+         curr_by[n]["max_fps"] - base_by[n]["max_fps"],
+         ((base_by[n]["ipc_ms"] - curr_by[n]["ipc_ms"]) / base_by[n]["ipc_ms"] * 100)
+             if base_by[n]["ipc_ms"] > 0 else 0.0)
+        for n in names
+    ]
+    max_abs_ms = max((abs(g[1]) for g in gains), default=1.0)
 
-    for name in names:
-        b = base_by[name]
-        c = curr_by[name]
-        # Two rows per pipeline, joined by end_section only after the second.
+    def signed(val: float, fmt: str) -> Text:
+        if abs(val) < 0.05:
+            return Text(" ±0", style=NEUTRAL_STYLE)
+        return Text(fmt.format(val), style=WIN_STYLE if val > 0 else LOSS_STYLE)
+
+    for label, ms, fps, pct in gains:
+        if ms > 0.05:
+            color = WIN_STYLE
+        elif ms < -0.05:
+            color = LOSS_STYLE
+        else:
+            color = NEUTRAL_STYLE
         table.add_row(
-            Text(c["label"]),
-            Text("before", style=NEUTRAL_STYLE),
-            _bar_text(b["ipc_ms"], max_ipc, bar_w, LOSS_STYLE),
-            Text(f"{b['ipc_ms']:6.2f}"),
-            Text(f"{b['max_fps']:5.1f}"),
-            Text(""),
-        )
-        table.add_row(
-            Text(""),
-            Text("after",  style=NEUTRAL_STYLE),
-            _bar_text(c["ipc_ms"], max_ipc, bar_w, WIN_STYLE),
-            Text(f"{c['ipc_ms']:6.2f}"),
-            Text(f"{c['max_fps']:5.1f}"),
-            _pct_delta_text(c["ipc_ms"], b["ipc_ms"]),
-            end_section=True,
+            Text(label),
+            Bar(size=max_abs_ms, begin=0.0, end=abs(ms), color=color),
+            signed(ms,  "{:+6.2f}"),
+            signed(fps, "{:+5.1f}"),
+            signed(pct, "{:+5.1f}%"),
         )
 
     return table
