@@ -480,6 +480,68 @@ class TestZmqIpcBenchmarks:
 # ---------------------------------------------------------------------------
 
 
+# Pipeline scenarios lifted to module scope so external tooling
+# (scripts/measure_pipelines.py, scripts/profile_pipeline.py) can import
+# the same topology definitions the bench uses — if a runtime refactor
+# changes what a "pipeline" looks like, this dict gets updated here and
+# the tooling picks the change up automatically.
+PIPELINE_SIMULATION_SCENARIOS: dict[str, dict] = {
+    "4k_to_1080p_raw": {
+        "label":  "4K→1080p, 3 filters, raw",
+        "stages": [
+            ("VideoIn(4K→1080p)", 0.2, (1080, 1920), False),  # resample cost
+            ("Detector",         15,   None,         False),
+            ("Tracker",           5,   None,         False),
+            ("Sink",              0,   None,         False),
+        ],
+    },
+    "4k_to_1080p_jpg": {
+        "label":  "4K→1080p, 3 filters, jpg",
+        "stages": [
+            ("VideoIn(4K→1080p)", 0.2, (1080, 1920), True),
+            ("Detector",         15,   None,         True),
+            ("Tracker",           5,   None,         True),
+            ("Sink",              0,   None,         True),
+        ],
+    },
+    "1080p_raw": {
+        "label":  "1080p, 4 filters, raw",
+        "stages": [
+            ("VideoIn(1080p)",   0, (1080, 1920), False),
+            ("Preprocess",       2, None,         False),
+            ("Inference",       30, None,         False),
+            ("Postprocess",      3, None,         False),
+            ("Sink",             0, None,         False),
+        ],
+    },
+    "480p_raw": {
+        "label":  "480p, 3 filters, raw (fast path)",
+        "stages": [
+            ("VideoIn(480p)",    0, (480, 640), False),
+            ("Detector",         8, None,       False),
+            ("Tracker",          3, None,       False),
+            ("Sink",             0, None,       False),
+        ],
+    },
+    "4k_raw": {
+        "label":  "4K native, 2 filters, raw",
+        "stages": [
+            ("VideoIn(4K)",      0, (2160, 3840), False),
+            ("Detector",        20, None,         False),
+            ("Sink",             0, None,         False),
+        ],
+    },
+    "4k_jpg": {
+        "label":  "4K native, 2 filters, jpg",
+        "stages": [
+            ("VideoIn(4K)",      0, (2160, 3840), True),
+            ("Detector",        20, None,         True),
+            ("Sink",             0, None,         True),
+        ],
+    },
+}
+
+
 class TestPipelineSimulation:
     """Simulates realistic multi-filter pipelines end-to-end.
 
@@ -545,7 +607,8 @@ class TestPipelineSimulation:
 
             # Measure
             per_stage_process = [0.0] * len(stages)
-            total_elapsed = 0.0
+            per_hop_ipc       = [0.0] * n_hops
+            total_elapsed     = 0.0
 
             for _ in range(n_frames):
                 t0 = time.perf_counter()
@@ -561,10 +624,12 @@ class TestPipelineSimulation:
 
                 for hop in range(n_hops):
                     # Send to next filter
+                    t_hop = time.perf_counter()
                     senders[hop].send(current_frames)
                     current_frames = receivers[hop].recv(timeout=5000)
                     if current_frames is None:
                         pytest.fail(f"Pipeline {label}: recv timed out at hop {hop}")
+                    per_hop_ipc[hop] += time.perf_counter() - t_hop
 
                     # Simulate filter process()
                     _, proc_ms, _, _ = stages[hop + 1]
@@ -589,11 +654,13 @@ class TestPipelineSimulation:
         fps = 1000 / avg_total_ms if avg_total_ms > 0 else float("inf")
 
         stage_times = [round(t / n_frames * 1000, 2) for t in per_stage_process]
+        hop_times   = [round(t / n_frames * 1000, 2) for t in per_hop_ipc]
 
         return {
             "label": label,
             "stages": stages,
             "stage_times_ms": stage_times,
+            "hop_times_ms": hop_times,
             "total_ms": round(avg_total_ms, 2),
             "process_ms": round(avg_process_ms, 2),
             "overhead_ms": round(avg_overhead_ms, 2),
@@ -606,66 +673,10 @@ class TestPipelineSimulation:
     def test_pipeline_simulation_report(self):
         """Run several realistic pipeline configurations and report overhead."""
 
-        pipelines = [
-            # (label, stages)
-            # stage = (name, process_ms, (h, w) or None, jpg)
-            (
-                "4K→1080p, 3 filters, raw",
-                [
-                    ("VideoIn(4K→1080p)", 0.2, (1080, 1920), False),  # resample cost
-                    ("Detector", 15, None, False),
-                    ("Tracker", 5, None, False),
-                    ("Sink", 0, None, False),
-                ],
-            ),
-            (
-                "4K→1080p, 3 filters, jpg",
-                [
-                    ("VideoIn(4K→1080p)", 0.2, (1080, 1920), True),
-                    ("Detector", 15, None, True),
-                    ("Tracker", 5, None, True),
-                    ("Sink", 0, None, True),
-                ],
-            ),
-            (
-                "1080p, 4 filters, raw",
-                [
-                    ("VideoIn(1080p)", 0, (1080, 1920), False),
-                    ("Preprocess", 2, None, False),
-                    ("Inference", 30, None, False),
-                    ("Postprocess", 3, None, False),
-                    ("Sink", 0, None, False),
-                ],
-            ),
-            (
-                "480p, 3 filters, raw (fast path)",
-                [
-                    ("VideoIn(480p)", 0, (480, 640), False),
-                    ("Detector", 8, None, False),
-                    ("Tracker", 3, None, False),
-                    ("Sink", 0, None, False),
-                ],
-            ),
-            (
-                "4K native, 2 filters, raw",
-                [
-                    ("VideoIn(4K)", 0, (2160, 3840), False),
-                    ("Detector", 20, None, False),
-                    ("Sink", 0, None, False),
-                ],
-            ),
-            (
-                "4K native, 2 filters, jpg",
-                [
-                    ("VideoIn(4K)", 0, (2160, 3840), True),
-                    ("Detector", 20, None, True),
-                    ("Sink", 0, None, True),
-                ],
-            ),
-        ]
-
         results = []
-        for label, stages in pipelines:
+        for scenario in PIPELINE_SIMULATION_SCENARIOS.values():
+            label  = scenario["label"]
+            stages = scenario["stages"]
             r = self._run_pipeline(
                 stages, self.N_FRAMES, label.replace(" ", "-").replace(",", "")
             )

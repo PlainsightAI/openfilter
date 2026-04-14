@@ -128,11 +128,22 @@ def measure_current(frames: int, pipeline: str) -> dict:
 
 def measure_at_ref(ref: str, frames: int, pipeline: str) -> dict:
     """Materialize a temp git worktree at ``ref``, copy the measurement
-    script in (so it works against refs that don't have it), run it,
-    parse JSON, then tear the worktree down."""
-    repo   = _main_repo()
-    sha    = _ref_to_sha(ref)
-    script = _measurement_script()
+    script AND the bench harness it depends on into it, run it, parse
+    JSON, then tear the worktree down.
+
+    We copy the bench harness (``tests/test_benchmarks.py``) alongside
+    the measurement script so the baseline ref uses THIS branch's
+    scenario definitions and timing loop. That's the comparison we
+    want: same bench, different runtime. Without this, refs that
+    predate our bench refactor would fail to import
+    ``PIPELINE_SIMULATION_SCENARIOS``.
+    """
+    repo         = _main_repo()
+    sha          = _ref_to_sha(ref)
+    script_dir   = Path(__file__).resolve().parent
+    current_root = script_dir.parent
+    measure_src  = script_dir / "measure_pipelines.py"
+    bench_src    = current_root / "tests" / "test_benchmarks.py"
 
     with tempfile.TemporaryDirectory(prefix="perf-waterfall-") as wt_dir:
         subprocess.run(
@@ -140,8 +151,11 @@ def measure_at_ref(ref: str, frames: int, pipeline: str) -> dict:
             check=True, capture_output=True, text=True,
         )
         try:
-            (Path(wt_dir) / "scripts").mkdir(exist_ok=True)
-            shutil.copy(script, Path(wt_dir) / "scripts" / "measure_pipelines.py")
+            wt = Path(wt_dir)
+            (wt / "scripts").mkdir(exist_ok=True)
+            (wt / "tests").mkdir(exist_ok=True)
+            shutil.copy(measure_src, wt / "scripts" / "measure_pipelines.py")
+            shutil.copy(bench_src,   wt / "tests"   / "test_benchmarks.py")
 
             r = subprocess.run(
                 ["uv", "run", "python", "scripts/measure_pipelines.py",
