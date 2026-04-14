@@ -224,7 +224,7 @@ class MQ:
             else:
                 enc  = 'jpg' if (do_jpg := frame.has_jpg if outs_jpg is None else outs_jpg) else 'raw'  # preferentially send jpg if is already encoded
                 xtra = {'img': [frame.height, frame.width, frame.format, enc]}
-                img  = frame.jpg if do_jpg else bytearray(memoryview(frame.image))
+                img  = frame.jpg if do_jpg else memoryview(frame.image).cast('B')
                 msg  = [xtra, img] if data is None else [xtra, img, data]
 
             topicmsgs[topic] = msg
