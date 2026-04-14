@@ -476,7 +476,7 @@ class ZMQSender:
                 msg         = [topic, json_dumps(env, separators=(',', ':')).encode(), *msg[1:]]
 
                 for pub in pubs:
-                    pub.send_multipart(msg)
+                    pub.send_multipart(msg, copy=False)
 
             for pub in pubs:  # publish heartbeat / topics informative message
                 pub.send_multipart(msg_topics)
