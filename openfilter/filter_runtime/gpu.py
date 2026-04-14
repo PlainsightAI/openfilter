@@ -41,6 +41,18 @@ _libnvml = None
 _nvml_initialized = False
 
 
+class _NvmlUtilization(ctypes.Structure):
+    _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+
+class _NvmlMemory(ctypes.Structure):
+    _fields_ = [
+        ("total", ctypes.c_ulonglong),
+        ("free", ctypes.c_ulonglong),
+        ("used", ctypes.c_ulonglong),
+    ]
+
+
 @dataclass
 class GPUInfo:
     """Result of ctypes-based GPU detection."""
@@ -75,8 +87,7 @@ def _find_gpu_lib(name: str) -> str | None:
     if found:
         return found
 
-    # Last resort: try the bare name and let dlopen search
-    return name
+    return None
 
 
 def _load_libcuda():
@@ -86,10 +97,8 @@ def _load_libcuda():
         return _libcuda
 
     path = _find_gpu_lib("libcuda.so.1")
-    if path is None:
-        return None
     try:
-        _libcuda = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        _libcuda = ctypes.CDLL(path or "libcuda.so.1", mode=ctypes.RTLD_GLOBAL)
         return _libcuda
     except OSError as exc:
         logger.debug("Failed to load libcuda: %s", exc)
@@ -103,10 +112,8 @@ def _load_libnvml():
         return _libnvml
 
     path = _find_gpu_lib("libnvidia-ml.so.1")
-    if path is None:
-        return None
     try:
-        _libnvml = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+        _libnvml = ctypes.CDLL(path or "libnvidia-ml.so.1", mode=ctypes.RTLD_GLOBAL)
         return _libnvml
     except OSError as exc:
         logger.debug("Failed to load libnvidia-ml: %s", exc)
@@ -118,7 +125,10 @@ def preload_gpu_libs():
 
     Must be called before any framework (torch, etc.) import so that the
     already-loaded libraries are visible to downstream dlopen() calls.
+    Also populates the module-level cache so detect_gpu() / get_gpu_metrics()
+    don't double-load the same libraries.
     """
+    global _libcuda, _libnvml
     ld_path = os.environ.get("OPENFILTER_APPEND_LD_LIBRARY_PATH")
     if not ld_path:
         return
@@ -130,8 +140,12 @@ def preload_gpu_libs():
                 continue
             if os.path.exists(lib_path):
                 try:
-                    ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                    handle = ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
                     _preloaded_gpu_libs.add(lib_path)
+                    if lib_name == "libcuda.so.1" and _libcuda is None:
+                        _libcuda = handle
+                    elif lib_name == "libnvidia-ml.so.1" and _libnvml is None:
+                        _libnvml = handle
                 except OSError as exc:
                     logger.debug("Failed to preload GPU library %s: %s", lib_path, exc)
 
@@ -236,16 +250,6 @@ def get_gpu_metrics() -> list[GPUMetrics] | None:
 
         results = []
 
-        class NvmlUtilization(ctypes.Structure):
-            _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
-
-        class NvmlMemory(ctypes.Structure):
-            _fields_ = [
-                ("total", ctypes.c_ulonglong),
-                ("free", ctypes.c_ulonglong),
-                ("used", ctypes.c_ulonglong),
-            ]
-
         for i in range(count.value):
             handle = ctypes.c_void_p()
             ret = lib.nvmlDeviceGetHandleByIndex_v2(
@@ -254,11 +258,11 @@ def get_gpu_metrics() -> list[GPUMetrics] | None:
             if ret != 0:
                 continue
 
-            util = NvmlUtilization()
+            util = _NvmlUtilization()
             ret = lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util))
             gpu_util = util.gpu if ret == 0 else 0
 
-            mem = NvmlMemory()
+            mem = _NvmlMemory()
             ret = lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem))
             mem_used_mb = mem.used // (1024 * 1024) if ret == 0 else 0
 

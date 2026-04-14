@@ -5,24 +5,6 @@ import os
 import warnings
 from pprint import pp
 
-# Set multiprocessing start method BEFORE importing Filter, because importing
-# Filter may initialize the multiprocessing context. On Linux, the default is
-# 'fork', which in Python 3.12+ causes issues when fork() is called in a
-# multi-threaded process (threading is introduced by SignalStopper).
-#
-# OPENFILTER_FORK=1 explicitly forces 'fork' mode (e.g. for non-CUDA filters
-# where fork is faster). Without it, 'spawn' is used for CUDA compatibility.
-if os.environ.get("OPENFILTER_FORK"):
-    try:
-        mp.set_start_method("fork", force=True)
-    except RuntimeError:
-        pass
-else:
-    try:
-        mp.set_start_method("spawn", force=True)
-    except RuntimeError:
-        pass
-
 from openfilter.filter_runtime.filter import Filter, PROP_EXIT_FLAGS, PROP_EXIT, OBEY_EXIT
 from openfilter.filter_runtime.utils import dict_without
 
@@ -35,7 +17,25 @@ logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'INFO').upper())
 
 # --- run --------------------------------------------------------------------------------------------------------------
 
+def _configure_start_method():
+    """Set multiprocessing start method.
+
+    On Linux, the default is 'fork', which in Python 3.12+ causes issues when
+    fork() is called in a multi-threaded process (threading is introduced by
+    SignalStopper). OPENFILTER_FORK=1 explicitly forces 'fork' mode (e.g. for
+    non-CUDA filters where fork is faster). Without it, 'spawn' is used for
+    CUDA compatibility.
+    """
+    method = "fork" if os.environ.get("OPENFILTER_FORK") else "spawn"
+    try:
+        mp.set_start_method(method, force=True)
+    except RuntimeError:
+        pass
+
+
 def cmd_run(args):
+    _configure_start_method()
+
     try:
         idx = args.index('-')
     except ValueError:
