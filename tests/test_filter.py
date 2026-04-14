@@ -17,6 +17,7 @@ from openfilter.filter_runtime import Filter, FilterConfig, Frame, FilterContext
 from openfilter.filter_runtime.test import RunnerContext, FiltersToQueue, QueueToFilters
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.util import Util
+from tests.helpers import assert_empty
 
 logger = logging.getLogger(__name__)
 
@@ -250,58 +251,34 @@ class TestFilterOld(unittest.TestCase):
 
         try:
             qout1.put(d := {'main': {'val': 0}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
             self.assertEqual(getdatas(qin), d)
 
             qout2.put(e := {'other': {'val': 1}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
-            self.assertRaises(Empty, lambda: getdatas(qin, 0.05))
+            assert_empty(qin)
 
             qout1.put(d := {'main': {'val': 1}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
             self.assertEqual(getdatas(qin), {**d, **e})
 
             qout1.put(d := {'main': {'val': 2}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
             self.assertEqual(getdatas(qin), d)
 
             qout2.put(e := {'other': {'val': 3}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
-            self.assertRaises(Empty, lambda: getdatas(qin, 0.05))
+            assert_empty(qin)
 
             qout1.put(d := {'main': {'val': 3}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
             self.assertEqual(getdatas(qin), {**d, **e})
 
             qout2.put(e := {'other': {'val': 4}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
-            self.assertRaises(Empty, lambda: getdatas(qin, 0.05))
+            assert_empty(qin)
 
             qout1.put(d := {'main': {'val': 4}})
-
-            sleep(0.05)
-
             self.assertIs(runner.step(), False)
             self.assertEqual(getdatas(qin), {**d, **e})
 
@@ -320,14 +297,9 @@ class TestFilterOld(unittest.TestCase):
         ], exit_time=10)
 
         try:
-            sleep(0.2)
-
             qout.put(d := {'main': {'val': 0}})
             self.assertIs(runner1.step(), False)
-
-            sleep(0.1)
-
-            self.assertRaises(Empty, lambda: getdatas(qin1, 0.1))
+            assert_empty(qin1)
 
             runner2 = Filter.Runner([
                 (FilterToQueue, dict(sources='tcp://127.0.0.1?', queue=(qin2 := Queue()))),
@@ -335,18 +307,12 @@ class TestFilterOld(unittest.TestCase):
 
             try:
                 self.assertIs(runner2.step(), False)
-
-                sleep(0.1)
-
                 self.assertEqual(getdatas(qin2), d)
                 self.assertEqual(getdatas(qin1), d)
 
                 qout.put(d := {'main': {'val': 1}})
                 self.assertIs(runner1.step(), False)
                 self.assertIs(runner2.step(), False)
-
-                sleep(0.1)
-
                 self.assertEqual(getdatas(qin2), d)
                 self.assertEqual(getdatas(qin1), d)
 
