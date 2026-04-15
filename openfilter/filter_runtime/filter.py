@@ -1268,6 +1268,9 @@ class Filter:
             return None
         with self._batch_lock:
             self._cancel_batch_timer()
+            # Also clear any stale flush event: if the watcher's timeout just
+            # fired as a new frame arrives, we don't want a premature flush.
+            self._batch_flush_event.clear()
             self._frame_buffer.append(frames)
 
             if len(self._frame_buffer) < self._batch_size:
@@ -1300,7 +1303,14 @@ class Filter:
         responsible for sending each result downstream.
         """
         t_in = time.time()
-        results = self.process_batch(batch)
+        try:
+            results = self.process_batch(batch)
+        except Exception:
+            logger.warning(
+                "process_batch() raised on a batch of %d frame(s); re-raising",
+                len(batch),
+            )
+            raise
         if results is None:
             results = [None] * len(batch)
         t_out = time.time()
