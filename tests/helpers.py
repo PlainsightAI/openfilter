@@ -7,7 +7,7 @@ from openfilter.filter_runtime import Frame
 from openfilter.filter_runtime.mq import MQSender
 
 
-def assert_empty(q, settle=0.5):
+def assert_empty(q, settle=0.2):
     """Assert that *q* receives no data within *settle* seconds.
 
     Blocks for *settle* seconds waiting on the queue. Returns
