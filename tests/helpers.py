@@ -7,6 +7,19 @@ from openfilter.filter_runtime import Frame
 from openfilter.filter_runtime.mq import MQSender
 
 
+def assert_empty(q, settle=0.2):
+    """Assert that *q* receives no data within *settle* seconds.
+
+    Blocks for *settle* seconds waiting on the queue. Returns
+    if the queue stays empty, raises AssertionError otherwise.
+    """
+    try:
+        data = q.get(True, settle)
+    except Empty:
+        return
+    raise AssertionError(f'expected queue to be empty, but got: {data}')
+
+
 class ThreadMQSender(Thread):
     """Threaded MQ sender for tests — ZMQ sender blocks until a subscriber
     issues a request, so it must run in its own thread."""
