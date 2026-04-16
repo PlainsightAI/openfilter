@@ -19,6 +19,8 @@ class WebvisConfig(FilterConfig):
     port: int | None
     enable_json: bool = False
     sleep_interval: float = 1.0
+    auth_token: str | None = None
+    cors_origins: str | None = None
 
 
 class Webvis(Filter):
@@ -37,24 +39,27 @@ class Webvis(Filter):
 
         port:
             Default 8000.
+
+        auth_token:
+            When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
+            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
+
+        cors_origins:
+            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
+            Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
+            Also settable via ``FILTER_CORS_ORIGINS`` env var.
     """
 
     FILTER_TYPE = 'Output'
 
-    def create_app(self) -> 'FastAPI':
+    def create_app(self, auth_token: str | None = None, cors_origins: str | None = None) -> 'FastAPI':
         from fastapi import FastAPI
-        from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import StreamingResponse
+        from openfilter.filter_runtime.filters.http_security import configure_http_security
 
-        app = FastAPI(title='webvis')#, version=version)
+        app = FastAPI(title='webvis')
 
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=['*'],
-            allow_credentials=True,
-            allow_methods=['*'],
-            allow_headers=['*'],
-        )
+        configure_http_security(app, auth_token=auth_token, cors_origins=cors_origins)
 
         @app.get('/')
         @app.get('/{topic:str}')
@@ -84,11 +89,12 @@ class Webvis(Filter):
 
         return app
 
-    def serve(self, host: str | None = None, port: int | None = None):
+    def serve(self, host: str | None = None, port: int | None = None,
+              auth_token: str | None = None, cors_origins: str | None = None):
         import uvicorn
 
         uvicorn.Server(uvicorn.Config(
-            self.create_app(),
+            self.create_app(auth_token=auth_token, cors_origins=cors_origins),
             host       = host or '0.0.0.0',
             port       = port or 8000,
             loop       = 'asyncio',
@@ -103,6 +109,8 @@ class Webvis(Filter):
         env_mapping = {
             "enable_json": bool,
             "sleep_interval": float,
+            "auth_token": str,
+            "cors_origins": str,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -153,7 +161,7 @@ class Webvis(Filter):
         self.enable_json = config.enable_json
         self.sleep_interval = config.sleep_interval
 
-        Thread(target=self.serve, args=(config.host, config.port), daemon=True).start()
+        Thread(target=self.serve, args=(config.host, config.port, config.auth_token, config.cors_origins), daemon=True).start()
 
     def process(self, frames):
         for topic, frame in frames.items():

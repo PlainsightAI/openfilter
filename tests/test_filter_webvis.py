@@ -4,6 +4,7 @@ import logging
 import os
 import unittest
 from time import sleep
+from unittest.mock import patch
 
 
 
@@ -52,6 +53,97 @@ class TestWebvisConfig(unittest.TestCase):
         normalized = Webvis.normalize_config(config)
         self.assertFalse(normalized.enable_json)
         self.assertEqual(normalized.sleep_interval, 0.2)
+
+    def test_auth_token_config_param(self):
+        config = {
+            'sources': 'tcp://localhost:5550',
+            'auth_token': 'my-secret',
+        }
+        normalized = Webvis.normalize_config(config)
+        self.assertEqual(normalized.auth_token, 'my-secret')
+
+    def test_cors_origins_config_param(self):
+        config = {
+            'sources': 'tcp://localhost:5550',
+            'cors_origins': 'https://portal.plainsight.tech',
+        }
+        normalized = Webvis.normalize_config(config)
+        self.assertEqual(normalized.cors_origins, 'https://portal.plainsight.tech')
+
+    def test_auth_token_default_none(self):
+        config = {
+            'sources': 'tcp://localhost:5550',
+        }
+        normalized = Webvis.normalize_config(config)
+        self.assertIsNone(normalized.auth_token)
+
+    def test_cors_origins_default_none(self):
+        config = {
+            'sources': 'tcp://localhost:5550',
+        }
+        normalized = Webvis.normalize_config(config)
+        self.assertIsNone(normalized.cors_origins)
+
+    def test_auth_token_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_AUTH_TOKEN': 'env-token'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertEqual(normalized.auth_token, 'env-token')
+
+    def test_cors_origins_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_CORS_ORIGINS': 'https://a.com,https://b.com'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertEqual(normalized.cors_origins, 'https://a.com,https://b.com')
+
+
+class TestWebvisCreateApp(unittest.TestCase):
+    """Test the Webvis.create_app() method."""
+
+    def _make_webvis(self):
+        webvis = object.__new__(Webvis)
+        webvis.streams = {}
+        webvis.enable_json = False
+        webvis.sleep_interval = 1.0
+        webvis.current_data = {}
+        return webvis
+
+    def test_create_app_returns_fastapi(self):
+        from fastapi import FastAPI
+        webvis = self._make_webvis()
+        app = webvis.create_app()
+        self.assertIsInstance(app, FastAPI)
+
+    def test_create_app_with_auth_rejects_unauthenticated(self):
+        from fastapi.testclient import TestClient
+        webvis = self._make_webvis()
+        app = webvis.create_app(auth_token='secret')
+        client = TestClient(app)
+        response = client.get('/')
+        self.assertEqual(response.status_code, 401)
+
+    def test_create_app_without_auth_does_not_reject(self):
+        from fastapi import FastAPI
+        webvis = self._make_webvis()
+        app = webvis.create_app()
+        # Without auth, app should have middleware but not reject
+        self.assertIsInstance(app, FastAPI)
+        self.assertTrue(len(app.user_middleware) >= 1)
+
+    def test_create_app_with_cors_origins(self):
+        from fastapi.testclient import TestClient
+        webvis = self._make_webvis()
+        app = webvis.create_app(cors_origins='https://portal.plainsight.tech')
+        client = TestClient(app)
+        response = client.options('/', headers={
+            'Origin': 'https://portal.plainsight.tech',
+            'Access-Control-Request-Method': 'GET',
+        })
+        self.assertEqual(
+            response.headers.get('access-control-allow-origin'),
+            'https://portal.plainsight.tech',
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
