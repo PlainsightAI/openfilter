@@ -17,7 +17,7 @@ from openfilter.filter_runtime import Filter, FilterConfig, Frame, FilterContext
 from openfilter.filter_runtime.test import RunnerContext, FiltersToQueue, QueueToFilters
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.util import Util
-from tests.helpers import assert_empty
+from helpers import assert_empty
 
 logger = logging.getLogger(__name__)
 
