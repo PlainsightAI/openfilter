@@ -90,6 +90,19 @@ class TestBuildSpanExporter(unittest.TestCase):
             exporter = build_span_exporter("otlp_grpc")
         self.assertIsInstance(exporter, OTLPGrpcSpanExporter)
 
+    def test_otlp_http_endpoint_from_telemetry_env(self):
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter as OTLPHttpSpanExporter,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"TELEMETRY_EXPORTER_OTLP_ENDPOINT": "otel-collector.monitoring:4318"},
+            clear=True,
+        ):
+            exporter = build_span_exporter("otlp_http")
+        self.assertIsInstance(exporter, OTLPHttpSpanExporter)
+
     def test_otlp_http(self):
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter as OTLPHttpSpanExporter,

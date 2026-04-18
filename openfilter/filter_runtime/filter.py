@@ -1024,9 +1024,12 @@ class Filter:
     def process_frames(self, frames: dict[str, Frame]) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         """Call process() and deal with it if returns a Callable."""
 
-        # Wrap process() with timing and optional tracing span
-        tracer = getattr(getattr(self, 'otel', None), 'tracer', None)
-        parent_ctx = getattr(getattr(self, 'otel', None), 'parent_context', None) if tracer else None
+        # Wrap process() with timing and optional tracing span.
+        # Timers sit inside the span context manager so per-filter timing
+        # metrics reflect pure process() cost, not span creation overhead.
+        otel = getattr(self, 'otel', None)
+        tracer = getattr(otel, 'tracer', None) if otel else None
+        parent_ctx = getattr(otel, 'parent_context', None) if tracer else None
         span_ctx_mgr = (
             tracer.start_as_current_span(
                 f"{self.__class__.__name__}.process",
@@ -1052,10 +1055,10 @@ class Filter:
             if tracer
             else contextlib.nullcontext()
         )
-        t_in = time.time()
         with span_ctx_mgr:
+            t_in = time.time()
             processed_frames = self.process(frames)
-        t_out = time.time()
+            t_out = time.time()
 
         # Update per-filter timing unless process() returned a callable,
         # in which case _timed_callable will record the real duration later.

@@ -19,15 +19,40 @@ from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     ConsoleSpanExporter,
     SpanExporter,
+    SpanExportResult,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class SilentSpanExporter(SpanExporter):
+    """No-op exporter that accepts and discards all spans.
+
+    Promoted to module level so it's importable and discoverable (the
+    metrics side does the same with ``SilentMetricExporter``).
+    """
+
+    def export(self, spans):
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self):
+        pass
+
+    def force_flush(self, timeout_millis=30000):
+        return True
 
 
 def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
     """Build a span exporter matching the metrics exporter factory pattern.
 
     Supported types: console, silent, otlp, otlp_grpc, otlp_http.
+
+    Note: the metrics factory (``client.py:build_exporter``) only accepts
+    ``"otlp"`` (mapped to gRPC). This factory additionally accepts
+    ``"otlp_grpc"`` and ``"otlp_http"`` for finer control. If someone sets
+    ``TELEMETRY_EXPORTER_TYPE=otlp_http``, traces will go to the HTTP
+    exporter while metrics will fall through to console — a latent
+    inconsistency worth aligning in a follow-up on the metrics side.
     """
     exporter_type = exporter_type.lower()
 
@@ -35,18 +60,6 @@ def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
         return ConsoleSpanExporter()
 
     if exporter_type == "silent":
-        from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
-
-        class SilentSpanExporter(SpanExporter):
-            def export(self, spans):
-                return SpanExportResult.SUCCESS
-
-            def shutdown(self):
-                pass
-
-            def force_flush(self, timeout_millis=30000):
-                return True
-
         return SilentSpanExporter()
 
     if exporter_type in ("otlp", "otlp_grpc"):
@@ -54,9 +67,18 @@ def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
             OTLPSpanExporter as OTLPGrpcSpanExporter,
         )
 
+        # Endpoint precedence:
+        #   1. Explicit config kwarg
+        #   2. TELEMETRY_EXPORTER_OTLP_ENDPOINT (Plainsight convention,
+        #      matches metrics factory)
+        #   3. OTEL_EXPORTER_OTLP_ENDPOINT (standard OTel env var)
+        #   4. OTEL_EXPORTER_OTLP_GRPC_ENDPOINT (non-standard, kept for
+        #      backward compat — not part of the OTel spec)
+        #   5. localhost:4317 fallback
         endpoint = (
             config.get("endpoint")
             or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+            or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
             or os.getenv("OTEL_EXPORTER_OTLP_GRPC_ENDPOINT")
             or "http://localhost:4317"
         )
@@ -76,6 +98,8 @@ def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
 
         endpoint = (
             config.get("endpoint")
+            or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+            or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
             or os.getenv("OTEL_EXPORTER_OTLP_HTTP_ENDPOINT")
             or "http://localhost:4318"
         )
@@ -117,13 +141,18 @@ def setup_tracer_provider(
     resource: Resource,
     exporter_type: str = "silent",
     exporter_config: Optional[dict] = None,
+    set_global: bool = True,
 ) -> TracerProvider:
-    """Create and register a TracerProvider sharing the same Resource as metrics.
+    """Create and optionally register a TracerProvider sharing the same Resource as metrics.
 
     Args:
         resource: OTel Resource (reused from MeterProvider).
         exporter_type: Exporter type string (same values as metrics).
         exporter_config: Extra kwargs forwarded to the span exporter builder.
+        set_global: When True (default), call ``trace.set_tracer_provider()``
+            to register as the process-global provider. Set to False if the
+            host application manages its own TracerProvider and you want to
+            avoid mutating global OTel state.
 
     Returns:
         The configured TracerProvider.
@@ -135,8 +164,11 @@ def setup_tracer_provider(
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(processor)
 
-    trace.set_tracer_provider(provider)
+    if set_global:
+        trace.set_tracer_provider(provider)
     logger.info(
-        "TracerProvider initialised with %s exporter", exporter_type
+        "TracerProvider initialised with %s exporter (global=%s)",
+        exporter_type,
+        set_global,
     )
     return provider
