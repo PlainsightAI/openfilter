@@ -325,5 +325,62 @@ class TestBatchSizeOneBackwardCompat(unittest.TestCase):
         self.assertIsNone(f._batch_watcher)
 
 
+class TestLoopOnceTimeoutFlush(unittest.TestCase):
+    """Integration test: partial batch flushed via timeout inside loop_once."""
+
+    def test_partial_batch_flushed_by_timeout(self):
+        """loop_once should flush a partial batch when the watcher timeout fires."""
+        config = FilterConfig(
+            id="test-loop-flush",
+            batch_size=3,
+            accumulate_timeout_ms=100.0,
+        )
+        stop_evt = threading.Event()
+        f = CountingBatchFilter(config, stop_evt)
+
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+
+        f.mq.send = MagicMock(return_value=True)
+
+        # Set generous source/output timeouts so loop_once doesn't exit early.
+        f.sources_timeout = 5000.0
+        f.outputs_timeout = 5000.0
+        f.exit_after_t = None
+
+        # First two loop_once calls each receive a frame and accumulate it.
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 1})})
+        f.loop_once()
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 2})})
+        f.loop_once()
+
+        # Batch not full yet (need 3), so nothing sent.
+        self.assertEqual(len(f.received_batches), 0)
+        self.assertFalse(f.mq.send.called)
+
+        # Third loop_once: recv returns None (slow source). The watcher timeout
+        # (100ms) fires _batch_flush_event, and loop_once flushes the partial batch.
+        f.mq.recv = MagicMock(return_value=None)
+        f.loop_once()
+
+        # The partial batch of 2 frames should have been flushed.
+        self.assertEqual(len(f.received_batches), 1)
+        self.assertEqual(len(f.received_batches[0]), 2)
+
+        # Results should have been sent downstream via mq.send.
+        self.assertTrue(f.mq.send.called)
+
+        # Clean up watcher thread.
+        f._stop_batch_watcher()
+
+
 if __name__ == "__main__":
     unittest.main()

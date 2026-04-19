@@ -1889,8 +1889,9 @@ class Filter:
 
         Returns:
             List of results, one per input frame. Each element follows the same contract
-            as process() return values (dict, Frame, None). Callables are NOT supported
-            in batch mode.
+            as process() return values (dict, Frame, None). Callables returned from
+            this method are NOT supported. (The default implementation handles
+            Callable returns from process() by evaluating them eagerly.)
         """
         results = []
         for frames in batch:
