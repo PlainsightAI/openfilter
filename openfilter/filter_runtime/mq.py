@@ -277,11 +277,15 @@ class MQ:
             data = json_loads(bytes(msg[dataidx]).decode()) if lmsg > dataidx else None
 
             if shm_info is not None:
+                # SHM slots are recycled by the sender; downstream mutation would corrupt live buffers.
+                image.flags.writeable = False
                 frame = Frame(image, data, xtra[2])
             elif xtra is None:
                 frame = Frame(data)
             elif xtra[3] == 'raw':
-                frame = Frame(np.frombuffer(msg[1], np.uint8).reshape(xtra[:2] if xtra[2] == 'GRAY' else (xtra[0], xtra[1], 3)), data, xtra[2])
+                image = np.frombuffer(msg[1], np.uint8).reshape(xtra[:2] if xtra[2] == 'GRAY' else (xtra[0], xtra[1], 3))
+                image.flags.writeable = False
+                frame = Frame(image, data, xtra[2])
             else:
                 frame = Frame.from_jpg(msg[1], data, xtra[0], xtra[1], xtra[2])
 
