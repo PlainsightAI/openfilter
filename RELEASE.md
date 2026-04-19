@@ -4,6 +4,10 @@ OpenFilter Library release notes
 
 ## v0.1.28 - 2026-04-13
 
+### Added
+
+- **OpenTelemetry distributed tracing for per-filter execution spans**: Filter runtime now emits OTel spans around each filter's processing step and propagates trace context through the observability client. A new `openfilter/observability/tracing.py` module wires up the SDK; `filter_runtime/filter.py` and `observability/client.py` were updated to start/stop spans and attach trace context. Trace context is consumed from standard OTel environment variables, allowing upstream controllers to stitch filter spans into a pipeline-wide trace.
+
 ### Changed
 
 - **Framework-agnostic GPU detection via ctypes**: Replaced `torch.cuda` and `nvidia-smi` subprocess calls with direct `ctypes.CDLL` probing of CUDA/NVML shared libraries. Filters no longer need PyTorch installed just for GPU detection.
