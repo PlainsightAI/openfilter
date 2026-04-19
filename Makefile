@@ -28,6 +28,34 @@ bench:  ## Run performance benchmarks
 .PHONY: test-integration
 test-integration:  ## Run integration tests (requires a running docker daemon)
 	pytest -v tests/integration/ --benchmark-disable -m slow
+# ─── IPC perf waterfall (demo scaffolding) ───────────────────────────────
+#
+# The waterfall display runs the bench's pipeline_simulation scenarios
+# at two git refs and renders a terminal before/after. The baseline ref
+# is materialized as an ephemeral git worktree under /tmp and torn down
+# after measurement.
+#
+#   make waterfall                                  # HEAD vs origin/main
+#   make waterfall WATERFALL_ARGS="--frames 400"    # longer run
+#   make waterfall WATERFALL_ARGS="--baseline-ref feat/perf-fixes"
+#   make waterfall WATERFALL_ARGS="--pipeline 1080p_raw"
+#   make waterfall.profile                          # py-spy flamegraph
+#
+# perf_waterfall.py declares its own deps (rich) via PEP 723, so uv
+# resolves them into an ephemeral env — no pyproject changes needed.
+
+WATERFALL_ARGS ?=
+
+.PHONY: waterfall waterfall.profile
+
+waterfall:  ## Render IPC perf waterfall (HEAD vs --baseline-ref, default origin/main)
+	uv run scripts/perf_waterfall.py $(WATERFALL_ARGS)
+
+waterfall.profile:  ## Attach py-spy to a 4K IPC reproducer and write /tmp/perf-waterfall.svg
+	@command -v py-spy >/dev/null || { echo "py-spy not installed: uv tool install py-spy"; exit 1; }
+	py-spy record -o /tmp/perf-waterfall.svg --rate 250 --subprocesses -- \
+		uv run python scripts/profile_pipeline.py 4k_raw --frames 400 --no-filter-work
+	@echo "wrote /tmp/perf-waterfall.svg"
 
 .PHONY: test-all
 test-all:  ## Run all unit tests

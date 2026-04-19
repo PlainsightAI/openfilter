@@ -476,7 +476,7 @@ class ZMQSender:
                 msg         = [topic, json_dumps(env, separators=(',', ':')).encode(), *msg[1:]]
 
                 for pub in pubs:
-                    pub.send_multipart(msg)
+                    pub.send_multipart(msg, copy=False)
 
             for pub in pubs:  # publish heartbeat / topics informative message
                 pub.send_multipart(msg_topics)
@@ -755,12 +755,13 @@ class ZMQReceiver:
                     if flags != zmq.POLLIN:
                         raise RuntimeError(f'unexpected poll flags {flags}')
 
-                    msg = sub.recv_multipart()
+                    msg = sub.recv_multipart(copy=False)  # payload parts stay as zmq.Frame so np.frombuffer can view them zero-copy downstream
 
                     sender     = senders[sub]
                     sender_eph = sender.ephemeral
-                    topic      = (t := msg[0])[t.startswith(TOPIC_DELIM_B) : -1].decode()  # empty topics indicates ignore actual message (topics count tho for information)
-                    env        = json_loads(msg[1].decode())
+                    topic_b    = msg[0].bytes  # topic/env are small control parts, copy them out eagerly
+                    topic      = topic_b[topic_b.startswith(TOPIC_DELIM_B) : -1].decode()  # empty topics indicates ignore actual message (topics count tho for information)
+                    env        = json_loads(msg[1].bytes.decode())
                     server_id  = sender.server_id = env['sid']
                     msg_id     = env['mid']
                     topics     = env.get('topics')
