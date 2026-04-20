@@ -423,8 +423,10 @@ class TestTimerReset(unittest.TestCase):
         # Sleep ~60ms, well inside the original 100ms window
         time.sleep(0.06)
 
-        # Frame 2 at t≈60ms: _reset_batch_timer() sets _batch_wakeup, watcher restarts
-        # The new flush deadline is ~60ms + 100ms = ~160ms from start
+        # Frame 2 at t≈60ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
+        # The watcher only observes that signal when its initial ~100ms sleep
+        # completes, then restarts for another full timeout, so the effective
+        # flush deadline is ~original deadline + 100ms (~200ms), not ~160ms.
         f.process_frames({"main": Frame({"val": 2})})
 
         # At t≈100ms (original deadline): flush must NOT have fired yet.
@@ -570,6 +572,14 @@ class TestLoopOncePendingResultsDrain(unittest.TestCase):
             3,
             f"expected 3 sends (r1 + r2 via _batch_pending_results drain, r3 direct); "
             f"got {f.mq.send.call_count}",
+        )
+        sent_vals = [
+            call.args[0]["main"].data["val"] for call in f.mq.send.call_args_list
+        ]
+        self.assertEqual(
+            sent_vals,
+            [1, 2, 3],
+            "batch results should reach mq.send in input order (r1, r2, r3)",
         )
 
         f._stop_batch_watcher()
