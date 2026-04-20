@@ -382,5 +382,209 @@ class TestLoopOnceTimeoutFlush(unittest.TestCase):
         f._stop_batch_watcher()
 
 
+class TestTimerReset(unittest.TestCase):
+    """Verify that _reset_batch_timer correctly extends the accumulation window."""
+
+    def _make_filter(self, batch_size, timeout_ms):
+        config = FilterConfig(
+            id="test-timer-reset",
+            batch_size=batch_size,
+            accumulate_timeout_ms=timeout_ms,
+        )
+        stop_evt = threading.Event()
+        f = CountingBatchFilter(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_timer_reset_extends_accumulation_window(self):
+        """A new frame arriving mid-sleep must restart the watcher timeout.
+
+        Regression guard for _batch_watcher_loop lines:
+            if self._batch_wakeup.is_set():
+                self._batch_wakeup.clear()
+                continue
+        Removing those lines causes a premature flush at the original deadline.
+        """
+        # batch_size=5 so the batch never completes via accumulation in this test
+        f = self._make_filter(batch_size=5, timeout_ms=100.0)
+
+        # Frame 1 at t≈0ms: starts the 100ms watcher timer
+        f.process_frames({"main": Frame({"val": 1})})
+
+        # Sleep ~60ms, well inside the original 100ms window
+        time.sleep(0.06)
+
+        # Frame 2 at t≈60ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
+        # The watcher only observes that signal when its initial ~100ms sleep
+        # completes, then restarts for another full timeout, so the effective
+        # flush deadline is ~original deadline + 100ms (~200ms), not ~160ms.
+        f.process_frames({"main": Frame({"val": 2})})
+
+        # At t≈100ms (original deadline): flush must NOT have fired yet.
+        # The watcher's first sleep expires here; seeing _batch_wakeup set it restarts
+        # for another full timeout rather than flushing immediately.
+        time.sleep(0.04)
+        self.assertFalse(
+            f._batch_flush_event.is_set(),
+            "flush fired at the original deadline; timer reset is not working",
+        )
+
+        # Watcher restarts at t≈100ms; expected flush at t≈200ms.  Wait up to
+        # 500ms so the test tolerates scheduler jitter on loaded CI runners.
+        fired = f._batch_flush_event.wait(timeout=0.5)
+        self.assertTrue(fired, "flush never fired after the reset deadline")
+
+        f._stop_batch_watcher()
+        f._batch_watcher.join(timeout=1.0)
+
+
+class TestFiniShutdownFlush(unittest.TestCase):
+    """Verify fini() drains _batch_pending_results before shutting down."""
+
+    def _make_filter(self, batch_size=2):
+        config = FilterConfig(
+            id="test-fini-flush",
+            batch_size=batch_size,
+            accumulate_timeout_ms=1000.0,
+        )
+        stop_evt = threading.Event()
+        f = CountingBatchFilter(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.mq.send = MagicMock(return_value=True)
+        f.mq.destroy = MagicMock()
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_fini_drains_pending_results(self):
+        """fini() must send every result stashed in _batch_pending_results.
+
+        Regression guard for fini() lines:
+            if self._batch_pending_results:
+                for pending in self._batch_pending_results:
+                    self.mq.send(pending, POLL_TIMEOUT_MS)
+                self._batch_pending_results.clear()
+        Removing that block causes processed results to be silently dropped on shutdown.
+        """
+        f = self._make_filter(batch_size=2)
+
+        # Simulate state: two processed results are waiting to be sent (as would
+        # happen if loop_once was interrupted between _execute_batch and draining).
+        pending1 = {"main": Frame({"val": 10})}
+        pending2 = {"main": Frame({"val": 20})}
+        f._batch_pending_results.extend([pending1, pending2])
+
+        f.fini()
+
+        # Both pending results must have been handed to mq.send.
+        # _frame_buffer is empty, so no additional sends from the partial-batch path.
+        self.assertEqual(
+            f.mq.send.call_count,
+            2,
+            f"expected 2 send calls for pending results; got {f.mq.send.call_count}",
+        )
+        sent_frames = [call.args[0] for call in f.mq.send.call_args_list]
+        self.assertIn(pending1, sent_frames)
+        self.assertIn(pending2, sent_frames)
+
+        # List must be cleared after fini so results are not double-sent.
+        self.assertEqual(len(f._batch_pending_results), 0)
+
+
+class TestLoopOncePendingResultsDrain(unittest.TestCase):
+    """Verify loop_once sends all N results from a full batch, not just the last."""
+
+    def _make_filter(self, batch_size):
+        config = FilterConfig(
+            id="test-pending-drain",
+            batch_size=batch_size,
+            accumulate_timeout_ms=1000.0,
+        )
+        stop_evt = threading.Event()
+        f = CountingBatchFilter(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.mq.send = MagicMock(return_value=True)
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.sources_timeout = 5000.0
+        f.outputs_timeout = 5000.0
+        f.exit_after_t = None
+        f.setup(config)
+        return f
+
+    def test_loop_once_sends_all_batch_results(self):
+        """loop_once must drain _batch_pending_results so every batch result reaches mq.
+
+        When _execute_batch returns N results for a full batch of size N,
+        _process_frames_batched stashes results[:-1] in _batch_pending_results and
+        returns results[-1]. loop_once must send the stashed results before sending
+        the final one.
+
+        Regression guard for loop_once lines:
+            if self._batch_pending_results:
+                for pending in self._batch_pending_results:
+                    self._send_frames(pending, outputs_timeout)
+                self._batch_pending_results.clear()
+        Removing that block silently drops intermediate batch results.
+        """
+        # batch_size=3: CountingBatchFilter.process_batch returns one result per
+        # input frame, so a full batch of 3 produces 3 results: r1 and r2 stashed
+        # in _batch_pending_results, r3 returned directly to loop_once.
+        f = self._make_filter(batch_size=3)
+
+        # First two loop_once calls accumulate frames without triggering the batch.
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 1})})
+        f.loop_once()
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 2})})
+        f.loop_once()
+        self.assertEqual(
+            f.mq.send.call_count, 0, "no results should be sent before the batch is full"
+        )
+
+        # Third loop_once fills the batch.  All three results must be sent.
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 3})})
+        f.loop_once()
+
+        self.assertEqual(
+            f.mq.send.call_count,
+            3,
+            f"expected 3 sends (r1 + r2 via _batch_pending_results drain, r3 direct); "
+            f"got {f.mq.send.call_count}",
+        )
+        sent_vals = [
+            call.args[0]["main"].data["val"] for call in f.mq.send.call_args_list
+        ]
+        self.assertEqual(
+            sent_vals,
+            [1, 2, 3],
+            "batch results should reach mq.send in input order (r1, r2, r3)",
+        )
+
+        f._stop_batch_watcher()
+        f._batch_watcher.join(timeout=1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
