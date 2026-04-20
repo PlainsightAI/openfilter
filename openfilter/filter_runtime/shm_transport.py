@@ -12,6 +12,11 @@ def shm_enabled() -> bool:
 
 class SHMPool:
     """Sender-side pool of named SHM segments with round-robin allocation."""
+    # Round-robin reuse is safe only because the ZMQ send->recv pipeline loop is SYNCHRONOUS:
+    # the sender blocks on its next send until the receiver has consumed the prior frame, so
+    # the sender cannot lap the receiver within SHM_NSLOTS frames. If the runtime ever adopts
+    # async/pipelined dispatch, this invariant breaks and a generation counter or semaphore
+    # would be needed to gate slot reuse.
 
     def __init__(self, prefix: str, nslots: int = SHM_NSLOTS, slot_size: int = SHM_SLOT_SIZE):
         self.prefix = prefix
@@ -34,6 +39,8 @@ class SHMPool:
     def put(self, src: memoryview) -> tuple[str, int]:
         """Copy src into the next slot and return (slot_name, nbytes)."""
         nbytes = len(src)
+        if nbytes > self.slot_size:
+            raise ValueError(f'frame payload {nbytes} bytes exceeds SHM slot size {self.slot_size}; increase OPENFILTER_SHM_SLOT_SIZE')
         slot = self.slots[self._idx % self.nslots]
         self._idx += 1
         slot.buf[:nbytes] = src
