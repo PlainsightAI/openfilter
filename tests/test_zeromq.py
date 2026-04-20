@@ -9,6 +9,7 @@ from random import randint
 from threading import Thread
 from time import sleep
 
+import zmq
 from openfilter.filter_runtime.zeromq import ZMQStateRecv, ZMQStateSend, ZMQReceiver, ZMQSender, logger as zeromq_logger
 
 zeromq_logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())))
@@ -23,11 +24,24 @@ def sendstate(msg_id):
 def send(sendr, *args, **kwargs):
     return None if (res := sendr.send(*args, **kwargs)) is None else res[0]
 
+def _materialize(v):  # ZMQReceiver uses recv_multipart(copy=False), so payload parts arrive as zmq.Frame
+    return bytes(v) if isinstance(v, zmq.Frame) else v
+
+def _materialize_parts(parts):
+    return [_materialize(p) for p in parts]
+
+def _materialize_topicmsgs(topicmsgs):
+    return {topic: _materialize_parts(parts) for topic, parts in topicmsgs.items()}
+
 def recvl(recvr, *args, **kwargs):
-    return None if (res := recvr.recv(*args, **kwargs)) is None else (res[1][0], res[0])
+    if (res := recvr.recv(*args, **kwargs)) is None:
+        return None
+    return (res[1][0], _materialize_topicmsgs(res[0]))
 
 def recv(recvr, *args, **kwargs):
-    return None if (res := recvr.recv(*args, **kwargs)) is None else res
+    if (res := recvr.recv(*args, **kwargs)) is None:
+        return None
+    return (_materialize_topicmsgs(res[0]), res[1])
 
 
 class TestZeroMQOld(unittest.TestCase):
@@ -37,7 +51,7 @@ class TestZeroMQOld(unittest.TestCase):
 
     def test_old_general(self):
         def thread(queue: Queue, queue_oob: Queue):
-            sendr = ZMQSender(['tcp://*:5550', 'ipc://./tmp_pipe'], 'server', lambda m: queue_oob.put(m))
+            sendr = ZMQSender(['tcp://*:5550', 'ipc://./tmp_pipe'], 'server', lambda m: queue_oob.put(_materialize_parts(m)))
 
             while (msg := queue.get()) is not None:
                 if isinstance(msg, dict):  # topicmsgs
@@ -79,7 +93,7 @@ class TestZeroMQOld(unittest.TestCase):
                 self.assertEqual(send({'main': ['test', b'data'], 'other': ['more', b'datums']})['other'], recvl(recvr1)[1]['other'])
 
                 queue2_oob = Queue()
-                recvr2     = ZMQReceiver([('ipc://./tmp_pipe', [('main', 'main')])], 'client2', lambda m: queue2_oob.put(m))
+                recvr2     = ZMQReceiver([('ipc://./tmp_pipe', [('main', 'main')])], 'client2', lambda m: queue2_oob.put(_materialize_parts(m)))
 
                 sleep((0.1))  # needed because no stateful connections
 

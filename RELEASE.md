@@ -11,6 +11,13 @@ OpenFilter Library release notes
 
 ## v0.1.28 - 2026-04-13
 
+### Breaking Changes
+
+- **Received `Frame.image` arrays are now read-only**: `topicmsgs2frames` sets `image.flags.writeable = False` on both the zero-copy ZMQ path and the SHM path, so `frame.image` received from upstream can no longer be mutated in place.
+- **Motivation**: prevents corruption of live SHM ring slots (reused round-robin by the sender) and re-enables the `Frame.copy()` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status.
+- **Migration**: filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy()` — or construct a new frame via `Frame(new_image, frame, frame.format)`.
+- **Symptom if not migrated**: `ValueError: assignment destination is read-only` raised from the mutating call.
+
 ### Added
 
 - **OpenTelemetry distributed tracing for per-filter execution spans**: Filter runtime now emits OTel spans around each filter's processing step and propagates trace context through the observability client. A new `openfilter/observability/tracing.py` module wires up the SDK; `filter_runtime/filter.py` and `observability/client.py` were updated to start/stop spans and attach trace context. Trace context is consumed from standard OTel environment variables, allowing upstream controllers to stitch filter spans into a pipeline-wide trace.

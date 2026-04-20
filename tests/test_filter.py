@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import contextlib
 import gc
 import logging
 import multiprocessing as mp
@@ -788,15 +789,29 @@ class TestFilter(unittest.TestCase):
             os.unlink(temp_file)
 
 
+    @contextlib.contextmanager
+    def _with_models_toml(self, content: str):
+        """Write *content* to ./models.toml, preserving any existing file."""
+        models_toml = Path("models.toml")
+        backup      = Path("models.toml.backup")
+        had_prior   = models_toml.exists()
+        if had_prior:
+            models_toml.rename(backup)  # same-fs rename; avoids tempfile cross-device issues
+        try:
+            models_toml.write_text(content)
+            yield
+        finally:
+            models_toml.unlink(missing_ok=True)
+            if had_prior:
+                backup.rename(models_toml)
+
     def test_filter_context_read_models_toml_method(self):
         """Test FilterContext._read_models_toml() static method."""
         # Test with non-existent models.toml
         result = FilterContext._read_models_toml()
         self.assertEqual(result, {})
-        
-        # Test with valid models.toml
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.toml', delete=False) as f:
-            toml_content = """
+
+        toml_content = """
 [model1]
 version = "1.0.0"
 path = "/path/to/model1"
@@ -808,48 +823,24 @@ path = "/path/to/model2"
 [model3]
 version = "3.0.0"
 """
-            f.write(toml_content.encode())
-            temp_file = f.name
-        
-        try:
-            # Temporarily rename the temp file to models.toml in current directory
-            original_models_toml = Path("models.toml")
-            if original_models_toml.exists():
-                original_models_toml.rename("models.toml.backup")
-            
-            Path(temp_file).rename("models.toml")
-            
-            try:
-                result = FilterContext._read_models_toml()
-                
-                self.assertIn('model1', result)
-                self.assertIn('model2', result)
-                self.assertIn('model3', result)
-                
-                self.assertEqual(result['model1']['version'], "1.0.0")
-                self.assertEqual(result['model1']['path'], "/path/to/model1")
-                self.assertEqual(result['model2']['version'], "2.0.0")
-                self.assertEqual(result['model2']['path'], "/path/to/model2")
-                self.assertEqual(result['model3']['version'], "3.0.0")
-                self.assertEqual(result['model3']['path'], "No path")
-                
-            finally:
-                # Restore original models.toml if it existed
-                if Path("models.toml").exists():
-                    Path("models.toml").unlink()
-                if Path("models.toml.backup").exists():
-                    Path("models.toml.backup").rename("models.toml")
-        except:
-            # Clean up temp file if rename failed
-            if Path(temp_file).exists():
-                Path(temp_file).unlink()
-            raise
+        with self._with_models_toml(toml_content):
+            result = FilterContext._read_models_toml()
+
+            self.assertIn('model1', result)
+            self.assertIn('model2', result)
+            self.assertIn('model3', result)
+
+            self.assertEqual(result['model1']['version'], "1.0.0")
+            self.assertEqual(result['model1']['path'], "/path/to/model1")
+            self.assertEqual(result['model2']['version'], "2.0.0")
+            self.assertEqual(result['model2']['path'], "/path/to/model2")
+            self.assertEqual(result['model3']['version'], "3.0.0")
+            self.assertEqual(result['model3']['path'], "No path")
 
 
     def test_filter_context_read_models_toml_invalid_format(self):
         """Test FilterContext._read_models_toml() with invalid TOML format."""
-        with tempfile.NamedTemporaryFile(mode='wb', suffix='.toml', delete=False) as f:
-            invalid_toml = """
+        invalid_toml = """
 [model1]
 version = "1.0.0"
 
@@ -859,36 +850,13 @@ version = "1.0.0"
 [model3]
 invalid_field = "value"
 """
-            f.write(invalid_toml.encode())
-            temp_file = f.name
-        
-        try:
-            # Temporarily rename the temp file to models.toml in current directory
-            original_models_toml = Path("models.toml")
-            if original_models_toml.exists():
-                original_models_toml.rename("models.toml.backup")
-            
-            Path(temp_file).rename("models.toml")
-            
-            try:
-                result = FilterContext._read_models_toml()
-                
-                # Should only include model1 since it has a version field
-                self.assertIn('model1', result)
-                self.assertNotIn('model2', result)
-                self.assertNotIn('model3', result)
-                
-            finally:
-                # Restore original models.toml if it existed
-                if Path("models.toml").exists():
-                    Path("models.toml").unlink()
-                if Path("models.toml.backup").exists():
-                    Path("models.toml.backup").rename("models.toml")
-        except:
-            # Clean up temp file if rename failed
-            if Path(temp_file).exists():
-                Path(temp_file).unlink()
-            raise
+        with self._with_models_toml(invalid_toml):
+            result = FilterContext._read_models_toml()
+
+            # Should only include model1 since it has a version field
+            self.assertIn('model1', result)
+            self.assertNotIn('model2', result)
+            self.assertNotIn('model3', result)
 
 
     def test_filter_context_log_method(self):

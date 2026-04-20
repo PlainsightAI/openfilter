@@ -27,6 +27,7 @@ import numpy as np
 
 from .frame import Frame
 from .metrics import Metrics
+from .shm_transport import SHMAttachCache, SHMPool, shm_enabled
 from .utils import JSONType, json_getval, rndstr
 from .zeromq import ZMQ_POLL_TIMEOUT as POLL_TIMEOUT_MS, is_zeromq_addr as is_mq_addr, ZMQMessage, ZMQSender, ZMQReceiver
 
@@ -96,6 +97,9 @@ class MQ:
         self.metrics_ = Metrics() if outs_metrics or metrics_cb else DummyMetrics()
         self.metrics  = {'ts': time(), 'fps': 15.0, 'cpu': 0.0, 'mem': 0.0, 'uptime_count': 0}  # initial guaranteed-to-be-present metrics, for outside querying, not used here
 
+        self.shm_pool  = SHMPool(prefix=f'of-{self.mq_id}') if (shm_enabled() and self.sender is not None) else None
+        self.shm_cache = SHMAttachCache() if (shm_enabled() and self.receiver is not None) else None
+
     def _get_filter_data(self, frames: dict[str, Frame]) -> dict:
         """Extract frame IDs from frames or generate one. Returns data for _filter topic."""
         frame_ids = []
@@ -113,6 +117,13 @@ class MQ:
 
     def destroy(self):
         self.metrics_.destroy()
+
+        if self.shm_pool is not None:
+            self.shm_pool.destroy()
+            self.shm_pool = None
+        if self.shm_cache is not None:
+            self.shm_cache.destroy()
+            self.shm_cache = None
 
         if self.receiver:
             self.receiver.destroy()
@@ -176,7 +187,7 @@ class MQ:
             if self.outs_filter is True:
                 frames = {**frames, '_filter': Frame(self._get_filter_data(frames))}
 
-            return MQ.frames2topicmsgs(frames, self.outs_jpg)
+            return MQ.frames2topicmsgs(frames, self.outs_jpg, pool=self.shm_pool)
 
         metrics = None
 
@@ -207,12 +218,12 @@ class MQ:
         topicmsgs, self.send_state = res
         self.recv_state            = None  # we already used up this recv_state so set to None to increment automatically next time in case send() is not called to get new state
 
-        self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs))
+        self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
 
         return frames
 
     @staticmethod
-    def frames2topicmsgs(frames: dict[str, Frame], outs_jpg: bool | None = None) -> dict[str, ZMQMessage]:
+    def frames2topicmsgs(frames: dict[str, Frame], outs_jpg: bool | None = None, *, pool: SHMPool | None = None) -> dict[str, ZMQMessage]:
         topicmsgs = {}
 
         for topic, frame in frames.items():
@@ -224,32 +235,59 @@ class MQ:
             else:
                 enc  = 'jpg' if (do_jpg := frame.has_jpg if outs_jpg is None else outs_jpg) else 'raw'  # preferentially send jpg if is already encoded
                 xtra = {'img': [frame.height, frame.width, frame.format, enc]}
-                img  = frame.jpg if do_jpg else bytearray(memoryview(frame.image))
-                msg  = [xtra, img] if data is None else [xtra, img, data]
+
+                if pool is not None and not do_jpg:
+                    shm_name, shm_nbytes = pool.put(memoryview(frame.image).cast('B'))
+                    xtra['shm'] = [shm_name, shm_nbytes]
+                    msg = [xtra] if data is None else [xtra, data]
+                else:
+                    img = frame.jpg if do_jpg else memoryview(frame.image).cast('B')
+                    msg = [xtra, img] if data is None else [xtra, img, data]
 
             topicmsgs[topic] = msg
 
         return topicmsgs
 
     @staticmethod
-    def topicmsgs2frames(topicmsgs: dict[str, ZMQMessage]) -> dict[str, Frame]:
+    def topicmsgs2frames(topicmsgs: dict[str, ZMQMessage], *, cache: SHMAttachCache | None = None) -> dict[str, Frame]:
         frames = {}
 
         for topic, msg in topicmsgs.items():
-            xtra    = xtra['img'] if (xtra := msg[0]) else None
-            dataidx = 2 if xtra else 1
+            xtra_dict = msg[0]
+            xtra      = xtra_dict['img'] if xtra_dict else None
+            shm_info  = xtra_dict.get('shm') if xtra_dict else None
+
+            if shm_info is not None:
+                if cache is None:
+                    raise RuntimeError('received SHM frame reference but SHM is not enabled on this receiver')
+                shm_name, shm_nbytes = shm_info
+                shm     = cache.get(shm_name)
+                shape   = xtra[:2] if xtra[2] == 'GRAY' else (xtra[0], xtra[1], 3)
+                image   = np.frombuffer(shm.buf, np.uint8, count=shm_nbytes).reshape(shape)
+                dataidx = 1
+            else:
+                dataidx = 2 if xtra else 1
 
             if (lmsg := len(msg)) > dataidx + 1:
                 raise RuntimeError(f'incorrect number of messages: {lmsg}')
 
-            data  = json_loads(msg[dataidx].decode()) if lmsg > dataidx else None
-            frame = (
-                Frame(data)
-                if xtra is None else
-                Frame(np.frombuffer(msg[1], np.uint8).reshape(xtra[:2] if xtra[2] == 'GRAY' else (xtra[0], xtra[1], 3)), data, xtra[2])
-                if xtra[3] == 'raw' else
-                Frame.from_jpg(msg[1], data, xtra[0], xtra[1], xtra[2])
-            )
+            # Payload parts may be raw bytes (metrics/OOB path) or zmq.Frame
+            # (the main recv path uses copy=False). bytes(...) handles both;
+            # the data JSON is small so the copy is negligible.
+            data = json_loads(bytes(msg[dataidx]).decode()) if lmsg > dataidx else None
+
+            if shm_info is not None:
+                # SHM slots are recycled by the sender; downstream mutation would corrupt live buffers.
+                image.flags.writeable = False
+                frame = Frame(image, data, xtra[2])
+            elif xtra is None:
+                frame = Frame(data)
+            elif xtra[3] == 'raw':
+                image = np.frombuffer(msg[1], np.uint8).reshape(xtra[:2] if xtra[2] == 'GRAY' else (xtra[0], xtra[1], 3))
+                image.flags.writeable = False
+                frame = Frame(image, data, xtra[2])
+            else:
+                frame = Frame.from_jpg(msg[1], data, xtra[0], xtra[1], xtra[2])
 
             frames[topic] = frame
 
