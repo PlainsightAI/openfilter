@@ -583,6 +583,7 @@ class TestLoopOncePendingResultsDrain(unittest.TestCase):
         )
 
         f._stop_batch_watcher()
+        f._batch_watcher.join(timeout=1.0)
 
 
 if __name__ == "__main__":
