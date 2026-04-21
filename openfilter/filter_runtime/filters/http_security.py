@@ -22,11 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 def parse_cors_origins(cors_origins: Optional[str]) -> list[str]:
-    """Parse a comma-separated CORS origins string. Returns ['*'] if empty/None."""
+    """Parse a comma-separated CORS origins string. Returns ['*'] if empty/None.
+
+    If '*' appears alongside specific origins, '*' wins and the specific
+    origins are dropped — mixing the two is invalid per the CORS spec.
+    """
     if not cors_origins or not cors_origins.strip():
         return ['*']
     origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
-    return origins if origins else ['*']
+    if not origins or '*' in origins:
+        return ['*']
+    return origins
 
 
 def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
