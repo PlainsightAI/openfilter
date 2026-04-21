@@ -20,10 +20,10 @@ jobs:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -43,7 +43,7 @@ jobs:
     steps:
       - name: Check for cascade changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             cascade:
@@ -53,11 +53,11 @@ jobs:
 
       - name: Checkout code
         if: steps.filter.outputs.cascade == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
         if: steps.filter.outputs.cascade == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Prepare workspace
         if: steps.filter.outputs.cascade == 'true'
