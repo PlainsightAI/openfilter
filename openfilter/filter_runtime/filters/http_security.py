@@ -32,6 +32,10 @@ def parse_cors_origins(cors_origins: Optional[str]) -> list[str]:
     origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
     if not origins or '*' in origins:
         return ['*']
+    for origin in origins:
+        # Warn on origins that don't look like scheme://host (common misconfigs)
+        if not origin.startswith(('http://', 'https://')) or origin.endswith('/'):
+            logger.warning("CORS origin '%s' may be malformed (expected scheme://host[:port])", origin)
     return origins
 
 
@@ -58,7 +62,7 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
                 if auth_header.lower().startswith('bearer '):
                     request_token = auth_header[7:].strip()
 
-            if not request_token or not secrets.compare_digest(request_token, token):
+            if not request_token or not secrets.compare_digest(request_token.encode('utf-8'), token.encode('utf-8')):
                 return JSONResponse(
                     status_code=401,
                     content={'detail': 'Unauthorized'},
