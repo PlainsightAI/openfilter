@@ -191,7 +191,7 @@ jobs:
           echo "✅ Package inspection complete."
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-dist
           path: dist/
@@ -216,7 +216,7 @@ jobs:
         run: pip install twine
 
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheel-dist
           path: dist/
