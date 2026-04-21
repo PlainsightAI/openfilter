@@ -45,6 +45,9 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
     from starlette.requests import Request
     from starlette.responses import JSONResponse
 
+    # Precompute token bytes to avoid per-request encoding overhead
+    token_bytes = token.encode('utf-8')
+
     class TokenAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
             # Skip auth for CORS preflight requests (must have Origin + Access-Control-Request-Method)
@@ -62,7 +65,7 @@ def add_token_auth_middleware(app: 'FastAPI', token: str) -> None:
                 if auth_header.lower().startswith('bearer '):
                     request_token = auth_header[7:].strip()
 
-            if not request_token or not secrets.compare_digest(request_token.encode('utf-8'), token.encode('utf-8')):
+            if not request_token or not secrets.compare_digest(request_token.encode('utf-8'), token_bytes):
                 return JSONResponse(
                     status_code=401,
                     content={'detail': 'Unauthorized'},

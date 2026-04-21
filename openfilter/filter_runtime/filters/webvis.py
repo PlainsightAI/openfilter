@@ -45,7 +45,8 @@ class Webvis(Filter):
             Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
 
         cors_origins:
-            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all).
+            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all,
+            credentials disabled). Set specific origins to enable ``Access-Control-Allow-Credentials``.
             Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
             Also settable via ``FILTER_CORS_ORIGINS`` env var.
     """
