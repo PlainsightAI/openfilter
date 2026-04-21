@@ -2,6 +2,24 @@
 
 OpenFilter Library release notes
 
+## v0.1.30 - 2026-04-21
+
+### Added
+
+- **Token authentication and configurable CORS for HTTP filters**: Webvis and REST filters now support opt-in token-based auth (`auth_token` / `FILTER_AUTH_TOKEN`) and configurable CORS origins (`cors_origins` / `FILTER_CORS_ORIGINS`). Auth accepts `?token=` query params (for `<img>` MJPEG embeds) or `Authorization: Bearer` headers. CORS preflight bypasses auth. Both are fully backwards compatible — unset means no auth and `Access-Control-Allow-Origin: *`.
+
+### Changed
+
+- **Shared security scan workflow**: Replaced standalone Grype security scan with the shared `PlainsightAI/gh-actions-public` reusable workflow.
+- **GitHub Actions bumped to latest versions**: `actions/checkout` v4→v6, `actions/setup-python` v5→v6, `actions/upload-artifact` v4→v7, `actions/download-artifact` v4.1.3→v8, `docker/setup-buildx-action` v3→v4, `docker/login-action` v3→v4, `docker/build-push-action` v5→v6, `dorny/paths-filter` v3→v4, `mukunku/tag-exists-action` v1.6.0→v1.7.0. Resolves Node.js <24 deprecation warnings.
+- **Docker images now include SLSA provenance and SBOM attestations** via `docker/build-push-action` v6 defaults.
+
+### Fixed
+
+- **CVE-2026-25645**: Bumped `requests` from ~=2.32.5 to ~=2.33.0.
+- **GHSA-8rrh-rw8j-w5fx**: Bumped `wheel` from ~=0.45.1 to ~=0.46.2.
+- **GHSA-cxww-7g56-2vh6**: Bumped `actions/download-artifact` from v4.1.3 to v8.
+
 ## v0.1.29 - 2026-04-14
 
 ### Added
