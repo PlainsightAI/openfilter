@@ -44,7 +44,9 @@ class TestRESTCreateApp(unittest.TestCase):
         config.declared_fps = None
         config.auth_token = auth_token
         config.cors_origins = cors_origins
-        return rest.create_app(config)
+        app = rest.create_app(config)
+        app._rest_queue = rest.queue  # expose for test assertions
+        return app
 
     def test_create_app_returns_fastapi(self):
         from fastapi import FastAPI
@@ -119,6 +121,32 @@ class TestRESTCreateApp(unittest.TestCase):
             'Access-Control-Request-Method': 'GET',
         })
         self.assertIn(response.status_code, (200, 204))
+
+
+    def test_auth_credentials_stripped_from_frame_data(self):
+        """Auth token and Authorization header must not leak into frame data."""
+        from fastapi.testclient import TestClient
+        app = self._make_rest_app(auth_token='secret')
+        client = TestClient(app)
+
+        # Send request with both token query param and bearer header
+        response = client.get('/?token=secret&other=keep',
+                              headers={'Authorization': 'Bearer secret', 'X-Custom': 'visible'})
+        self.assertNotEqual(response.status_code, 401)
+
+        # Check the frame data in the queue
+        topic, frame = app._rest_queue.get(timeout=1)
+        http_data = frame.data['http']
+        # Token should be stripped from query_params
+        self.assertNotIn('token', http_data.get('query_params', {}))
+        # Authorization header should be stripped
+        self.assertNotIn('authorization', http_data.get('headers', {}))
+        # Other params/headers should be preserved
+        self.assertEqual(http_data['query_params']['other'], 'keep')
+        self.assertEqual(http_data['headers']['x-custom'], 'visible')
+        # URL should not contain token
+        self.assertNotIn('token=secret', http_data['url'])
+        self.assertIn('other=keep', http_data['url'])
 
 
 class TestRESTConfigEnvVars(unittest.TestCase):
