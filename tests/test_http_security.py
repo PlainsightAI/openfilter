@@ -101,6 +101,20 @@ class TestTokenAuthQueryParam(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
 
+class TestTokenAuthNonASCII(unittest.TestCase):
+    """Non-ASCII tokens must work without raising TypeError."""
+
+    def test_non_ascii_token_accepted(self):
+        client = TestClient(make_app(auth_token='sëcret🔑'))
+        response = client.get('/test?token=sëcret🔑')
+        self.assertEqual(response.status_code, 200)
+
+    def test_non_ascii_token_wrong_returns_401(self):
+        client = TestClient(make_app(auth_token='sëcret🔑'))
+        response = client.get('/test?token=wrong')
+        self.assertEqual(response.status_code, 401)
+
+
 class TestTokenAuthBearerHeader(unittest.TestCase):
     """When auth_token is set, Authorization: Bearer must match."""
 
