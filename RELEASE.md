@@ -19,6 +19,7 @@ OpenFilter Library release notes
 - **CVE-2026-25645**: Bumped `requests` from ~=2.32.5 to ~=2.33.0.
 - **GHSA-8rrh-rw8j-w5fx**: Bumped `wheel` from ~=0.45.1 to ~=0.46.2.
 - **GHSA-cxww-7g56-2vh6**: Bumped `actions/download-artifact` from v4.1.3 to v8.
+- **Docker image build race condition**: Added a `wait-for-pypi` step to the release workflow that polls PyPI until the newly published package is indexed before starting Docker image builds. Previously, some images could fail with `No matching distribution found` if PyPI index propagation hadn't completed.
 
 ## v0.1.29 - 2026-04-14
 
