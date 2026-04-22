@@ -149,6 +149,45 @@ class TestRESTCreateApp(unittest.TestCase):
         self.assertIn('other=keep', http_data['url'])
 
 
+    def test_cookie_and_proxy_auth_stripped_from_frame_data(self):
+        """Cookie and Proxy-Authorization headers must not leak into frame data."""
+        from fastapi.testclient import TestClient
+        app = self._make_rest_app(auth_token='secret')
+        client = TestClient(app)
+
+        response = client.get('/?token=secret',
+                              headers={
+                                  'Cookie': 'session=abc123',
+                                  'Proxy-Authorization': 'Basic creds',
+                                  'X-Keep': 'visible',
+                              })
+        self.assertNotEqual(response.status_code, 401)
+
+        topic, frame = app._rest_queue.get(timeout=1)
+        http_data = frame.data['http']
+        self.assertNotIn('cookie', http_data['headers'])
+        self.assertNotIn('proxy-authorization', http_data['headers'])
+        self.assertEqual(http_data['headers']['x-keep'], 'visible')
+
+    def test_url_encoding_of_special_chars_in_query(self):
+        """Query values with special characters must be properly URL-encoded."""
+        from fastapi.testclient import TestClient
+        app = self._make_rest_app(auth_token='secret')
+        client = TestClient(app)
+
+        response = client.get('/?token=secret&msg=hello+world&tag=a%26b',
+                              headers={})
+        self.assertNotEqual(response.status_code, 401)
+
+        topic, frame = app._rest_queue.get(timeout=1)
+        url = frame.data['http']['url']
+        # URL should not contain the token
+        self.assertNotIn('token=', url)
+        # Remaining params should be present and properly encoded
+        self.assertIn('msg=', url)
+        self.assertIn('tag=', url)
+
+
 class TestRESTConfigEnvVars(unittest.TestCase):
     """Test that REST normalize_config reads config from FILTER_* env vars."""
 

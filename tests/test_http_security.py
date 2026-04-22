@@ -64,6 +64,18 @@ class TestParseCorsOrigins(unittest.TestCase):
         self.assertEqual(parse_cors_origins('*,https://example.com'), ['*'])
         self.assertEqual(parse_cors_origins('https://a.com, *, https://b.com'), ['*'])
 
+    def test_malformed_origin_logs_warning(self):
+        import logging
+        with self.assertLogs('openfilter.filter_runtime.filters.http_security', level='WARNING') as cm:
+            parse_cors_origins('example.com')
+        self.assertTrue(any('malformed' in msg for msg in cm.output))
+
+    def test_trailing_slash_origin_logs_warning(self):
+        import logging
+        with self.assertLogs('openfilter.filter_runtime.filters.http_security', level='WARNING') as cm:
+            parse_cors_origins('https://example.com/')
+        self.assertTrue(any('malformed' in msg for msg in cm.output))
+
 
 class TestNoAuth(unittest.TestCase):
     """When auth_token is not set, requests should pass through."""
