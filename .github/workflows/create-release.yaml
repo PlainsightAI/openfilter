@@ -274,17 +274,18 @@ jobs:
 
       - name: Wait for package availability on PyPI
         env:
+          PACKAGE_NAME: ${{ needs.prepare-pypi-publish.outputs.package_name }}
           VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}
         run: |
           for i in $(seq 1 30); do
-            if pip install --dry-run "openfilter==$VERSION" 2>/dev/null; then
-              echo "✅ openfilter==$VERSION available on PyPI"
+            if pip install --dry-run "$PACKAGE_NAME==$VERSION" 2>/dev/null; then
+              echo "✅ $PACKAGE_NAME==$VERSION available on PyPI"
               exit 0
             fi
-            echo "Attempt $i/30: openfilter==$VERSION not yet indexed, waiting 10s..."
+            echo "Attempt $i/30: $PACKAGE_NAME==$VERSION not yet indexed, waiting 10s..."
             sleep 10
           done
-          echo "❌ Timed out waiting for openfilter==$VERSION on PyPI" >&2
+          echo "❌ Timed out waiting for $PACKAGE_NAME==$VERSION on PyPI" >&2
           exit 1
 
   publish-docker-images:
