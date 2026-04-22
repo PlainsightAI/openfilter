@@ -3,6 +3,7 @@ import os
 from collections import defaultdict
 from queue import Queue, Empty, Full
 from threading import Thread
+from urllib.parse import urlencode
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter, Frame, POLL_TIMEOUT_SEC
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe, adict
@@ -29,6 +30,9 @@ class RESTConfig(FilterConfig):
 
     declared_fps:  float | None
     resource_path: str | None   # Path to a resource directory that is accessible for local file loading.
+
+    auth_token:   str | None    # When set, require ?token= or Authorization: Bearer on all requests
+    cors_origins: str | None    # Comma-separated allowed CORS origins (default: '*')
 
 
 class REST(Filter):
@@ -76,6 +80,16 @@ class REST(Filter):
             If passing images via a filename it will be relative to this path which MUST be provided in order to pass
             images in this manner.
 
+        auth_token:
+            When set, all requests must include ``?token=<value>`` or ``Authorization: Bearer <value>``.
+            Returns 401 if missing or invalid. Also settable via ``FILTER_AUTH_TOKEN`` env var.
+
+        cors_origins:
+            Comma-separated list of allowed CORS origins. Defaults to ``'*'`` (allow all,
+            credentials disabled). Set specific origins to enable ``Access-Control-Allow-Credentials``.
+            Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
+            Also settable via ``FILTER_CORS_ORIGINS`` env var.
+
     Example `sources`:
         Send everything that comes in GET or POST on http://0.0.0.0:8000/ to filter topic 'mytopic':
             'http://0.0.0.0:8000;>mytopic'
@@ -98,7 +112,7 @@ class REST(Filter):
 
     def create_app(self, config: RESTConfig) -> 'FastAPI':
         from fastapi import FastAPI, Request, status, HTTPException
-        from fastapi.middleware.cors import CORSMiddleware
+        from openfilter.filter_runtime.filters.http_security import configure_http_security
         import json
 
         def multi_items_to_dict(items: list[tuple[str, str]]):
@@ -167,12 +181,21 @@ class REST(Filter):
             else:
                 raise HTTPException(status_code=415, detail="Unsupported Media Type")
 
+            # Strip auth/credential headers from frame data so secrets don't leak downstream
+            _strip_headers = {'authorization', 'cookie', 'proxy-authorization'}
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in _strip_headers}
+            query_params = [(k, v) for k, v in request.query_params.multi_items() if k.lower() != 'token']
+            # Rebuild URL without the token query param
+            clean_url = str(request.url).split('?')[0]
+            if query_params:
+                clean_url += '?' + urlencode(query_params)
+
             data = {
                 'http': {
                     'method':       request.method,
-                    'url':          str(request.url),
-                    'headers':      multi_items_to_dict(request.headers.items()),
-                    'query_params': multi_items_to_dict(request.query_params.multi_items()),
+                    'url':          clean_url,
+                    'headers':      multi_items_to_dict(headers.items()),
+                    'query_params': multi_items_to_dict(query_params),
                     'path_params':  request.path_params,
                     'client_host':  request.client.host,
                     'client_port':  request.client.port,
@@ -198,15 +221,9 @@ class REST(Filter):
 
             return frame
 
-        app = FastAPI(title='REST')#, version=version)
+        app = FastAPI(title='REST')
 
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=['*'],
-            allow_credentials=True,
-            allow_methods=['*'],
-            allow_headers=['*'],
-        )
+        configure_http_security(app, auth_token=config.auth_token, cors_origins=config.cors_origins)
 
         app_methods = {'GET': app.get, 'POST': app.post, 'PUT': app.put, 'DELETE': app.delete}
         base_path   = f'/{bt}' if (bt := config.base_path) else ''
@@ -251,6 +268,23 @@ class REST(Filter):
     def normalize_config(cls, config):
         sources = split_commas_maybe(config.get('sources'))  # we do not assume how Filter will normalize sources/outputs in the future
         config  = RESTConfig(super().normalize_config(dict_without(config, 'sources')))
+
+        # Only env-var map params that don't overlap with sources URL parsing.
+        # host/port/base_path come from the sources URL (or explicit endpoints
+        # config) and would be silently overridden by source parsing below.
+        env_mapping = {
+            'declared_fps': float,
+            'resource_path': str,
+            'auth_token': str,
+            'cors_origins': str,
+        }
+        for key, expected_type in env_mapping.items():
+            env_val = os.getenv(f'FILTER_{key.upper()}')
+            if env_val is not None:
+                if expected_type is float:
+                    setattr(config, key, float(env_val.strip()))
+                else:
+                    setattr(config, key, env_val.strip())
 
         if sources is not None:
             config.sources = sources

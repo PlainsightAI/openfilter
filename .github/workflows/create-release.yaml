@@ -262,9 +262,35 @@ jobs:
           echo "🚀 Uploading to PyPI..."
           twine upload dist/*.whl
 
-  publish-docker-images:
+  wait-for-pypi:
     runs-on: ubuntu-latest
     needs: [prepare-pypi-publish, publish-to-pypi]
+    if: needs.prepare-pypi-publish.outputs.already_exists == 'false'
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Wait for package availability on PyPI
+        env:
+          PACKAGE_NAME: ${{ needs.prepare-pypi-publish.outputs.package_name }}
+          VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}
+        run: |
+          for i in $(seq 1 30); do
+            if pip install --dry-run "$PACKAGE_NAME==$VERSION" 2>/dev/null; then
+              echo "✅ $PACKAGE_NAME==$VERSION available on PyPI"
+              exit 0
+            fi
+            echo "Attempt $i/30: $PACKAGE_NAME==$VERSION not yet indexed, waiting 10s..."
+            sleep 10
+          done
+          echo "❌ Timed out waiting for $PACKAGE_NAME==$VERSION on PyPI" >&2
+          exit 1
+
+  publish-docker-images:
+    runs-on: ubuntu-latest
+    needs: [prepare-pypi-publish, publish-to-pypi, wait-for-pypi]
     strategy:
       fail-fast: false
       matrix:
