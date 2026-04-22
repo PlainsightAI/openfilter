@@ -3,6 +3,7 @@ import os
 from collections import defaultdict
 from queue import Queue, Empty, Full
 from threading import Thread
+from urllib.parse import urlencode
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter, Frame, POLL_TIMEOUT_SEC
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe, adict
@@ -181,7 +182,6 @@ class REST(Filter):
                 raise HTTPException(status_code=415, detail="Unsupported Media Type")
 
             # Strip auth/credential headers from frame data so secrets don't leak downstream
-            from urllib.parse import urlencode
             _strip_headers = {'authorization', 'cookie', 'proxy-authorization'}
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _strip_headers}
             query_params = [(k, v) for k, v in request.query_params.multi_items() if k.lower() != 'token']

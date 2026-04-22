@@ -183,9 +183,9 @@ class TestRESTCreateApp(unittest.TestCase):
         url = frame.data['http']['url']
         # URL should not contain the token
         self.assertNotIn('token=', url)
-        # Remaining params should be present and properly encoded
-        self.assertIn('msg=', url)
-        self.assertIn('tag=', url)
+        # Remaining params should be present with properly encoded values
+        self.assertIn('msg=hello+world', url)
+        self.assertIn('tag=a%26b', url)
 
 
 class TestRESTConfigEnvVars(unittest.TestCase):
