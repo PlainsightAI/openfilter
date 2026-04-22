@@ -180,13 +180,15 @@ class REST(Filter):
             else:
                 raise HTTPException(status_code=415, detail="Unsupported Media Type")
 
-            # Strip auth credentials from frame data so tokens don't leak downstream
-            headers = {k: v for k, v in request.headers.items() if k.lower() != 'authorization'}
+            # Strip auth/credential headers from frame data so secrets don't leak downstream
+            from urllib.parse import urlencode
+            _strip_headers = {'authorization', 'cookie', 'proxy-authorization'}
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in _strip_headers}
             query_params = [(k, v) for k, v in request.query_params.multi_items() if k.lower() != 'token']
             # Rebuild URL without the token query param
             clean_url = str(request.url).split('?')[0]
             if query_params:
-                clean_url += '?' + '&'.join(f'{k}={v}' for k, v in query_params)
+                clean_url += '?' + urlencode(query_params)
 
             data = {
                 'http': {
