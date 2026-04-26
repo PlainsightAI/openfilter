@@ -1,0 +1,195 @@
+# cascade-on-tag.yaml
+#
+# Cascades an openfilter release to all eligible downstream consumer repos by
+# opening mechanical bump PRs (no image rebuild).
+#
+# Replaces the pre-DT-145 cloudbuild-cascade.yaml flow. The previous design
+# rebuilt and republished filter images centrally; this design instead writes
+# VERSION + RELEASE.md + dependency-pin updates into each consumer and lets
+# the consumer's own filter-release-{premium,private} workflow publish.
+#
+# Triggered automatically on tag push (v*). Can also be invoked manually via
+# workflow_dispatch with:
+#   - dry_run: plan only — discover eligible consumers, log what would happen,
+#     do not open any PRs. Distinct from DT-146's PR-time `dry-run-publish`
+#     job in the consumer release workflow.
+#   - single_filter: limit cascade to one repo (smoke testing).
+#   - filter_subset: limit cascade to a comma-separated subset.
+#
+# Mechanics for the per-consumer PR (clone, commit-as-bot, supersede stale,
+# push, open PR, gh pr merge --auto) live in the open-mechanical-pr composite
+# action in PlainsightAI/gh-actions-public. This workflow handles discovery
+# + per-consumer bump strategy and then delegates the PR-opening mechanics
+# to that composite action.
+#
+# Failures are surfaced via Slack (if: failure() step at the bottom).
+#
+# DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
+
+name: Cascade on tag
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan only — discover eligible consumers, do not open PRs'
+        type: boolean
+        default: false
+      single_filter:
+        description: 'Cascade to a single repo only (e.g. filter-frame-selector)'
+        type: string
+        default: ''
+      filter_subset:
+        description: 'Cascade to a comma-separated subset (e.g. filter-foo,filter-bar)'
+        type: string
+        default: ''
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 1 — discovery. Walks the PlainsightAI org for filter-* repos,
+  # applies exclude/marker/constraint filters, and emits a JSON array of
+  # eligible repo names that the bump job fans out over via matrix.
+  # ────────────────────────────────────────────────────────────────────────
+  discover:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+      OF_TAG: ${{ github.ref_name }}
+      SINGLE_FILTER: ${{ github.event_name == 'workflow_dispatch' && inputs.single_filter || '' }}
+      FILTER_SUBSET: ${{ github.event_name == 'workflow_dispatch' && inputs.filter_subset || '' }}
+    outputs:
+      of_version: ${{ steps.of_version.outputs.of_version }}
+      consumers: ${{ steps.discover.outputs.consumers }}
+      count: ${{ steps.discover.outputs.count }}
+    steps:
+      - name: Checkout openfilter
+        uses: actions/checkout@v4
+
+      - name: Set up Python (for check_constraint.py)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install constraint-check deps
+        run: pip install --quiet packaging
+
+      - name: Resolve openfilter version
+        id: of_version
+        run: |
+          set -euo pipefail
+          if [[ -n "${OF_TAG:-}" && "${OF_TAG}" == v* ]]; then
+            OF_VERSION="${OF_TAG#v}"
+          else
+            OF_VERSION="$(tr -d '[:space:]' < VERSION | sed 's/^v//')"
+          fi
+          echo "OpenFilter version: ${OF_VERSION}"
+          echo "of_version=${OF_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Discover eligible consumers
+        id: discover
+        env:
+          OF_VERSION: ${{ steps.of_version.outputs.of_version }}
+        run: |
+          set -euo pipefail
+          ./scripts/cascade/discover.sh > /tmp/consumers.txt
+          echo "---- Eligible consumers ----"
+          cat /tmp/consumers.txt || true
+          # Emit as a JSON array for matrix fan-out. An empty list is
+          # represented as [] so the downstream job's `if:` guard can skip
+          # cleanly without spawning a no-op matrix shard.
+          if [[ -s /tmp/consumers.txt ]]; then
+            CONSUMERS_JSON=$(jq -R -s -c 'split("\n") | map(select(length > 0))' < /tmp/consumers.txt)
+          else
+            CONSUMERS_JSON='[]'
+          fi
+          COUNT=$(jq 'length' <<< "${CONSUMERS_JSON}")
+          echo "consumers=${CONSUMERS_JSON}" >> "$GITHUB_OUTPUT"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 2 — per-consumer bump. One matrix shard per eligible consumer.
+  # Each shard:
+  #   1. Checks out openfilter (so bump-strategy.sh + check_constraint.py
+  #      are available).
+  #   2. Runs bump-and-pr.sh, which clones the consumer into a temp dir,
+  #      runs bump-strategy.sh against that clone, and exposes the clone
+  #      path + PR title/body via $GITHUB_OUTPUT.
+  #   3. Invokes open-mechanical-pr@main against the prepared clone.
+  # fail-fast: false — one consumer's failure must not abort siblings;
+  # cascading is best-effort across the org.
+  # ────────────────────────────────────────────────────────────────────────
+  bump:
+    if: needs.discover.outputs.count != '0'
+    needs: [discover]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        consumer: ${{ fromJSON(needs.discover.outputs.consumers) }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+      GH_BOT_USER_PAT: ${{ secrets.GH_BOT_USER_PAT }}
+      OF_VERSION: ${{ needs.discover.outputs.of_version }}
+      OF_SHA: ${{ github.sha }}
+      OF_TAG: ${{ github.ref_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout openfilter
+        uses: actions/checkout@v4
+
+      - name: Prepare consumer clone + bump
+        id: prep
+        run: ./scripts/cascade/bump-and-pr.sh "${{ matrix.consumer }}"
+
+      - name: Open mechanical PR
+        if: env.DRY_RUN != 'true' && steps.prep.outputs.has_changes == 'true'
+        uses: PlainsightAI/gh-actions-public/open-mechanical-pr@main
+        with:
+          repo: PlainsightAI/${{ matrix.consumer }}
+          working_directory: ${{ steps.prep.outputs.clone_dir }}
+          branch_prefix: bump-openfilter-
+          commit_message: ${{ steps.prep.outputs.commit_message }}
+          pr_title: ${{ steps.prep.outputs.pr_title }}
+          pr_body: ${{ steps.prep.outputs.pr_body }}
+          gh_token: ${{ secrets.GH_BOT_USER_PAT }}
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 3 — alerting. In-band Slack ping if any prior job errored.
+  # Block Kit shape lifted from update-api-client.yaml:163-182 and retitled
+  # for the openfilter cascade.
+  # ────────────────────────────────────────────────────────────────────────
+  notify:
+    if: failure()
+    needs: [discover, bump]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Slack on failure
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: ":openfilter: cascade workflow errored"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Cascading openfilter `${{ needs.discover.outputs.of_version }}` to downstream consumers failed. A human needs to investigate before the next release tag, otherwise consumers will not pick up the new version."
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Tag: <https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}|${{ github.ref_name }}>"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Workflow: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.workflow }} – Run #${{ github.run_number }}>"
