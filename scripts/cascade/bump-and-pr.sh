@@ -2,7 +2,7 @@
 # bump-and-pr.sh — Prepare a single consumer's clone for a mechanical
 # openfilter bump PR.
 #
-# Per the DT-145 design (cascade-dispatch-bumps/PROPOSAL.md §"Architecture"):
+# Per the DT-145 design (https://plainsight-ai.atlassian.net/browse/DT-145):
 #   1. Clone the consumer's default branch into a temp dir using
 #      ${GH_BOT_USER_PAT} for HTTPS auth.
 #   2. Run scripts/cascade/bump-strategy.sh against the clone, mutating
@@ -72,11 +72,22 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Cloning PlainsightAI/${REPO} → ${CLONE_DIR}"
-# x-access-token is the standard PAT username for GitHub HTTPS auth; the
-# PAT itself lives in GH_BOT_USER_PAT. Shallow clone — bump strategy only
-# needs the tip of the default branch.
-CLONE_URL="https://x-access-token:${GH_BOT_USER_PAT}@github.com/PlainsightAI/${REPO}.git"
-git clone --depth 1 "${CLONE_URL}" "${CLONE_DIR}" 2>&1 | sed "s|${GH_BOT_USER_PAT}|***|g"
+# Authenticate via GIT_ASKPASS rather than embedding the PAT in the clone
+# URL — that way the PAT never appears in any subprocess argv that an
+# ACTIONS_STEP_DEBUG=true runner would log. x-access-token is the standard
+# PAT username for GitHub HTTPS auth.
+ASKPASS=$(mktemp "${TEMP_BASE}/cascade-askpass.XXXXXX")
+chmod 700 "${ASKPASS}"
+cat > "${ASKPASS}" <<'ASKPASS_SH'
+#!/usr/bin/env bash
+case "$1" in
+  Username*) printf 'x-access-token\n' ;;
+  Password*) printf '%s\n' "${GH_BOT_USER_PAT}" ;;
+esac
+ASKPASS_SH
+GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
+  git clone --depth 1 "https://github.com/PlainsightAI/${REPO}.git" "${CLONE_DIR}"
+rm -f "${ASKPASS}"
 
 echo "Running bump-strategy.sh against ${CLONE_DIR}"
 (
@@ -87,8 +98,14 @@ echo "Running bump-strategy.sh against ${CLONE_DIR}"
 # Detect whether the bump strategy produced any working-tree changes.
 # Idempotent re-runs (consumer already on the new version) yield no diff —
 # in that case we skip the PR step entirely so we don't churn empty PRs.
+#
+# We use `git status --porcelain` rather than `git diff --quiet` because the
+# bump strategy can create a brand-new RELEASE.md when the consumer has
+# none yet; that file is *untracked* and `git diff --quiet` only inspects
+# the index/working-tree of *tracked* files, so it would return clean and
+# silently drop the bump.
 HAS_CHANGES=false
-if (cd "${CLONE_DIR}" && ! git diff --quiet); then
+if (cd "${CLONE_DIR}" && [[ -n "$(git status --porcelain)" ]]); then
   HAS_CHANGES=true
 fi
 echo "has_changes=${HAS_CHANGES}"

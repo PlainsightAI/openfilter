@@ -3,7 +3,7 @@
 # an openfilter bump PR for ${OF_VERSION}.
 #
 # Eligibility rules (port of build-filters.sh:200-211 + new marker / constraint
-# checks per the DT-145 design in cascade-dispatch-bumps/PROPOSAL.md):
+# checks per the DT-145 design — https://plainsight-ai.atlassian.net/browse/DT-145):
 #   1. Repo name matches `filter-*`
 #   2. Not on the static exclude list (templates, retired *-old repos,
 #      pre-templatize stubs that were never rendered)
@@ -61,8 +61,7 @@ ALL_FILTER_REPOS=$(
     --limit 1000 \
     --no-archived \
     --json name \
-    --jq '.[].name' \
-    | grep -E '^filter-' \
+    --jq '.[] | select(.name | startswith("filter-")) | .name' \
     | sort -u
 )
 
@@ -115,32 +114,35 @@ fi
 #
 # fetch_file <repo> <path>
 #   Echoes the file contents to stdout when the file exists at the default
-#   branch tip; returns 1 (silently) on 404. Other errors propagate so
-#   transient API issues fail loudly rather than silently dropping eligible
-#   repos.
+#   branch tip and returns 0; on 404 it returns 1 silently; on any other
+#   error (rate-limit, transient 5xx, network) it surfaces a step-level
+#   `::warning::` so the failure is visible in the Actions UI summary,
+#   then returns 1 — same as 404 — so the per-consumer loop continues.
+#   We rely on `gh api`'s exit code (0 on 2xx, non-zero otherwise) and its
+#   stderr ("HTTP 404: ..." etc.) for status discrimination, rather than
+#   parsing `--include`-merged headers out of stdout.
 fetch_file() {
   local repo="$1"
   local path="$2"
-  local out http_status
-  out=$(gh api \
-    -H "Accept: application/vnd.github.raw" \
-    --include \
-    "/repos/PlainsightAI/${repo}/contents/${path}" 2>/dev/null) || true
-  http_status=$(printf '%s\n' "${out}" | head -1 | awk '{print $2}')
-  case "${http_status}" in
-    200)
-      # Strip headers (everything up to and including the first blank line).
-      printf '%s\n' "${out}" | sed '1,/^[[:space:]]*$/d'
-      return 0
-      ;;
-    404)
-      return 1
-      ;;
-    *)
-      echo "WARNING: unexpected HTTP ${http_status} fetching ${repo}/${path}" >&2
-      return 1
-      ;;
-  esac
+  local body err
+  err=$(mktemp)
+  if body=$(gh api \
+              -H "Accept: application/vnd.github.raw" \
+              "/repos/PlainsightAI/${repo}/contents/${path}" \
+              2>"${err}"); then
+    rm -f "${err}"
+    printf '%s' "${body}"
+    return 0
+  fi
+  # Non-zero exit. Determine whether it's a clean 404 (silent skip) or
+  # something the operator should see.
+  if grep -q 'HTTP 404' "${err}"; then
+    rm -f "${err}"
+    return 1
+  fi
+  echo "::warning::transient error fetching ${repo}/${path}: $(tr '\n' ' ' < "${err}")" >&2
+  rm -f "${err}"
+  return 1
 }
 
 ELIGIBLE_COUNT=0
@@ -157,7 +159,7 @@ while IFS= read -r REPO; do
   fi
 
   # 2. Opt-out marker — universal opt-out primitive per the proposal.
-  if fetch_file "${REPO}" ".github/no-cascade-openfilter" >/dev/null 2>&1; then
+  if fetch_file "${REPO}" ".github/no-cascade-openfilter" >/dev/null; then
     echo "  ${REPO}: skip (.github/no-cascade-openfilter marker present)" >&2
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
     continue
@@ -167,7 +169,7 @@ while IFS= read -r REPO; do
   #    PR mutates pyproject.toml/requirements but does NOT touch this file;
   #    its presence is just a sanity check that the consumer is on the
   #    standard release flow).
-  if ! fetch_file "${REPO}" "VERSION" >/dev/null 2>&1; then
+  if ! fetch_file "${REPO}" "VERSION" >/dev/null; then
     echo "  ${REPO}: skip (no VERSION file)" >&2
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
     continue
@@ -176,7 +178,7 @@ while IFS= read -r REPO; do
   # 4. Constraint compatibility — fetch pyproject.toml, run
   #    check_constraint.py against it. The script reads from CWD, so we
   #    materialise the file in a per-repo tempdir.
-  PYPROJECT=$(fetch_file "${REPO}" "pyproject.toml" 2>/dev/null) || PYPROJECT=""
+  PYPROJECT=$(fetch_file "${REPO}" "pyproject.toml") || PYPROJECT=""
   if [[ -z "${PYPROJECT}" ]]; then
     echo "  ${REPO}: skip (no pyproject.toml)" >&2
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
@@ -185,7 +187,13 @@ while IFS= read -r REPO; do
 
   TMPDIR_REPO=$(mktemp -d)
   printf '%s' "${PYPROJECT}" > "${TMPDIR_REPO}/pyproject.toml"
-  COMPAT=$(cd "${TMPDIR_REPO}" && OF_VERSION="${OF_VERSION}" python3 "${CHECK_CONSTRAINT_PY}" 2>/dev/null || echo "error:python-failed")
+  PY_ERR=$(mktemp)
+  COMPAT=$(cd "${TMPDIR_REPO}" && OF_VERSION="${OF_VERSION}" python3 "${CHECK_CONSTRAINT_PY}" 2>"${PY_ERR}") \
+    || COMPAT="error:python-failed"
+  if [[ "${COMPAT}" == "error:python-failed" && -s "${PY_ERR}" ]]; then
+    echo "::warning::check_constraint.py crashed for ${REPO}: $(tr '\n' ' ' < "${PY_ERR}")" >&2
+  fi
+  rm -f "${PY_ERR}"
   rm -rf "${TMPDIR_REPO}"
 
   case "${COMPAT}" in
