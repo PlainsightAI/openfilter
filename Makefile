@@ -84,7 +84,8 @@ install:  ## Install package with dev dependencies from PyPI
 # ─── Cascade (DT-145) ────────────────────────────────────────────────────
 # Cascade lives in .github/workflows/cascade-on-tag.yaml. The previous Cloud
 # Build cascade (cloudbuild-cascade.yaml + scripts/build-filters.sh) was
-# removed when DT-145 landed — see PROPOSAL.md for the rationale. Local
+# removed when DT-145 landed — see https://plainsight-ai.atlassian.net/browse/DT-145
+# for the rationale. Local
 # smoke-test the discovery half via:
 #
 #   GH_TOKEN=$(gh auth token) OF_VERSION=$(cat VERSION | sed 's/^v//') \

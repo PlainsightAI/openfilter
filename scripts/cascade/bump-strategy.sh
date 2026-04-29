@@ -2,7 +2,7 @@
 # bump-strategy.sh — Apply the openfilter mechanical bump to a consumer
 # repo's working tree. Run from the consumer clone's root (CWD).
 #
-# Per the DT-145 design (cascade-dispatch-bumps/PROPOSAL.md §"Bump strategy"):
+# Per the DT-145 design (https://plainsight-ai.atlassian.net/browse/DT-145):
 #   1. Update the openfilter pin in pyproject.toml ([project.dependencies]
 #      and [project.optional-dependencies.*] groups).
 #   2. Update the openfilter pin in any requirements*.txt files.
@@ -16,75 +16,171 @@
 # Required env:
 #   OF_VERSION  bare semver (e.g. 0.1.28)
 #
+# Required tooling:
+#   python3 with `tomllib` (>= 3.11) and `packaging` (pip install packaging).
+#
 # Idempotent: re-running on a clone that's already on OF_VERSION leaves the
-# working tree unchanged. The caller (bump-and-pr.sh) uses `git diff` to
-# detect that case and skips the PR.
+# working tree unchanged. The caller (bump-and-pr.sh) detects that case via
+# `git status --porcelain` and skips the PR.
 set -euo pipefail
 
 : "${OF_VERSION:?OF_VERSION must be set (bare semver, e.g. 0.1.28)}"
 
+# ─── Shared bump helper (sourced by both python3 invocations) ─────────────
+# We dump a small helper module to a tempdir and add it to PYTHONPATH so the
+# pyproject/requirements rewrites can share the rewrite logic without copying
+# 30 lines of code into two heredocs.
+BUMP_HELPER_DIR=$(mktemp -d)
+trap 'rm -rf "${BUMP_HELPER_DIR}"' EXIT
+cat > "${BUMP_HELPER_DIR}/_bump.py" <<'HELPER'
+"""Shared rewrite primitive for bump-strategy.sh.
+
+`rewrite_requirement(old, of_version)` takes a PEP 508 requirement string
+(e.g. `openfilter[gpu]>=0.1.10,<2 ; python_version<"4"`) and returns the
+same string with each lower-bound clause (`==`, `>=`, `~=`) bumped to
+`of_version`. Upper-bound clauses (`<`, `<=`, `!=`) are preserved verbatim,
+as is the original clause order, surrounding whitespace, and any marker.
+"""
+from __future__ import annotations
+
+from packaging.requirements import Requirement
+from packaging.specifiers import Specifier
+
+
+_BUMPABLE_OPS = ("==", ">=", "~=")
+
+
+def _specifier_span(text: str, req: Requirement) -> tuple[int, int]:
+    """Locate the substring of `text` containing the specifier clauses.
+
+    Format: `<name>[<extras>] <specifier> [; <marker>]`. We skip past the
+    name + optional `[extras]` (matching brackets to handle nested commas)
+    and stop at the marker delimiter ';' or end of string.
+    """
+    i = 0
+    while i < len(text) and text[i].isspace():
+        i += 1
+    i += len(req.name)
+    while i < len(text) and text[i].isspace():
+        i += 1
+    if i < len(text) and text[i] == "[":
+        depth = 1
+        i += 1
+        while i < len(text) and depth > 0:
+            if text[i] == "[":
+                depth += 1
+            elif text[i] == "]":
+                depth -= 1
+            i += 1
+    spec_start = i
+    if ";" in text[spec_start:]:
+        spec_end = spec_start + text[spec_start:].index(";")
+    else:
+        spec_end = len(text)
+    return spec_start, spec_end
+
+
+def rewrite_requirement(old: str, of_version: str) -> str:
+    req = Requirement(old)
+    if not req.specifier:
+        return old
+
+    spec_start, spec_end = _specifier_span(old, req)
+    spec_text = old[spec_start:spec_end]
+
+    # Walk comma-separated clauses, preserving order and per-clause
+    # whitespace. Rewrite only the version of each lower-bound clause.
+    new_clauses: list[str] = []
+    bumped = False
+    for raw in spec_text.split(","):
+        stripped = raw.strip()
+        if not stripped:
+            new_clauses.append(raw)
+            continue
+        s = Specifier(stripped)
+        if s.operator in _BUMPABLE_OPS:
+            leading = raw[: len(raw) - len(raw.lstrip())]
+            trailing = raw[len(raw.rstrip()) :]
+            new_clauses.append(f"{leading}{s.operator}{of_version}{trailing}")
+            bumped = True
+        else:
+            new_clauses.append(raw)
+
+    if not bumped:
+        return old
+
+    return old[:spec_start] + ",".join(new_clauses) + old[spec_end:]
+HELPER
+export PYTHONPATH="${BUMP_HELPER_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+
 # ─── 1. pyproject.toml ────────────────────────────────────────────────────
-# Use Python (tomllib for parse, plain text rewrite for stable formatting —
-# tomli_w would lose comments / ordering). The dependency line shape we
-# rewrite is the PEP 508 form: `openfilter==X.Y.Z`, `openfilter>=X.Y.Z,<2`,
-# `openfilter~=X.Y`, etc. We only swap the version specifier, leaving the
-# operator and any trailing extras/markers intact, so consumers that pinned
-# `openfilter[gpu]>=0.1.10` will become `openfilter[gpu]>=0.1.28` not
-# `openfilter==0.1.28`.
+# Parse with tomllib + packaging.Requirement to identify exactly which
+# openfilter dep strings live in [project.dependencies] and
+# [project.optional-dependencies.*]. We then do a literal text replacement of
+# those exact strings in the source — comments, ordering, and layout are
+# preserved (which would not be true if we round-tripped through tomli_w).
 if [[ -f pyproject.toml ]]; then
   python3 <<'PY'
 import os
-import re
 import sys
+import tomllib
+
+from packaging.requirements import Requirement
+
+from _bump import rewrite_requirement
+
 
 of_version = os.environ["OF_VERSION"]
 path = "pyproject.toml"
+
+with open(path, "rb") as f:
+    data = tomllib.load(f)
+
+project = data.get("project") or {}
+declared: list[str] = []
+for dep in project.get("dependencies") or []:
+    if Requirement(dep).name == "openfilter":
+        declared.append(dep)
+for group in (project.get("optional-dependencies") or {}).values():
+    for dep in group:
+        if Requirement(dep).name == "openfilter":
+            declared.append(dep)
+
+if not declared:
+    print("pyproject.toml: no openfilter dependency line matched", file=sys.stderr)
+    sys.exit(0)
+
 with open(path, "r", encoding="utf-8") as f:
     text = f.read()
 
-# Match a quoted PEP 508 requirement string for openfilter inside a TOML
-# array (i.e. inside [project.dependencies] or an optional-dependencies
-# group). We rewrite ONLY the version specifier (the bit after the operator),
-# preserving extras, the operator itself, and any environment markers.
-#
-# Examples handled:
-#   "openfilter==0.1.27"             → "openfilter==0.1.28"
-#   "openfilter>=0.1.10,<2"          → "openfilter>=0.1.28,<2"
-#   "openfilter[gpu]~=0.1.27"        → "openfilter[gpu]~=0.1.28"
-#   "openfilter ; python_version<4"  → unchanged (no version specifier)
-pattern = re.compile(
-    r'''(["'])
-        (openfilter(?:\[[^\]]+\])?)   # name + optional extras
-        \s*
-        (==|~=|>=|<=|>|<|!=)          # operator
-        \s*
-        ([0-9][^,;"'\s]*)             # version
-        ([^"']*)                      # tail (additional clauses, markers)
-        \1''',
-    re.VERBOSE,
-)
+new_text = text
+total = 0
+for old in dict.fromkeys(declared):
+    new = rewrite_requirement(old, of_version)
+    if new == old:
+        continue
+    for q in ('"', "'"):
+        needle = f"{q}{old}{q}"
+        if needle in new_text:
+            count = new_text.count(needle)
+            new_text = new_text.replace(needle, f"{q}{new}{q}")
+            total += count
 
-def replace(match: "re.Match[str]") -> str:
-    quote, name, op, _old_version, tail = match.groups()
-    return f"{quote}{name}{op}{of_version}{tail}{quote}"
-
-new_text, n = pattern.subn(replace, text)
-if n == 0:
-    # No openfilter pin to update — bump-strategy is a no-op on this file.
-    # Discovery should already have filtered this case out, but be lenient.
-    print("pyproject.toml: no openfilter dependency line matched", file=sys.stderr)
+if total == 0:
+    print(f"pyproject.toml: openfilter already at {of_version}")
 elif new_text != text:
     with open(path, "w", encoding="utf-8") as f:
         f.write(new_text)
-    print(f"pyproject.toml: rewrote {n} openfilter pin(s) → {of_version}")
-else:
-    print(f"pyproject.toml: openfilter already at {of_version}")
+    print(f"pyproject.toml: rewrote {total} openfilter pin(s) → {of_version}")
 PY
 fi
 
 # ─── 2. requirements*.txt ─────────────────────────────────────────────────
-# Same shape rewrite as pyproject, but on plain pip requirements files.
-# Glob non-fatal — many filter repos use only pyproject.
+# Same parser-based approach as pyproject. Each line is fed to
+# packaging.Requirement; if it parses and names openfilter we rewrite it,
+# preserving leading whitespace and any trailing `# comment`. Lines that
+# aren't valid PEP 508 requirements (e.g. `-r other.txt`, VCS URLs,
+# `--index-url ...`) are left untouched.
 shopt -s nullglob
 REQ_FILES=( requirements*.txt )
 shopt -u nullglob
@@ -92,8 +188,12 @@ shopt -u nullglob
 for REQ in "${REQ_FILES[@]}"; do
   python3 - "${REQ}" <<'PY'
 import os
-import re
 import sys
+
+from packaging.requirements import InvalidRequirement, Requirement
+
+from _bump import rewrite_requirement
+
 
 path = sys.argv[1]
 of_version = os.environ["OF_VERSION"]
@@ -101,30 +201,40 @@ of_version = os.environ["OF_VERSION"]
 with open(path, "r", encoding="utf-8") as f:
     lines = f.readlines()
 
-# Match a requirement line for openfilter (start of line, after optional
-# whitespace, before optional `#` comment / env markers). We rewrite the
-# version specifier in place.
-pattern = re.compile(
-    r'''^(\s*)
-        (openfilter(?:\[[^\]]+\])?)
-        \s*
-        (==|~=|>=|<=|>|<|!=)
-        \s*
-        ([0-9][^\s;#]*)
-        (.*)$''',
-    re.VERBOSE,
-)
-
 changed = 0
 for i, line in enumerate(lines):
-    m = pattern.match(line)
-    if not m:
+    stripped = line.rstrip("\n")
+    # Split off a trailing `# comment` so we can re-attach it intact.
+    comment_at = stripped.find("#")
+    if comment_at == -1:
+        body, comment = stripped, ""
+    else:
+        body, comment = stripped[:comment_at], stripped[comment_at:]
+
+    leading_ws_len = len(body) - len(body.lstrip())
+    body_stripped = body.strip()
+    if not body_stripped:
         continue
-    indent, name, op, _old, tail = m.groups()
-    new_line = f"{indent}{name}{op}{of_version}{tail}\n"
-    if new_line != line:
-        lines[i] = new_line
-        changed += 1
+    try:
+        req = Requirement(body_stripped)
+    except InvalidRequirement:
+        continue
+    if req.name != "openfilter":
+        continue
+    new_body_stripped = rewrite_requirement(body_stripped, of_version)
+    if new_body_stripped == body_stripped:
+        continue
+    trailing_ws_len = len(body) - len(body.rstrip()) - leading_ws_len
+    if trailing_ws_len < 0:
+        trailing_ws_len = 0
+    lines[i] = (
+        body[:leading_ws_len]
+        + new_body_stripped
+        + (body[len(body) - trailing_ws_len :] if trailing_ws_len else "")
+        + comment
+        + "\n"
+    )
+    changed += 1
 
 if changed:
     with open(path, "w", encoding="utf-8") as f:
@@ -144,7 +254,6 @@ done
 # top-to-bottom (release notes are usually reverse-chronological).
 python3 <<'PY'
 import os
-import re
 import sys
 
 of_version = os.environ["OF_VERSION"]
@@ -179,7 +288,7 @@ lines = text.splitlines(keepends=True)
 # Locate the first `## ...` header (the topmost release entry).
 release_header_idx = None
 for i, line in enumerate(lines):
-    if re.match(r"^## ", line):
+    if line.startswith("## "):
         release_header_idx = i
         break
 
@@ -204,7 +313,7 @@ if release_header_idx is None:
 # Find the end of the topmost release entry (the next `## ` header or EOF).
 next_release_idx = len(lines)
 for j in range(release_header_idx + 1, len(lines)):
-    if re.match(r"^## ", lines[j]):
+    if lines[j].startswith("## "):
         next_release_idx = j
         break
 
@@ -213,7 +322,7 @@ block = lines[release_header_idx:next_release_idx]
 # Find an existing `### Changed` subsection within the block.
 changed_subsection_idx = None  # index *within* `block`
 for k, line in enumerate(block):
-    if re.match(r"^### Changed\s*$", line):
+    if line.rstrip() == "### Changed":
         changed_subsection_idx = k
         break
 
@@ -224,7 +333,7 @@ if changed_subsection_idx is not None:
     # the existing list rather than being separated by blanks.
     insertion_idx = len(block)
     for m in range(changed_subsection_idx + 1, len(block)):
-        if re.match(r"^### ", block[m]):
+        if block[m].startswith("### "):
             insertion_idx = m
             break
     # Trim trailing blank lines from the slice we'd append into.

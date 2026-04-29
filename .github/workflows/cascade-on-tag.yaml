@@ -84,7 +84,8 @@ jobs:
           if [[ -n "${OF_TAG:-}" && "${OF_TAG}" == v* ]]; then
             OF_VERSION="${OF_TAG#v}"
           else
-            OF_VERSION="$(tr -d '[:space:]' < VERSION | sed 's/^v//')"
+            _V=$(tr -d '[:space:]' < VERSION)
+            OF_VERSION="${_V#v}"
           fi
           echo "OpenFilter version: ${OF_VERSION}"
           echo "of_version=${OF_VERSION}" >> "$GITHUB_OUTPUT"
@@ -143,6 +144,14 @@ jobs:
     steps:
       - name: Checkout openfilter
         uses: actions/checkout@v4
+
+      - name: Set up Python (for bump-strategy.sh)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install bump-strategy deps
+        run: pip install --quiet packaging
 
       - name: Prepare consumer clone + bump
         id: prep
