@@ -8,11 +8,13 @@ import re
 import sys
 import threading
 import time
+import warnings
 from datetime import datetime
 from multiprocessing import synchronize
 from typing import Any, Callable, Literal, List
 
 import numpy as np
+from typing_extensions import deprecated
 
 from .dlcache import is_cached_file, dlcache
 from .frame import Frame
@@ -215,9 +217,46 @@ if STOP_EXIT not in PROP_EXIT_FLAGS:
     )
 
 
+_FILTER_CONFIG_DEPRECATION_MSG = (
+    "openfilter.filter_runtime.filter.FilterConfig is deprecated and will be "
+    "removed in openfilter 1.0. Migrate to "
+    "openfilter.filter_runtime.config.FilterConfigBase — see "
+    "docs/declarative-config.md."
+)
+
+# Suppress the deprecation warning for openfilter's own bundled filter
+# configs. The `@deprecated` decorator (PEP 702) emits via __init_subclass__
+# whenever the class is subclassed; the SDK's own legacy use sites are
+# tracked under FILTER-44x and will migrate alongside the public surface, so
+# until then we silence them at the openfilter callsite by pattern-matching
+# on the subclassing module. This intentionally does NOT silence the warning
+# globally — third-party filters subclassing FilterConfig still get the
+# nudge. We use append=False so this filter wins over any user-installed
+# filter that promotes DeprecationWarnings to errors.
+warnings.filterwarnings(
+    "ignore",
+    message=re.escape(_FILTER_CONFIG_DEPRECATION_MSG),
+    category=DeprecationWarning,
+    module=r"openfilter\.filter_runtime(\..*)?",
+    append=False,
+)
+
+
+@deprecated(_FILTER_CONFIG_DEPRECATION_MSG)
 class FilterConfig(
     adict
 ):  # types are informative to you as in the end they're all just adicts, maybe in future do something with them (defaults, coercion and/or validation)
+    """Legacy ``adict``-based filter config (Tier-3 in declarative-config.md).
+
+    Deprecated since the introduction of
+    :class:`openfilter.filter_runtime.config.FilterConfigBase`. Subclasses
+    continue to work — this remains the Tier-3 backcompat shim — but PEP 702
+    aware tooling marks the symbol struck through, and the runtime emits a
+    ``DeprecationWarning`` once per subclass via the
+    :func:`typing_extensions.deprecated` decorator's ``__init_subclass__``
+    hook.
+    """
+
     id: str
 
     sources: str | list[str] | None
