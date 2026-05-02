@@ -81,47 +81,20 @@ clean:  ## Delete all generated files and directories
 install:  ## Install package with dev dependencies from PyPI
 	pip install -e .[all,dev]
 
-# ─── Cloud Build (manual) ────────────────────────────────────────────────
+# ─── Cascade (DT-145) ────────────────────────────────────────────────────
+# Cascade lives in .github/workflows/cascade-on-tag.yaml. The previous Cloud
+# Build cascade (cloudbuild-cascade.yaml + scripts/build-filters.sh) was
+# removed when DT-145 landed — see https://plainsight-ai.atlassian.net/browse/DT-145
+# for the rationale. Local
+# smoke-test the discovery half via:
+#
+#   GH_TOKEN=$(gh auth token) OF_VERSION=$(cat VERSION | sed 's/^v//') \
+#     ./scripts/cascade/discover.sh
+#
+# To trigger a live cascade, push a tag (or run the workflow manually with
+# `gh workflow run cascade-on-tag.yaml -f single_filter=...`).
 
-.PHONY: cloud.cascade cloud.cascade.live cloud.logs cloud.logs.build
-
-cloud.cascade: ## Submit cascade build (dry-run; SINGLE_FILTER=x or FILTER_SUBSET=x,y)
-	gcloud builds submit \
-		--config=cloudbuild-cascade.yaml \
-		--project=$(GCP_PROJECT) \
-		--service-account=projects/$(GCP_PROJECT)/serviceAccounts/$(CLOUDBUILD_SA) \
-		--substitutions=TAG_NAME=$(VERSION),_DRY_RUN=true,_SINGLE_FILTER=$(SINGLE_FILTER),_FILTER_SUBSET=$(FILTER_SUBSET) \
-		.
-
-cloud.cascade.live: ## Submit cascade build (LIVE — pushes images)
-	@echo "WARNING: This will push images to GAR and DockerHub."
-	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	gcloud builds submit \
-		--config=cloudbuild-cascade.yaml \
-		--project=$(GCP_PROJECT) \
-		--service-account=projects/$(GCP_PROJECT)/serviceAccounts/$(CLOUDBUILD_SA) \
-		--substitutions=TAG_NAME=$(VERSION),_DRY_RUN=false \
-		.
-
-cloud.cascade.local: ## Run cascade build-filters script locally (dry-run)
-	@WORKSPACE=$$(mktemp -d) && \
-	echo "Workspace: $$WORKSPACE" && \
-	mkdir -p "$$WORKSPACE/filters" "$$WORKSPACE/results" && \
-	echo "$(subst v,,$(VERSION))" > "$$WORKSPACE/openfilter_version" && \
-	cp scripts/check_constraint.py "$$WORKSPACE/check_constraint.py" && \
-	GH_TOKEN=$$(gcloud secrets versions access latest --secret=github-token --project=$(GCP_PROJECT) 2>/dev/null || echo '{}') && \
-	env \
-		WORKSPACE="$$WORKSPACE" \
-		DRY_RUN=true \
-		GAR_REGION=us-west1 \
-		GAR_PROJECT=plainsightai-prod \
-		GAR_REPO=oci \
-		DOCKERHUB_ORG=plainsightai \
-		GITHUB_TOKEN="$$GH_TOKEN" \
-		SINGLE_FILTER="$(SINGLE_FILTER)" \
-		FILTER_SUBSET="$(FILTER_SUBSET)" \
-		bash scripts/build-filters.sh; \
-	EXIT=$$?; rm -rf "$$WORKSPACE"; exit $$EXIT
+.PHONY: cloud.logs cloud.logs.build
 
 cloud.logs: ## Tail logs for the most recent Cloud Build
 	gcloud builds log --stream $$(gcloud builds list --project=$(GCP_PROJECT) --limit=1 --format='value(id)')
