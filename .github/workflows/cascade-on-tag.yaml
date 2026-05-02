@@ -15,6 +15,9 @@
 #     job in the consumer release workflow.
 #   - single_filter: limit cascade to one repo (smoke testing).
 #   - filter_subset: limit cascade to a comma-separated subset.
+#   - auto_merge_override: open the PR but skip native auto-merge enablement.
+#     Useful for smoke-testing the open-mechanical-pr mechanics against a
+#     real consumer without actually shipping the bump.
 #
 # Mechanics for the per-consumer PR (clone, commit-as-bot, supersede stale,
 # push, open PR, gh pr merge --auto) live in the open-mechanical-pr composite
@@ -45,6 +48,10 @@ on:
         description: 'Cascade to a comma-separated subset (e.g. filter-foo,filter-bar)'
         type: string
         default: ''
+      auto_merge_override:
+        description: 'Open the PR but skip auto-merge enablement (smoke testing — leaves PR for manual merge)'
+        type: boolean
+        default: false
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────
@@ -141,6 +148,7 @@ jobs:
       OF_SHA: ${{ github.sha }}
       OF_TAG: ${{ github.ref_name }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      AUTO_MERGE: ${{ github.event_name == 'workflow_dispatch' && inputs.auto_merge_override && 'false' || 'true' }}
     steps:
       - name: Checkout openfilter
         uses: actions/checkout@v4
@@ -168,6 +176,7 @@ jobs:
           pr_title: ${{ steps.prep.outputs.pr_title }}
           pr_body: ${{ steps.prep.outputs.pr_body }}
           gh_token: ${{ secrets.GH_BOT_USER_PAT }}
+          auto_merge: ${{ env.AUTO_MERGE }}
 
   # ────────────────────────────────────────────────────────────────────────
   # Phase 3 — alerting. In-band Slack ping if any prior job errored.
