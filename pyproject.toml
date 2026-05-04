@@ -39,8 +39,11 @@ dependencies = [
   "opentelemetry-proto~=1.39.1",
   "opentelemetry-resourcedetector-gcp~=1.11.0a0",
   "opentelemetry-sdk~=1.39.1",
-  "opentelemetry-semantic-conventions~=0.60b1"
+  "opentelemetry-semantic-conventions~=0.60b1",
 
+  "pydantic~=2.9",
+  "pydantic-settings~=2.6",
+  "typing-extensions>=4.6",
 ]
 
 [tool.setuptools.dynamic]
