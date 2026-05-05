@@ -224,9 +224,12 @@ for i, line in enumerate(lines):
     new_body_stripped = rewrite_requirement(body_stripped, of_version)
     if new_body_stripped == body_stripped:
         continue
-    trailing_ws_len = len(body) - len(body.rstrip()) - leading_ws_len
-    if trailing_ws_len < 0:
-        trailing_ws_len = 0
+    # Trailing-whitespace count is the body length minus its right-stripped
+    # length. The earlier formulation subtracted leading_ws_len, which
+    # zeroed it out whenever the body had leading whitespace too — so a
+    # line like `  openfilter>=1.0  # comment` lost its inner trailing
+    # whitespace on rewrite.
+    trailing_ws_len = len(body) - len(body.rstrip())
     lines[i] = (
         body[:leading_ws_len]
         + new_body_stripped

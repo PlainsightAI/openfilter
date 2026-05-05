@@ -32,3 +32,75 @@ jobs:
 
       - name: Run tests
         run: make test-all
+
+  # Path-filtered smoke check for the tag-cascade scripts. Runs on PRs
+  # touching scripts/cascade/** or the cascade workflow, exercising
+  # discover.sh in dry-run mode against a single known consumer
+  # (filter-frame-selector) so script-only changes get CI coverage
+  # without opening real bump PRs. Fails closed if discovery itself
+  # errors; succeeds with no eligible consumers (which can happen if
+  # the consumer's constraint excludes the in-tree VERSION).
+  cascade-pr-checks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Detect cascade-affecting changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Fetch base for diff. checkout@v6 only fetches HEAD by default.
+          git fetch --no-tags --depth=1 origin "${BASE_SHA}" 2>/dev/null || true
+          if git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" \
+              | grep -E '^(scripts/cascade/|\.github/workflows/cascade-on-tag\.yaml$)' > /dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No cascade-related changes; skipping smoke." >&2
+          fi
+
+      - name: Set up Python
+        if: steps.filter.outputs.run == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install constraint-check deps
+        if: steps.filter.outputs.run == 'true'
+        run: pip install --quiet packaging
+
+      - name: Syntax-check cascade shell scripts
+        if: steps.filter.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          for f in scripts/cascade/*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: Discover smoke (single filter)
+        if: steps.filter.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OF_VERSION: 0.0.0-smoke
+          SINGLE_FILTER: filter-frame-selector
+        run: |
+          set -euo pipefail
+          # Discovery may emit zero eligible consumers when the in-tree
+          # OF_VERSION is outside the consumer's declared range; that is a
+          # PASS (the script's own diagnostic exited cleanly). Hard-fail
+          # only on script errors (non-zero exit).
+          ./scripts/cascade/discover.sh > /tmp/consumers.txt || {
+            rc=$?
+            echo "::error::discover.sh exited ${rc}" >&2
+            exit "${rc}"
+          }
+          echo "---- discover.sh smoke output ----"
+          cat /tmp/consumers.txt || true

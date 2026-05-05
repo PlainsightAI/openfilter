@@ -1,0 +1,54 @@
+name: Apply rulesets
+
+# Self-apply branch protection from .github/rulesets/*.json on push to main
+# (or via manual dispatch). The JSON files are the source of truth; this
+# workflow keeps the GitHub-side configuration in sync. Pattern lifted
+# from filter-sam3-detector.
+#
+# When rules change (e.g. removing `cascade-dry-run` from required status
+# checks because the job no longer exists), update main.json and merge —
+# the next push to main reconciles GitHub's ruleset to match.
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/rulesets/**']
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Sync rulesets to repo
+        env:
+          # GH_BOT_USER_PAT (org-level secret) rather than GITHUB_TOKEN:
+          # workflows requesting `administration: write` on the intrinsic
+          # token startup-fail on this repo without surfacing a reason, so
+          # we use the bot PAT whose scope is known-broad at org level.
+          GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(.github/rulesets/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No ruleset files found under .github/rulesets/"
+            exit 0
+          fi
+          for file in "${files[@]}"; do
+            name=$(jq -r .name "$file")
+            echo "::group::Syncing ruleset '$name' from $file"
+            existing_id=$(gh api "/repos/$REPO/rulesets" \
+              --jq ".[] | select(.name == \"$name\") | .id" | head -n1)
+            if [ -n "$existing_id" ]; then
+              echo "Updating existing ruleset #$existing_id"
+              gh api -X PUT "/repos/$REPO/rulesets/$existing_id" --input "$file"
+            else
+              echo "Creating new ruleset"
+              gh api -X POST "/repos/$REPO/rulesets" --input "$file"
+            fi
+            echo "::endgroup::"
+          done
