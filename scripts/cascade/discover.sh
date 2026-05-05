@@ -201,6 +201,10 @@ while IFS= read -r REPO; do
       echo "  ${REPO}: skip (no openfilter dep)" >&2
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       continue ;;
+    none:poetry-format)
+      echo "  ${REPO}: skip (uses Poetry [tool.poetry.dependencies] — cascade reads PEP 621 [project.dependencies] only)" >&2
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue ;;
     ok:*)
       # Eligible.
       ;;
