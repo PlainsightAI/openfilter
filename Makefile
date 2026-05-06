@@ -82,17 +82,15 @@ install:  ## Install package with dev dependencies from PyPI
 	pip install -e .[all,dev]
 
 # ─── Cascade (DT-145) ────────────────────────────────────────────────────
-# Cascade lives in .github/workflows/cascade-on-tag.yaml. The previous Cloud
-# Build cascade (cloudbuild-cascade.yaml + scripts/build-filters.sh) was
-# removed when DT-145 landed — see https://plainsight-ai.atlassian.net/browse/DT-145
-# for the rationale. Local
-# smoke-test the discovery half via:
+# Cascade lives in .github/workflows/cascade-on-tag.yaml. Local smoke-test
+# the discovery half via:
 #
 #   GH_TOKEN=$(gh auth token) OF_VERSION=$(cat VERSION | sed 's/^v//') \
 #     ./scripts/cascade/discover.sh
 #
-# To trigger a live cascade, push a tag (or run the workflow manually with
-# `gh workflow run cascade-on-tag.yaml -f single_filter=...`).
+# Live cascade triggers on tag push, or manually:
+#   gh workflow run cascade-on-tag.yaml -f single_filter=filter-frame-selector
+# DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 
 .PHONY: cloud.logs cloud.logs.build
 

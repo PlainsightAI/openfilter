@@ -1,29 +1,17 @@
 #!/usr/bin/env bash
-# discover.sh — Walk PlainsightAI org for filter-* repos eligible to receive
-# an openfilter bump PR for ${OF_VERSION}.
-#
-# Eligibility rules (port of build-filters.sh:200-211 + new marker / constraint
-# checks per the DT-145 design — https://plainsight-ai.atlassian.net/browse/DT-145):
-#   1. Repo name matches `filter-*`
-#   2. Not on the static exclude list (templates, retired *-old repos,
-#      pre-templatize stubs that were never rendered)
+# discover.sh — List PlainsightAI/filter-* repos eligible to receive an
+# openfilter ${OF_VERSION} bump PR. Eligible repo names → stdout (one per
+# line); skip-reason diagnostics → stderr. Eligibility checks, in body
+# order (cheapest first):
+#   1. `filter-*` name and not on the static exclude list
+#   2. No `.github/no-cascade-openfilter` opt-out marker
 #   3. Has a VERSION file at the default branch tip
-#   4. Does NOT have a `.github/no-cascade-openfilter` marker file
-#   5. Declares an `openfilter` dependency in pyproject.toml AND its
-#      declared version constraint allows ${OF_VERSION}
-#      (delegated to scripts/cascade/check_constraint.py)
-#
-# Eligible repo names (one per line) → stdout.
-# Skip-reason diagnostics → stderr.
-#
-# Required env vars:
-#   OF_VERSION  — bare semver (no `v` prefix) of the new openfilter release
-#   GH_TOKEN    — plainsight-bot PAT with org-level read (set by the workflow
-#                 from secrets.GH_BOT_USER_PAT); consumed implicitly by `gh`
-# Optional env vars:
-#   SINGLE_FILTER  — restrict cascade to a single repo (takes precedence)
-#   FILTER_SUBSET  — comma-separated subset of repos to consider
-#
+#   4. Declares an `openfilter` PEP 621 dependency whose constraint allows
+#      ${OF_VERSION} (delegated to scripts/cascade/check_constraint.py)
+# Required env: OF_VERSION (bare semver), GH_TOKEN (plainsight-bot PAT).
+# Optional env: SINGLE_FILTER (precedes), FILTER_SUBSET (comma-separated).
+# Note: SINGLE_FILTER not-found hard-exits — behavior change vs build-filters.sh,
+# which warned and fell through to all filters.
 # DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 set -euo pipefail
 
@@ -33,13 +21,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_CONSTRAINT_PY="${SCRIPT_DIR}/check_constraint.py"
 
-# ─── Static exclude list ──────────────────────────────────────────────────
-# Lifted verbatim from build-filters.sh:200-211. The three categories are:
-#   - *-old           superseded repos kept for archaeology
-#   - filter-template cookiecutter source, never directly buildable
-#   - the named repos contain unrendered Jinja placeholders (e.g.
-#     {{REPO_NAME_KEBABCASE}}) in their Dockerfile — they were forked from
-#     the template before templatize ran. Re-enable as those repos get fixed.
+# Excludes: *-old (superseded), filter-template (cookiecutter source), and
+# the named repos which still hold unrendered Jinja placeholders from a
+# pre-templatize fork. Re-enable individually as each gets templatized.
 is_excluded() {
   case "$1" in
     *-old|filter-template|\
@@ -51,10 +35,8 @@ is_excluded() {
   return 1
 }
 
-# ─── Phase 1: list candidates ─────────────────────────────────────────────
-# `gh repo list` already paginates and respects PAT scope. --no-archived
-# drops dormant repos automatically. We over-fetch (limit 1000) rather than
-# loop manually — the org has ~150 repos as of this writing.
+# Phase 1: list candidates. --limit 1000 over-fetches against the ~150-repo
+# org so we don't have to paginate manually.
 echo "Discovering filter-* repos in PlainsightAI org…" >&2
 ALL_FILTER_REPOS=$(
   gh repo list PlainsightAI \
@@ -107,20 +89,9 @@ elif [[ -n "${FILTER_SUBSET:-}" ]]; then
   CANDIDATES="${SUBSET_LIST}"
 fi
 
-# ─── Phase 3: per-repo eligibility checks ─────────────────────────────────
-# We use `gh api /repos/.../contents/...` per file rather than cloning each
-# repo. This is N HTTPS requests per consumer (roughly 3) instead of a full
-# clone, which scales much better across ~50 filter-* repos.
-#
-# fetch_file <repo> <path>
-#   Echoes the file contents to stdout when the file exists at the default
-#   branch tip and returns 0; on 404 it returns 1 silently; on any other
-#   error (rate-limit, transient 5xx, network) it surfaces a step-level
-#   `::warning::` so the failure is visible in the Actions UI summary,
-#   then returns 1 — same as 404 — so the per-consumer loop continues.
-#   We rely on `gh api`'s exit code (0 on 2xx, non-zero otherwise) and its
-#   stderr ("HTTP 404: ..." etc.) for status discrimination, rather than
-#   parsing `--include`-merged headers out of stdout.
+# Phase 3: per-repo eligibility checks. fetch_file fetches a file via the
+# Contents API (3 calls per repo, no clone). Returns 0 with body on stdout,
+# 1 silently on 404, 1 with a `::warning::` annotation on transient errors.
 fetch_file() {
   local repo="$1"
   local path="$2"
@@ -134,8 +105,6 @@ fetch_file() {
     printf '%s' "${body}"
     return 0
   fi
-  # Non-zero exit. Determine whether it's a clean 404 (silent skip) or
-  # something the operator should see.
   if grep -q 'HTTP 404' "${err}"; then
     rm -f "${err}"
     return 1
@@ -158,26 +127,21 @@ while IFS= read -r REPO; do
     continue
   fi
 
-  # 2. Opt-out marker — universal opt-out primitive per the proposal.
+  # 2. Opt-out marker.
   if fetch_file "${REPO}" ".github/no-cascade-openfilter" >/dev/null; then
     echo "  ${REPO}: skip (.github/no-cascade-openfilter marker present)" >&2
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
     continue
   fi
 
-  # 3. Must have a VERSION file (consumer's own release version — the bump
-  #    PR mutates pyproject.toml/requirements but does NOT touch this file;
-  #    its presence is just a sanity check that the consumer is on the
-  #    standard release flow).
+  # 3. VERSION sanity check (presence only — the bump PR doesn't touch it).
   if ! fetch_file "${REPO}" "VERSION" >/dev/null; then
     echo "  ${REPO}: skip (no VERSION file)" >&2
     SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
     continue
   fi
 
-  # 4. Constraint compatibility — fetch pyproject.toml, run
-  #    check_constraint.py against it. The script reads from CWD, so we
-  #    materialise the file in a per-repo tempdir.
+  # 4. Constraint compatibility — check_constraint.py reads pyproject from CWD.
   PYPROJECT=$(fetch_file "${REPO}" "pyproject.toml") || PYPROJECT=""
   if [[ -z "${PYPROJECT}" ]]; then
     echo "  ${REPO}: skip (no pyproject.toml)" >&2

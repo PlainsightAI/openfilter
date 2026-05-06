@@ -1,35 +1,12 @@
 #!/usr/bin/env bash
-# bump-and-pr.sh — Prepare a single consumer's clone for a mechanical
-# openfilter bump PR.
-#
-# Per the DT-145 design (https://plainsight-ai.atlassian.net/browse/DT-145):
-#   1. Clone the consumer's default branch into a temp dir using
-#      ${GH_BOT_USER_PAT} for HTTPS auth.
-#   2. Run scripts/cascade/bump-strategy.sh against the clone, mutating
-#      VERSION dependency pins / RELEASE.md in place.
-#   3. Emit the clone path + commit/PR text via $GITHUB_OUTPUT so the
-#      workflow's next step can hand it to the open-mechanical-pr@main
-#      composite action (which performs supersede-stale, push, gh pr create,
-#      and gh pr merge --auto).
-#
-# This script does NOT push or open a PR itself — that's the composite
-# action's job. It also does NOT call the composite action directly (bash
-# can't invoke a composite action mid-script); it just stages the clone.
-#
-# Required env:
-#   GH_BOT_USER_PAT   plainsight-bot PAT for HTTPS clone
-#   OF_VERSION        bare semver (e.g. 0.1.28) of the new openfilter release
-#   GITHUB_OUTPUT     written to by GitHub Actions runners; if unset (e.g.
-#                     local dev) outputs go to stdout in KEY=VALUE form
-# Optional:
-#   OF_TAG            the tag name (e.g. v0.1.28); used in PR body links
-#
-# Args:
-#   $1 — consumer repo name (e.g. filter-frame-selector)
-#
-# Cleans up the temp dir on exit only on failure — on success the clone has
-# to survive past this script so the open-mechanical-pr step can read it.
-# The Actions runner reaps the dir at job-end either way.
+# bump-and-pr.sh — Stage a consumer clone for an openfilter bump PR.
+# Clones via PAT (GIT_ASKPASS), runs bump-strategy.sh against the clone,
+# emits clone_dir / has_changes / commit_message / pr_title / pr_body via
+# $GITHUB_OUTPUT for the open-mechanical-pr composite to consume. Does NOT
+# push or open the PR — that's the composite's job.
+# Args: $1 — consumer repo name (e.g. filter-frame-selector).
+# Required env: GH_BOT_USER_PAT, OF_VERSION. Optional: OF_TAG, GITHUB_OUTPUT.
+# DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 set -euo pipefail
 
 REPO="${1:?usage: bump-and-pr.sh <consumer-repo>}"
@@ -57,14 +34,16 @@ set_output() {
   fi
 }
 
-# Make a fresh tempdir under $RUNNER_TEMP when available so the next workflow
-# step can read it via the matrix shard's filesystem. Outside Actions, fall
-# back to /tmp.
+# CLONE_DIR survives past this script on success so the next workflow step
+# can read it; ASKPASS is always temporary. Both go through the EXIT trap so
+# a `git clone` failure can't leave the PAT-bearing askpass file behind.
 TEMP_BASE="${RUNNER_TEMP:-/tmp}"
 CLONE_DIR=$(mktemp -d "${TEMP_BASE}/cascade-${REPO}.XXXXXX")
+ASKPASS=$(mktemp "${TEMP_BASE}/cascade-askpass.XXXXXX")
 ONFAIL_CLEANUP=true
 
 cleanup() {
+  rm -f "${ASKPASS}"
   if [[ "${ONFAIL_CLEANUP}" == "true" ]]; then
     rm -rf "${CLONE_DIR}"
   fi
@@ -72,11 +51,8 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Cloning PlainsightAI/${REPO} → ${CLONE_DIR}"
-# Authenticate via GIT_ASKPASS rather than embedding the PAT in the clone
-# URL — that way the PAT never appears in any subprocess argv that an
-# ACTIONS_STEP_DEBUG=true runner would log. x-access-token is the standard
-# PAT username for GitHub HTTPS auth.
-ASKPASS=$(mktemp "${TEMP_BASE}/cascade-askpass.XXXXXX")
+# GIT_ASKPASS keeps the PAT out of subprocess argv (where ACTIONS_STEP_DEBUG
+# would otherwise log it). x-access-token is GitHub's PAT username convention.
 chmod 700 "${ASKPASS}"
 cat > "${ASKPASS}" <<'ASKPASS_SH'
 #!/usr/bin/env bash
@@ -87,7 +63,6 @@ esac
 ASKPASS_SH
 GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 \
   git clone --depth 1 "https://github.com/PlainsightAI/${REPO}.git" "${CLONE_DIR}"
-rm -f "${ASKPASS}"
 
 echo "Running bump-strategy.sh against ${CLONE_DIR}"
 (
@@ -95,15 +70,8 @@ echo "Running bump-strategy.sh against ${CLONE_DIR}"
   OF_VERSION="${OF_VERSION}" bash "${BUMP_STRATEGY}"
 )
 
-# Detect whether the bump strategy produced any working-tree changes.
-# Idempotent re-runs (consumer already on the new version) yield no diff —
-# in that case we skip the PR step entirely so we don't churn empty PRs.
-#
-# We use `git status --porcelain` rather than `git diff --quiet` because the
-# bump strategy can create a brand-new RELEASE.md when the consumer has
-# none yet; that file is *untracked* and `git diff --quiet` only inspects
-# the index/working-tree of *tracked* files, so it would return clean and
-# silently drop the bump.
+# `git status --porcelain` (not `git diff --quiet`) so a fresh untracked
+# RELEASE.md created by bump-strategy still counts as a change.
 HAS_CHANGES=false
 if (cd "${CLONE_DIR}" && [[ -n "$(git status --porcelain)" ]]); then
   HAS_CHANGES=true
@@ -118,9 +86,6 @@ if [[ "${HAS_CHANGES}" != "true" ]]; then
   exit 0
 fi
 
-# Build commit and PR text. Kept short and uniform across consumers — these
-# are mechanical bump PRs, not feature PRs. The Jira reference in the body
-# follows the convention from CLAUDE.md (Jira links over PR numbers).
 COMMIT_MSG="chore(deps): bump openfilter to ${OF_VERSION}"
 
 PR_TITLE="${COMMIT_MSG}"

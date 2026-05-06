@@ -33,13 +33,11 @@ jobs:
       - name: Run tests
         run: make test-all
 
-  # Path-filtered smoke check for the tag-cascade scripts. Runs on PRs
-  # touching scripts/cascade/** or the cascade workflow, exercising
-  # discover.sh in dry-run mode against a single known consumer
-  # (filter-frame-selector) so script-only changes get CI coverage
-  # without opening real bump PRs. Fails closed if discovery itself
-  # errors; succeeds with no eligible consumers (which can happen if
-  # the consumer's constraint excludes the in-tree VERSION).
+  # Path-filtered checks for the tag-cascade scripts on PRs touching
+  # scripts/cascade/** or the cascade workflow: shellcheck + actionlint +
+  # a single-filter discover.sh smoke against filter-frame-selector. The
+  # smoke step succeeds with zero eligible consumers (the consumer's
+  # constraint can exclude the in-tree VERSION); only script errors fail.
   cascade-pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -76,14 +74,20 @@ jobs:
         if: steps.filter.outputs.run == 'true'
         run: pip install --quiet packaging
 
-      - name: Syntax-check cascade shell scripts
+      - name: shellcheck cascade scripts
         if: steps.filter.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          for f in scripts/cascade/*.sh; do
-            echo "bash -n $f"
-            bash -n "$f"
-          done
+        uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          SHELLCHECK_OPTS: -e SC2317
+        with:
+          scandir: scripts/cascade
+          severity: warning
+
+      - name: actionlint cascade workflow
+        if: steps.filter.outputs.run == 'true'
+        uses: raven-actions/actionlint@v2
+        with:
+          files: .github/workflows/cascade-on-tag.yaml
 
       - name: Discover smoke (single filter)
         if: steps.filter.outputs.run == 'true'

@@ -1,41 +1,15 @@
-# cascade-on-tag.yaml
-#
-# Cascades an openfilter release to all eligible downstream consumer repos by
-# opening mechanical bump PRs (no image rebuild).
-#
-# Replaces the pre-DT-145 cloudbuild-cascade.yaml flow. The previous design
-# rebuilt and republished filter images centrally; this design instead writes
-# VERSION + RELEASE.md + dependency-pin updates into each consumer and lets
-# the consumer's own filter-release-{premium,private} workflow publish.
-#
-# Triggered automatically on tag push (v*). Can also be invoked manually via
-# workflow_dispatch with:
-#   - dry_run: plan only — discover eligible consumers, log what would happen,
-#     do not open any PRs. Distinct from DT-146's PR-time `dry-run-publish`
-#     job in the consumer release workflow.
-#   - single_filter: limit cascade to one repo (smoke testing).
-#   - filter_subset: limit cascade to a comma-separated subset.
-#   - auto_merge_override: open the PR but skip native auto-merge enablement.
-#     Useful for smoke-testing the open-mechanical-pr mechanics against a
-#     real consumer without actually shipping the bump.
-#
-# Mechanics for the per-consumer PR (clone, commit-as-bot, supersede stale,
-# push, open PR, gh pr merge --auto) live in the open-mechanical-pr composite
-# action in PlainsightAI/gh-actions-public. This workflow handles discovery
-# + per-consumer bump strategy and then delegates the PR-opening mechanics
-# to that composite action.
-#
-# Failures are surfaced via Slack (if: failure() step at the bottom).
-#
+# cascade-on-tag.yaml — On openfilter release tag push, open a mechanical
+# bump PR (pyproject + requirements pin + RELEASE.md `### Changed` entry)
+# in every eligible filter-* consumer. PR-opening mechanics delegated to
+# PlainsightAI/gh-actions-public/open-mechanical-pr; failure paths Slacked
+# via the notify job. Manual workflow_dispatch inputs: dry_run, single_filter,
+# filter_subset, auto_merge_override.
 # DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 
 name: Cascade on tag
 
-# Restrict the tag-push trigger to true release tags (e.g. v0.1.28). Any
-# pre-release tag form (rc/beta/alpha/dev/post suffixes) is excluded so we
-# don't cascade to consumers from a non-release tag push. Workflow tag
-# patterns use shell-style globbing, not regex — `v[0-9]+.[0-9]+.[0-9]+`
-# matches `v0.1.28` but not `v0.1.28-rc1` (per shingonoide R2).
+# Tag pattern uses shell globbing (not regex) — restricts to release semver
+# so pre-release / dev tags (v0.1.28-rc1) don't cascade.
 on:
   push:
     tags:
@@ -59,20 +33,14 @@ on:
         type: boolean
         default: false
 
-# Two concurrent cascade runs for the same openfilter version race against
-# the same consumer set. Composite's supersede + GITHUB_RUN_ID branch suffix
-# soften the race per consumer, but the canonical defense is workflow-level.
-# cancel-in-progress: true — newer cascade preempts older one (latest wins).
+# Latest cascade wins — newer run cancels older for the same ref.
 concurrency:
   group: cascade-on-tag-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────────
-  # Phase 1 — discovery. Walks the PlainsightAI org for filter-* repos,
-  # applies exclude/marker/constraint filters, and emits a JSON array of
-  # eligible repo names that the bump job fans out over via matrix.
-  # ────────────────────────────────────────────────────────────────────────
+  # Phase 1 — discovery. Emits the JSON consumer array the bump job
+  # fans out over.
   discover:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -91,10 +59,10 @@ jobs:
       count: ${{ steps.discover.outputs.count || steps.empty_outputs.outputs.count }}
     steps:
       - name: Checkout openfilter
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python (for check_constraint.py)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -112,15 +80,8 @@ jobs:
             OF_VERSION="${_V#v}"
           fi
           echo "OpenFilter version: ${OF_VERSION}"
-          # Pre-release tags should never cascade. Consumers' constraint
-          # guards (e.g. >=0.1.10,<2) accept pre-release Versions, so the
-          # resulting pin would propagate a pre-release version to
-          # production. Guard here rather than tightening `tags:` so the
-          # workflow_dispatch path with a hand-typed pre-release VERSION
-          # file is also caught. The discover step is gated on
-          # `is_release_semver`; on rejection, the empty-outputs step
-          # below emits an empty consumer list and the bump job's
-          # `count != '0'` gate short-circuits.
+          # Mirror the tags: glob for the workflow_dispatch path (where the
+          # VERSION file might hold a pre-release). No-cascade on rejection.
           if [[ ! "${OF_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "OF_VERSION='${OF_VERSION}' is not a release semver — pre-release/dev tags do not cascade. Exiting cleanly."
             echo "of_version=" >> "$GITHUB_OUTPUT"
@@ -159,18 +120,9 @@ jobs:
           echo "consumers=[]" >> "$GITHUB_OUTPUT"
           echo "count=0" >> "$GITHUB_OUTPUT"
 
-  # ────────────────────────────────────────────────────────────────────────
   # Phase 2 — per-consumer bump. One matrix shard per eligible consumer.
-  # Each shard:
-  #   1. Checks out openfilter (so bump-strategy.sh + check_constraint.py
-  #      are available).
-  #   2. Runs bump-and-pr.sh, which clones the consumer into a temp dir,
-  #      runs bump-strategy.sh against that clone, and exposes the clone
-  #      path + PR title/body via $GITHUB_OUTPUT.
-  #   3. Invokes open-mechanical-pr@main against the prepared clone.
-  # fail-fast: false — one consumer's failure must not abort siblings;
-  # cascading is best-effort across the org.
-  # ────────────────────────────────────────────────────────────────────────
+  # bump-and-pr.sh stages the clone; open-mechanical-pr@main opens the PR.
+  # fail-fast: false so a single consumer doesn't abort siblings.
   bump:
     if: needs.discover.outputs.count != '0'
     needs: [discover]
@@ -193,22 +145,19 @@ jobs:
       AUTO_MERGE: ${{ github.event_name == 'workflow_dispatch' && inputs.auto_merge_override && 'false' || 'true' }}
     steps:
       - name: Checkout openfilter
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python (for bump-strategy.sh)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Install bump-strategy deps
-        run: pip install --quiet packaging
+        run: pip install --quiet packaging tomlkit
 
-      # Defense-in-depth against expression injection per the GitHub
-      # security-hardening guide. `${{ matrix.consumer }}` is org repo
-      # data we control, but routing it through an env var means it
-      # cannot be evaluated as a shell expression even if some future
-      # discovery source becomes attacker-influenceable.
-      # See: https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
+      # `${{ matrix.consumer }}` flows through env: rather than being
+      # interpolated into the shell — defense against expression injection
+      # if discovery ever sources from a less-trusted input.
       - name: Prepare consumer clone + bump
         id: prep
         env:
@@ -228,11 +177,7 @@ jobs:
           gh_token: ${{ secrets.GH_BOT_USER_PAT }}
           auto_merge: ${{ env.AUTO_MERGE }}
 
-  # ────────────────────────────────────────────────────────────────────────
-  # Phase 3 — alerting. In-band Slack ping if any prior job errored.
-  # Block Kit shape lifted from update-api-client.yaml:163-182 and retitled
-  # for the openfilter cascade.
-  # ────────────────────────────────────────────────────────────────────────
+  # Phase 3 — Slack on failure. Block Kit shape from update-api-client.yaml.
   notify:
     if: failure()
     needs: [discover, bump]

@@ -26,9 +26,9 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "cascade" / "bump-strategy.sh"
 
 
-def _packaging_available() -> bool:
+def _module_available(name: str) -> bool:
     try:
-        import packaging  # noqa: F401
+        __import__(name)
     except ImportError:
         return False
     return True
@@ -39,12 +39,12 @@ pytestmark = [
         not SCRIPT.exists(), reason="bump-strategy.sh not present in this checkout"
     ),
     pytest.mark.skipif(
-        not _packaging_available(),
-        reason="packaging module required for bump-strategy.sh's Python heredocs",
+        not _module_available("packaging"),
+        reason="`packaging` required for bump-strategy.sh's Python heredocs",
     ),
     pytest.mark.skipif(
-        sys.version_info < (3, 11),
-        reason="bump-strategy.sh's tomllib usage requires Python >= 3.11",
+        not _module_available("tomlkit"),
+        reason="`tomlkit` required for bump-strategy.sh's pyproject rewriter",
     ),
 ]
 
@@ -145,3 +145,81 @@ def test_requirements_non_openfilter_lines_untouched(tmp_path: Path) -> None:
     assert "-r other.txt\n" in rewritten
     # openfilter bumped with whitespace preserved.
     assert "  openfilter>=1.2.3  # bump me\n" in rewritten
+
+
+def test_release_md_idempotency_does_not_match_substring_versions(tmp_path: Path) -> None:
+    """Regression for the `bullet in text` substring-match bug.
+
+    `0.1.9` would previously match an existing `- Bump openfilter to 0.1.99`
+    line in RELEASE.md, silently suppressing the new entry. The fix anchors
+    the idempotency check to whole rstripped lines.
+    """
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "## v1.0.0\n"
+        "\n"
+        "### Changed\n"
+        "\n"
+        "- Bump openfilter to 0.1.99\n"
+    )
+    _run(tmp_path, of_version="0.1.9")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+    # Both lines must be present — the new 0.1.9 entry was added; the
+    # existing 0.1.99 entry was not removed or treated as a duplicate.
+    assert "- Bump openfilter to 0.1.9\n" in rewritten
+    assert "- Bump openfilter to 0.1.99\n" in rewritten
+
+
+def test_pyproject_preserves_comments_and_layout(tmp_path: Path) -> None:
+    """tomlkit-based pyproject rewriter round-trips comments + layout.
+
+    The earlier text-replacement approach also preserved comments by virtue
+    of literal-replacing parsed dep strings, but only when the dep string
+    appeared verbatim. tomlkit handles arbitrary whitespace inside the
+    array (including a trailing comma + comment after the bumped item)
+    without disturbing surrounding lines.
+    """
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = [\n'
+        '    "numpy>=1.20",\n'
+        '    "openfilter>=0.1.10,<2",  # ML runtime — bump cascaded from openfilter releases\n'
+        ']\n'
+        '\n'
+        '[project.optional-dependencies]\n'
+        'gpu = ["openfilter[gpu]==0.1.27"]\n'
+        '\n'
+        '[tool.something]\n'
+        '# Comment that mentions openfilter==0.1.27 — must NOT be touched\n'
+    )
+
+    _run(tmp_path, of_version="1.2.3")
+
+    rewritten = py.read_text()
+    # Pin updated, upper bound preserved, inline comment preserved.
+    assert '"openfilter>=1.2.3,<2"' in rewritten
+    assert "# ML runtime — bump cascaded from openfilter releases" in rewritten
+    # Optional-dependencies group bumped.
+    assert '"openfilter[gpu]==1.2.3"' in rewritten
+    # Comment in [tool.something] untouched (substring-of-comment was the
+    # main risk with the literal-text-replace approach).
+    assert "openfilter==0.1.27 — must NOT be touched" in rewritten
+
+
+def test_pyproject_idempotent_rerun_is_noop(tmp_path: Path) -> None:
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter==1.2.3"]\n'
+    )
+    _run(tmp_path)
+    first = py.read_text()
+    _run(tmp_path)
+    second = py.read_text()
+    assert first == second
