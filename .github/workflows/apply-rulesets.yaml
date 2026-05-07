@@ -15,6 +15,12 @@ on:
     paths: ['.github/rulesets/**']
   workflow_dispatch:
 
+# Two close pushes to main racing PUTs against the same ruleset ID are
+# idempotent but noisy; serialize without cancelling in-flight applies.
+concurrency:
+  group: apply-rulesets
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest

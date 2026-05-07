@@ -49,33 +49,25 @@ jobs:
 
       - name: Detect cascade-affecting changes
         id: filter
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          # Fetch base for diff. checkout@v6 only fetches HEAD by default.
-          git fetch --no-tags --depth=1 origin "${BASE_SHA}" 2>/dev/null || true
-          if git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" \
-              | grep -E '^(scripts/cascade/|\.github/workflows/cascade-on-tag\.yaml$)' > /dev/null; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No cascade-related changes; skipping smoke." >&2
-          fi
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            cascade:
+              - 'scripts/cascade/**'
+              - '.github/workflows/cascade-on-tag.yaml'
 
       - name: Set up Python
-        if: steps.filter.outputs.run == 'true'
+        if: steps.filter.outputs.cascade == 'true'
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Install constraint-check deps
-        if: steps.filter.outputs.run == 'true'
+        if: steps.filter.outputs.cascade == 'true'
         run: pip install --quiet packaging
 
       - name: shellcheck cascade scripts
-        if: steps.filter.outputs.run == 'true'
+        if: steps.filter.outputs.cascade == 'true'
         uses: ludeeus/action-shellcheck@2.0.0
         env:
           SHELLCHECK_OPTS: -e SC2317
@@ -84,23 +76,25 @@ jobs:
           severity: warning
 
       - name: actionlint cascade workflow
-        if: steps.filter.outputs.run == 'true'
+        if: steps.filter.outputs.cascade == 'true'
         uses: raven-actions/actionlint@v2
         with:
           files: .github/workflows/cascade-on-tag.yaml
 
       - name: Discover smoke (single filter)
-        if: steps.filter.outputs.run == 'true'
+        if: steps.filter.outputs.cascade == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OF_VERSION: 0.0.0-smoke
+          # Valid PEP 440 outside any plausible consumer pin so the constraint
+          # comparison path actually runs (0.0.0-smoke is InvalidVersion and
+          # short-circuits to error: in check_constraint.py).
+          OF_VERSION: '99.99.99'
           SINGLE_FILTER: filter-frame-selector
         run: |
           set -euo pipefail
-          # Discovery may emit zero eligible consumers when the in-tree
-          # OF_VERSION is outside the consumer's declared range; that is a
-          # PASS (the script's own diagnostic exited cleanly). Hard-fail
-          # only on script errors (non-zero exit).
+          # Zero eligible consumers when the in-tree OF_VERSION is outside
+          # any consumer's declared range is a PASS; only hard-fail on
+          # script errors (non-zero exit).
           ./scripts/cascade/discover.sh > /tmp/consumers.txt || {
             rc=$?
             echo "::error::discover.sh exited ${rc}" >&2
