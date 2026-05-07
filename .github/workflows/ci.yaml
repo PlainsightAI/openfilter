@@ -84,7 +84,14 @@ jobs:
       - name: Discover smoke (single filter)
         if: steps.filter.outputs.cascade == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_BOT_USER_PAT can see private filter-* repos (the org has ~50;
+          # GITHUB_TOKEN only sees the ~13 public ones, which doesn't include
+          # filter-frame-selector). Falls back to GITHUB_TOKEN on fork PRs
+          # where the bot secret isn't exposed — the smoke will hard-exit on
+          # SINGLE_FILTER not-found in that case, which is the documented
+          # cascade behavior; a fork PR touching the cascade scripts is
+          # rare enough to investigate manually.
+          GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT || secrets.GITHUB_TOKEN }}
           # Valid PEP 440 outside any plausible consumer pin so the constraint
           # comparison path actually runs (0.0.0-smoke is InvalidVersion and
           # short-circuits to error: in check_constraint.py).
