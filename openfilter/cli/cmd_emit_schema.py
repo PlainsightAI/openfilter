@@ -69,13 +69,26 @@ def _resolve_class(spec: str, base: type) -> type:
             f"{spec!r}: no {base.__name__} subclass declared in {module_name}. "
             f"Pass module:ClassName to disambiguate or check that the filter is migrated."
         )
-    if len(candidates) > 1:
-        names = ", ".join(c.__name__ for c in candidates)
-        raise SystemExit(
-            f"{spec!r}: multiple {base.__name__} subclasses found ({names}). "
-            f"Pass module:ClassName to disambiguate."
-        )
-    return candidates[0]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Filter authors commonly co-locate a top-level FilterOutputSchema
+    # subclass with one or more bespoke nested helpers in the same file. The
+    # top-level one anchors a frame.data path (non-None __frame_data_key__);
+    # helpers leave it None. When exactly one candidate is anchored, prefer it.
+    if base is FilterOutputSchema:
+        anchored = [
+            c for c in candidates
+            if getattr(c, "__frame_data_key__", None) is not None
+        ]
+        if len(anchored) == 1:
+            return anchored[0]
+
+    names = ", ".join(c.__name__ for c in candidates)
+    raise SystemExit(
+        f"{spec!r}: multiple {base.__name__} subclasses found ({names}). "
+        f"Pass module:ClassName to disambiguate."
+    )
 
 
 def cmd_emit_schema(args: list[str]) -> None:

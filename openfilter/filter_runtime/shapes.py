@@ -9,7 +9,7 @@ reference under FILTER-444; OCR quad-exposure is one such follow-up).
 
 Shapes are also `FilterOutputSchema` subclasses so they carry a stable
 ``$id`` and gain ``emit_schema()`` for standalone schema retrieval. Catalog
-shapes leave ``__frame_data_key__`` empty — they are nested types, not
+shapes leave ``__frame_data_key__`` unset — they are nested types, not
 ``frame.data`` declarations.
 
 Coordinate conventions are per-shape, declared explicitly in each class
@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import Field, model_validator
 
 from .output import FilterOutputSchema
 
@@ -65,18 +65,29 @@ class BoundingBox(FilterOutputSchema):
     """Axis-aligned box in **pixel** coordinates, ``xyxy`` ordering.
 
     ``(x1, y1)`` is the top-left corner; ``(x2, y2)`` is the bottom-right.
-    Pixel-space because the production detectors (``filter-sam3-detector``,
-    ``filter-protege-model``) emit pixel xyxy. Detectors that emit normalized
-    or ``cxcywh`` declare a bespoke ``FilterOutputSchema`` instead.
+    Ordering is enforced (``x2 >= x1``, ``y2 >= y1``); zero-area boxes are
+    permitted (degenerate detections from production NNs do happen) but
+    inverted ones are not. Pixel-space because the production detectors
+    (``filter-sam3-detector``, ``filter-protege-model``) emit pixel xyxy.
+    Detectors that emit normalized or ``cxcywh`` declare a bespoke
+    ``FilterOutputSchema`` instead.
     """
 
     __schema_id__: ClassVar[str] = _shape_id("bounding-box")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     x1: float = Field(description="Left edge, pixel coordinates.")
     y1: float = Field(description="Top edge, pixel coordinates.")
     x2: float = Field(description="Right edge, pixel coordinates.")
     y2: float = Field(description="Bottom edge, pixel coordinates.")
+
+    @model_validator(mode="after")
+    def _validate_xyxy_ordering(self) -> "BoundingBox":
+        if self.x2 < self.x1 or self.y2 < self.y1:
+            raise ValueError(
+                f"BoundingBox xyxy must be ordered (x2 >= x1, y2 >= y1); "
+                f"got x1={self.x1}, y1={self.y1}, x2={self.x2}, y2={self.y2}"
+            )
+        return self
 
 
 class Polygon(FilterOutputSchema):
@@ -89,7 +100,6 @@ class Polygon(FilterOutputSchema):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("polygon")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     points: list[tuple[float, float]] = Field(
         description="Polygon vertices in pixel coordinates, ``[(x, y), ...]``.",
@@ -107,7 +117,6 @@ class Mask(FilterOutputSchema):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("mask")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     polygons: list[Polygon] = Field(
         description="Polygons composing the mask region.",
@@ -126,13 +135,13 @@ class Keypoint(FilterOutputSchema):
     Normalized because the production pose filter
     (``filter-pose-estimation``) emits 0–1 across both backends (MediaPipe
     and RTMPose). ``z`` is the optional depth/3-D channel (MediaPipe emits
-    it; RTMPose sets ``0``). ``visibility`` is the optional MediaPipe
-    visibility-presence product; pose backends without it leave it unset.
-    ``confidence`` is per-keypoint, mandatory.
+    it, range backend-defined and intentionally unbounded; RTMPose sets
+    ``0``). ``visibility`` is the optional MediaPipe visibility-presence
+    product; pose backends without it leave it unset. ``confidence`` is
+    per-keypoint, mandatory.
     """
 
     __schema_id__: ClassVar[str] = _shape_id("keypoint")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     x: float = Field(description="Normalized x in [0, 1].", ge=0.0, le=1.0)
     y: float = Field(description="Normalized y in [0, 1].", ge=0.0, le=1.0)
@@ -143,7 +152,10 @@ class Keypoint(FilterOutputSchema):
     )
     z: float | None = Field(
         default=None,
-        description="Optional depth/3-D channel (MediaPipe). RTMPose sets 0.",
+        description=(
+            "Optional depth/3-D channel (MediaPipe). Range backend-defined "
+            "(intentionally unbounded). RTMPose sets 0."
+        ),
     )
     visibility: float | None = Field(
         default=None,
@@ -169,7 +181,6 @@ class Detection(FilterOutputSchema):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("detection")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     bbox: BoundingBox
     score: float = Field(
@@ -192,7 +203,6 @@ class DetectionSet(FilterOutputSchema):
     """A frame's detections."""
 
     __schema_id__: ClassVar[str] = _shape_id("detection-set")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     items: list[Detection] = Field(default_factory=list)
 
@@ -210,7 +220,6 @@ class Track(Detection):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("track")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     track_id: int = Field(description="Stable cross-frame track identifier.")
     age: int | None = Field(
@@ -228,7 +237,6 @@ class TrackSet(FilterOutputSchema):
     """A frame's tracks."""
 
     __schema_id__: ClassVar[str] = _shape_id("track-set")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     items: list[Track] = Field(default_factory=list)
 
@@ -243,12 +251,13 @@ class Pose(FilterOutputSchema):
     (use a tracker for cross-frame identity). ``confidence`` is the
     aggregated person-level score (mean of keypoint confidences in the
     production pose filter). ``skeleton`` names the keypoint convention so
-    consumers can interpret keypoint order; ``coco-17`` is the default
-    matching ``filter-pose-estimation``'s normalized output.
+    consumers can interpret keypoint order; ``coco-17`` is the convention
+    matching ``filter-pose-estimation``'s normalized output. When
+    ``skeleton == "coco-17"`` the keypoint arity is enforced (17 entries) so
+    consumers can rely on the index order.
     """
 
     __schema_id__: ClassVar[str] = _shape_id("pose")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     id: int = Field(
         description="Per-frame person index.",
@@ -265,12 +274,20 @@ class Pose(FilterOutputSchema):
         description="Keypoint-order convention; consumers infer edges from this.",
     )
 
+    @model_validator(mode="after")
+    def _validate_skeleton_arity(self) -> "Pose":
+        if self.skeleton == "coco-17" and len(self.keypoints) != 17:
+            raise ValueError(
+                f"Pose.skeleton='coco-17' requires 17 keypoints, "
+                f"got {len(self.keypoints)}"
+            )
+        return self
+
 
 class PoseSet(FilterOutputSchema):
     """A frame's poses."""
 
     __schema_id__: ClassVar[str] = _shape_id("pose-set")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     items: list[Pose] = Field(default_factory=list)
 
@@ -284,7 +301,6 @@ class KeypointSet(FilterOutputSchema):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("keypoint-set")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     items: list[Keypoint] = Field(default_factory=list)
 
@@ -305,7 +321,6 @@ class OCRSpan(FilterOutputSchema):
     """
 
     __schema_id__: ClassVar[str] = _shape_id("ocr-span")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     text: str = Field(description="Recognized text.")
     confidence: float = Field(
@@ -334,7 +349,6 @@ class OCRSpanSet(FilterOutputSchema):
     """A frame's OCR spans, in implicit reading order."""
 
     __schema_id__: ClassVar[str] = _shape_id("ocr-span-set")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     items: list[OCRSpan] = Field(default_factory=list)
 
@@ -346,13 +360,13 @@ class ClassificationResult(FilterOutputSchema):
     """Whole-frame classification output.
 
     Parallel-arrays shape matching the production ``filter-protege-model``
-    convention. ``multilabel`` distinguishes single-label (softmax, one
+    convention: ``classes[i]`` pairs with ``confidences[i]``, equal length
+    enforced. ``multilabel`` distinguishes single-label (softmax, one
     canonical class) from multi-label (sigmoid, threshold per class) so
     consumers know whether to render top-1 or top-k.
     """
 
     __schema_id__: ClassVar[str] = _shape_id("classification-result")
-    model_config = ConfigDict(json_schema_extra={"$id": __schema_id__})
 
     classes: list[str] = Field(default_factory=list)
     confidences: list[float] = Field(default_factory=list)
@@ -360,3 +374,14 @@ class ClassificationResult(FilterOutputSchema):
         default=False,
         description="True for sigmoid multi-label; False for softmax single-label.",
     )
+
+    @model_validator(mode="after")
+    def _validate_parallel_arrays(self) -> "ClassificationResult":
+        if len(self.classes) != len(self.confidences):
+            raise ValueError(
+                f"ClassificationResult.classes and confidences must be "
+                f"parallel arrays of equal length; got "
+                f"{len(self.classes)} classes and "
+                f"{len(self.confidences)} confidences"
+            )
+        return self
