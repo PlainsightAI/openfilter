@@ -35,7 +35,7 @@ jobs:
 
   # Path-filtered checks for the tag-cascade scripts on PRs touching
   # scripts/cascade/** or the cascade workflow: shellcheck + actionlint +
-  # a single-filter discover.sh smoke against filter-frame-selector. The
+  # a single-filter discover.sh smoke against filter-frame-dedup. The
   # smoke step succeeds with zero eligible consumers (the consumer's
   # constraint can exclude the in-tree VERSION); only script errors fail.
   cascade-pr-checks:
@@ -86,7 +86,7 @@ jobs:
         env:
           # GH_BOT_USER_PAT can see private filter-* repos (the org has ~50;
           # GITHUB_TOKEN only sees the ~13 public ones, which doesn't include
-          # filter-frame-selector). Falls back to GITHUB_TOKEN on fork PRs
+          # filter-frame-dedup). Falls back to GITHUB_TOKEN on fork PRs
           # where the bot secret isn't exposed — the smoke will hard-exit on
           # SINGLE_FILTER not-found in that case, which is the documented
           # cascade behavior; a fork PR touching the cascade scripts is
@@ -96,7 +96,7 @@ jobs:
           # comparison path actually runs (0.0.0-smoke is InvalidVersion and
           # short-circuits to error: in check_constraint.py).
           OF_VERSION: '99.99.99'
-          SINGLE_FILTER: filter-frame-selector
+          SINGLE_FILTER: filter-frame-dedup
         run: |
           set -euo pipefail
           # Zero eligible consumers when the in-tree OF_VERSION is outside

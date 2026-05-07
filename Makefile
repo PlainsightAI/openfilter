@@ -89,7 +89,7 @@ install:  ## Install package with dev dependencies from PyPI
 #     ./scripts/cascade/discover.sh
 #
 # Live cascade triggers on tag push, or manually:
-#   gh workflow run cascade-on-tag.yaml -f single_filter=filter-frame-selector
+#   gh workflow run cascade-on-tag.yaml -f single_filter=filter-frame-dedup
 # DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 
 .PHONY: cloud.logs cloud.logs.build

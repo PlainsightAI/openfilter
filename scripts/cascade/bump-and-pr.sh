@@ -4,7 +4,7 @@
 # emits clone_dir / has_changes / commit_message / pr_title / pr_body via
 # $GITHUB_OUTPUT for the open-mechanical-pr composite to consume. Does NOT
 # push or open the PR — that's the composite's job.
-# Args: $1 — consumer repo name (e.g. filter-frame-selector).
+# Args: $1 — consumer repo name (e.g. filter-frame-dedup).
 # Required env: GH_BOT_USER_PAT, OF_VERSION. Optional: OF_TAG, GITHUB_OUTPUT.
 # DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 set -euo pipefail

@@ -21,7 +21,7 @@ on:
         type: boolean
         default: false
       single_filter:
-        description: 'Cascade to a single repo only (e.g. filter-frame-selector)'
+        description: 'Cascade to a single repo only (e.g. filter-frame-dedup)'
         type: string
         default: ''
       filter_subset:
