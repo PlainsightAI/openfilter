@@ -2,6 +2,18 @@
 
 OpenFilter Library release notes
 
+## v0.2.0 - 2026-05-08
+
+### Added
+
+- **Typed `FilterConfigBase` with `emit_schema()` ([FILTER-441](https://plainsight-ai.atlassian.net/browse/FILTER-441))**: New `openfilter.filter_runtime.FilterConfigBase` lets filters declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. Includes `Managed` / `Resolve` helpers for marking fields as orchestrator-controlled or platform-resolved, plus `MANAGED_KEY` / `RESOLVE_KEY` / `PREFLIGHT_KEY` extensions stamped onto the emitted schema. Fully opt-in — existing `dict`-based `FilterConfig` continues to work unchanged. (#86)
+- **`openfilter emit-schema` CLI ([FILTER-442](https://plainsight-ai.atlassian.net/browse/FILTER-442))**: New CLI subcommand writes a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts an explicit `module:Class` qualifier. Default `--kind config` emits a `FilterConfigBase` schema; `--kind output` emits a `FilterOutputSchema` (FILTER-444). `--include-managed` surfaces orchestrator-controlled fields for platform inspection; default is operator-facing surface only. (#87)
+- **`FilterOutputSchema` + `frame.data` shape catalog ([FILTER-444](https://plainsight-ai.atlassian.net/browse/FILTER-444))**: New `openfilter.filter_runtime.FilterOutputSchema` lets filters declare what they place on `frame.data` as a build-time JSON Schema. The catalog at `openfilter.filter_runtime.shapes` ships canonical shapes — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference catalog shapes via `$ref` instead of negotiating dialects out-of-band. Coordinate conventions (pixel-space for bbox/polygon/mask; normalized `[0, 1]` for keypoints) are documented per shape with the production filter that motivated each choice. Catalog shapes carry runtime-only invariants enforced by pydantic validators: `BoundingBox` xyxy ordering (zero-area allowed, inverted rejected), `ClassificationResult` parallel-array length equality, and `Pose` 17-keypoint arity when `skeleton="coco-17"`. The whole FILTER-444 surface is re-exported from `openfilter.filter_runtime` so `from openfilter.filter_runtime import FilterOutputSchema, Detection` works the same way the FILTER-441 import idiom does. (#88)
+
+### Fixed
+
+- **Silent `$id` inheritance on `FilterOutputSchema` subclasses ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452))**: A subclass of any `$id`-bearing `FilterOutputSchema` (catalog shape or filter-author output) that did not explicitly override `__schema_id__` silently inherited the parent's `$id` on the wire, causing two distinct classes to claim the same JSON Schema identity for `$ref` resolution. `__init_subclass__` now refuses to construct such subclasses at class-definition time; authors must override `__schema_id__` with their own URI or set it to `None` as an explicit opt-out. (#88)
+
 ## v0.1.30 - 2026-04-21
 
 ### Added
