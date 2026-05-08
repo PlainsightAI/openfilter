@@ -61,24 +61,6 @@ class FilterOutputSchema(BaseModel):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
-        if "__schema_id__" in cls.__dict__:
-            schema_id = cls.__dict__["__schema_id__"]
-            if schema_id is not None:
-                if not isinstance(schema_id, str) or not schema_id:
-                    raise TypeError(
-                        f"{cls.__name__}.__schema_id__ must be a non-empty "
-                        f"str URI or None, got {schema_id!r}"
-                    )
-                # Pydantic does not propagate the top-level ``$id`` into
-                # ``$defs[<Name>]`` when this class is referenced from another
-                # schema; stamping it via ``json_schema_extra`` does. Use
-                # ``setdefault`` so an explicit class-level override wins.
-                existing = cls.model_config.get("json_schema_extra") or {}
-                if isinstance(existing, dict):
-                    extra = dict(existing)
-                    extra.setdefault("$id", schema_id)
-                    cls.model_config["json_schema_extra"] = extra
-
         if "__frame_data_key__" in cls.__dict__:
             fdk = cls.__dict__["__frame_data_key__"]
             if fdk is not None and not isinstance(fdk, str):
@@ -86,6 +68,54 @@ class FilterOutputSchema(BaseModel):
                     f"{cls.__name__}.__frame_data_key__ must be str or None, "
                     f"got {fdk!r}"
                 )
+
+        if "__schema_id__" in cls.__dict__:
+            schema_id = cls.__dict__["__schema_id__"]
+            if schema_id is None:
+                # Explicit opt-out — scrub any inherited ``$id`` from
+                # ``json_schema_extra`` so this subclass doesn't claim the
+                # parent's identity in ``$defs``.
+                existing = cls.model_config.get("json_schema_extra") or {}
+                if isinstance(existing, dict) and "$id" in existing:
+                    cls.model_config["json_schema_extra"] = {
+                        k: v for k, v in existing.items() if k != "$id"
+                    }
+                return
+            if not isinstance(schema_id, str) or not schema_id:
+                raise TypeError(
+                    f"{cls.__name__}.__schema_id__ must be a non-empty "
+                    f"str URI or None, got {schema_id!r}"
+                )
+            # Pydantic does not propagate the top-level ``$id`` into
+            # ``$defs[<Name>]`` when this class is referenced from another
+            # schema; stamping it via ``json_schema_extra`` does. Use direct
+            # assignment so a parent's inherited ``$id`` (which pydantic
+            # copies via ``model_config``) does not shadow this class's id.
+            existing = cls.model_config.get("json_schema_extra") or {}
+            if isinstance(existing, dict):
+                extra = dict(existing)
+                extra["$id"] = schema_id
+                cls.model_config["json_schema_extra"] = extra
+            return
+
+        # Subclass did not declare ``__schema_id__``. If it inherits an
+        # ``$id``-bearing ``model_config`` from a parent (e.g.
+        # ``class MyDetection(Detection): ...``), refuse at class-construction
+        # time — JSON Schema ``$id`` is a stable identity for ``$ref``
+        # resolution; two distinct classes claiming the same id collides on
+        # the wire (FILTER-452). Authors who want to inherit on purpose set
+        # ``__schema_id__ = None`` to opt out.
+        inherited = cls.model_config.get("json_schema_extra") or {}
+        if isinstance(inherited, dict) and "$id" in inherited:
+            raise TypeError(
+                f"{cls.__name__} would inherit "
+                f"__schema_id__={inherited['$id']!r} from a parent "
+                f"FilterOutputSchema. JSON Schema $id is a stable identity "
+                f"for $ref resolution; two distinct classes claiming the "
+                f"same $id collides on the wire. Either override "
+                f"__schema_id__ with this class's own URI, or set "
+                f"__schema_id__ = None to explicitly opt out of $id stamping."
+            )
 
     @classmethod
     def emit_schema(cls) -> dict[str, Any]:

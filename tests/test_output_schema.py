@@ -72,21 +72,65 @@ def test_init_subclass_auto_stamps_id_into_model_config() -> None:
     assert extra["$id"] == "https://example.com/auto/v1"
 
 
-def test_init_subclass_explicit_model_config_wins() -> None:
-    """If the subclass sets json_schema_extra['$id'] explicitly, the
-    auto-stamp must not clobber it (setdefault semantics)."""
+def test_schema_id_wins_over_inherited_model_config() -> None:
+    """``__schema_id__`` is the canonical declaration site. If a class also
+    sets ``model_config.json_schema_extra['$id']`` explicitly (or inherits a
+    parent's), ``__schema_id__`` overrides — otherwise an inherited parent
+    id would silently shadow the subclass's id (FILTER-452)."""
 
-    class ExplicitOverride(FilterOutputSchema):
-        __schema_id__: ClassVar[str] = "https://example.com/from-class-var/v1"
+    class ChildOverride(FilterOutputSchema):
+        __schema_id__: ClassVar[str] = "https://example.com/child/v1"
         model_config = ConfigDict(
-            json_schema_extra={"$id": "https://example.com/explicit/v1"}
+            json_schema_extra={"$id": "https://example.com/stale/v1"}
         )
 
         thing: int
 
-    extra = ExplicitOverride.model_config.get("json_schema_extra")
+    extra = ChildOverride.model_config.get("json_schema_extra")
     assert isinstance(extra, dict)
-    assert extra["$id"] == "https://example.com/explicit/v1"
+    assert extra["$id"] == "https://example.com/child/v1"
+
+
+def test_subclass_without_schema_id_override_raises() -> None:
+    """A subclass of a ``$id``-bearing FilterOutputSchema must declare its
+    own ``__schema_id__`` (or set it to ``None`` to opt out). Inheriting
+    silently would make two distinct classes claim the same JSON Schema
+    ``$id`` — collision on the wire (FILTER-452)."""
+
+    with pytest.raises(TypeError, match="inherit __schema_id__"):
+
+        class _BadInherit(Detection):
+            extra_field: int = 0
+
+
+def test_subclass_with_schema_id_none_opts_out() -> None:
+    """``__schema_id__ = None`` is the explicit opt-out — the subclass
+    accepts the inheritance and emits no ``$id``."""
+
+    class _OptOut(Detection):
+        __schema_id__: ClassVar[None] = None  # type: ignore[assignment]
+        extra_field: int = 0
+
+    extra = _OptOut.model_config.get("json_schema_extra") or {}
+    assert "$id" not in extra
+    schema = _OptOut.emit_schema()
+    assert "$id" not in schema
+
+
+def test_subclass_with_explicit_schema_id_overrides_parent() -> None:
+    """Filter authors extending a catalog shape with their own ``$id``
+    emit *their* id, not the parent's — even though pydantic copies the
+    parent's ``model_config`` into the subclass."""
+
+    class _Extended(Detection):
+        __schema_id__: ClassVar[str] = "https://schemas.plainsight.ai/filters/foo/extended-detection/v1"
+        extra_field: int = 0
+
+    extra = _Extended.model_config.get("json_schema_extra")
+    assert isinstance(extra, dict)
+    assert extra["$id"] == "https://schemas.plainsight.ai/filters/foo/extended-detection/v1"
+    schema = _Extended.emit_schema()
+    assert schema["$id"] == "https://schemas.plainsight.ai/filters/foo/extended-detection/v1"
 
 
 def test_init_subclass_rejects_non_string_schema_id() -> None:

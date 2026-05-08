@@ -144,9 +144,6 @@ def cmd_emit_schema(args: list[str]) -> None:
     else:
         schema = cls.emit_schema()
 
-    schema.setdefault("title", cls.__name__)
-    schema.setdefault("$schema", "https://json-schema.org/draft/2020-12/schema")
-
     text = json.dumps(schema, indent=opts.indent or None, sort_keys=False)
 
     if opts.output == "-":
