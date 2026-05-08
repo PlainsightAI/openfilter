@@ -33,51 +33,79 @@ jobs:
       - name: Run tests
         run: make test-all
 
-  # Dry-run the cascade build script when its files change.
-  # Uses the default GITHUB_TOKEN which can only see public repos.
-  # To test internal filters, add an ORG_GITHUB_TOKEN repo/org secret
-  # with read:org + repo scope.
-  cascade-dry-run:
+  # Path-filtered checks for the tag-cascade scripts on PRs touching
+  # scripts/cascade/** or the cascade workflow: shellcheck + actionlint +
+  # a single-filter discover.sh smoke against filter-frame-dedup. The
+  # smoke step succeeds with zero eligible consumers (the consumer's
+  # constraint can exclude the in-tree VERSION); only script errors fail.
+  cascade-pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Check for cascade changes
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Detect cascade-affecting changes
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@v3
         with:
           filters: |
             cascade:
-              - 'cloudbuild-cascade.yaml'
-              - 'scripts/build-filters.sh'
-              - 'scripts/check_constraint.py'
+              - 'scripts/cascade/**'
+              - '.github/workflows/cascade-on-tag.yaml'
 
-      - name: Checkout code
+      - name: Set up Python
         if: steps.filter.outputs.cascade == 'true'
-        uses: actions/checkout@v6
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
 
-      - name: Set up Docker Buildx
+      - name: Install constraint-check deps
         if: steps.filter.outputs.cascade == 'true'
-        uses: docker/setup-buildx-action@v4
+        run: pip install --quiet packaging
 
-      - name: Prepare workspace
+      - name: shellcheck cascade scripts
         if: steps.filter.outputs.cascade == 'true'
-        run: |
-          WORKSPACE=$(mktemp -d)
-          echo "WORKSPACE=${WORKSPACE}" >> $GITHUB_ENV
-          mkdir -p "${WORKSPACE}/filters" "${WORKSPACE}/results"
-          OF_VERSION=$(cat VERSION | tr -d '[:space:]' | sed 's/^v//')
-          echo "${OF_VERSION}" > "${WORKSPACE}/openfilter_version"
-          cp scripts/check_constraint.py "${WORKSPACE}/check_constraint.py"
+        uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          SHELLCHECK_OPTS: -e SC2317
+        with:
+          scandir: scripts/cascade
+          severity: warning
 
-      - name: Run cascade dry-run
+      - name: actionlint cascade workflow
+        if: steps.filter.outputs.cascade == 'true'
+        uses: raven-actions/actionlint@v2
+        with:
+          files: .github/workflows/cascade-on-tag.yaml
+
+      - name: Discover smoke (single filter)
         if: steps.filter.outputs.cascade == 'true'
         env:
-          WORKSPACE: ${{ env.WORKSPACE }}
-          DRY_RUN: "true"
-          GAR_REGION: us-west1
-          GAR_PROJECT: plainsightai-prod
-          GAR_REPO: oci
-          DOCKERHUB_ORG: plainsightai
-          GITHUB_TOKEN: ${{ secrets.ORG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-          FAIL_IS_ERROR: "false"
-        run: bash scripts/build-filters.sh
+          # GH_BOT_USER_PAT can see private filter-* repos (the org has ~50;
+          # GITHUB_TOKEN only sees the ~13 public ones, which doesn't include
+          # filter-frame-dedup). Falls back to GITHUB_TOKEN on fork PRs
+          # where the bot secret isn't exposed — the smoke will hard-exit on
+          # SINGLE_FILTER not-found in that case, which is the documented
+          # cascade behavior; a fork PR touching the cascade scripts is
+          # rare enough to investigate manually.
+          GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT || secrets.GITHUB_TOKEN }}
+          # Valid PEP 440 outside any plausible consumer pin so the constraint
+          # comparison path actually runs (0.0.0-smoke is InvalidVersion and
+          # short-circuits to error: in check_constraint.py).
+          OF_VERSION: '99.99.99'
+          SINGLE_FILTER: filter-frame-dedup
+        run: |
+          set -euo pipefail
+          # Zero eligible consumers when the in-tree OF_VERSION is outside
+          # any consumer's declared range is a PASS; only hard-fail on
+          # script errors (non-zero exit).
+          ./scripts/cascade/discover.sh > /tmp/consumers.txt || {
+            rc=$?
+            echo "::error::discover.sh exited ${rc}" >&2
+            exit "${rc}"
+          }
+          echo "---- discover.sh smoke output ----"
+          cat /tmp/consumers.txt || true

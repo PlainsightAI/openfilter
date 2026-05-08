@@ -1,0 +1,210 @@
+# cascade-on-tag.yaml — On openfilter release tag push, open a mechanical
+# bump PR (pyproject + requirements pin + RELEASE.md `### Changed` entry)
+# in every eligible filter-* consumer. PR-opening mechanics delegated to
+# PlainsightAI/gh-actions-public/open-mechanical-pr; failure paths Slacked
+# via the notify job. Manual workflow_dispatch inputs: dry_run, single_filter,
+# filter_subset, auto_merge_override.
+# DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
+
+name: Cascade on tag
+
+# Tag pattern uses shell globbing (not regex) — restricts to release semver
+# so pre-release / dev tags (v0.1.28-rc1) don't cascade.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Plan only — discover eligible consumers, do not open PRs'
+        type: boolean
+        default: false
+      single_filter:
+        description: 'Cascade to a single repo only (e.g. filter-frame-dedup)'
+        type: string
+        default: ''
+      filter_subset:
+        description: 'Cascade to a comma-separated subset (e.g. filter-foo,filter-bar)'
+        type: string
+        default: ''
+      auto_merge_override:
+        description: 'Open the PR but skip auto-merge enablement (smoke testing — leaves PR for manual merge)'
+        type: boolean
+        default: false
+
+# Latest cascade wins — newer run cancels older for the same ref.
+concurrency:
+  group: cascade-on-tag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Phase 1 — discovery. Emits the JSON consumer array the bump job
+  # fans out over.
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+      OF_TAG: ${{ github.ref_name }}
+      SINGLE_FILTER: ${{ github.event_name == 'workflow_dispatch' && inputs.single_filter || '' }}
+      FILTER_SUBSET: ${{ github.event_name == 'workflow_dispatch' && inputs.filter_subset || '' }}
+    outputs:
+      of_version: ${{ steps.of_version.outputs.of_version }}
+      # When the of_version step rejects a pre-release tag, the discover
+      # step is skipped and `empty_outputs` supplies the fallback values.
+      consumers: ${{ steps.discover.outputs.consumers || steps.empty_outputs.outputs.consumers }}
+      count: ${{ steps.discover.outputs.count || steps.empty_outputs.outputs.count }}
+    steps:
+      - name: Checkout openfilter
+        uses: actions/checkout@v6
+
+      - name: Set up Python (for check_constraint.py)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install constraint-check deps
+        run: pip install --quiet packaging
+
+      - name: Resolve openfilter version
+        id: of_version
+        run: |
+          set -euo pipefail
+          if [[ -n "${OF_TAG:-}" && "${OF_TAG}" == v* ]]; then
+            OF_VERSION="${OF_TAG#v}"
+          else
+            _V=$(tr -d '[:space:]' < VERSION)
+            OF_VERSION="${_V#v}"
+          fi
+          echo "OpenFilter version: ${OF_VERSION}"
+          # Mirror the tags: glob for the workflow_dispatch path (where the
+          # VERSION file might hold a pre-release). No-cascade on rejection.
+          if [[ ! "${OF_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "OF_VERSION='${OF_VERSION}' is not a release semver — pre-release/dev tags do not cascade. Exiting cleanly."
+            echo "of_version=" >> "$GITHUB_OUTPUT"
+            echo "is_release_semver=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "of_version=${OF_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_release_semver=true" >> "$GITHUB_OUTPUT"
+
+      - name: Discover eligible consumers
+        id: discover
+        if: steps.of_version.outputs.is_release_semver == 'true'
+        env:
+          OF_VERSION: ${{ steps.of_version.outputs.of_version }}
+        run: |
+          set -euo pipefail
+          ./scripts/cascade/discover.sh > /tmp/consumers.txt
+          echo "---- Eligible consumers ----"
+          cat /tmp/consumers.txt || true
+          # Emit as a JSON array for matrix fan-out. An empty list is
+          # represented as [] so the downstream job's `if:` guard can skip
+          # cleanly without spawning a no-op matrix shard.
+          if [[ -s /tmp/consumers.txt ]]; then
+            CONSUMERS_JSON=$(jq -R -s -c 'split("\n") | map(select(length > 0))' < /tmp/consumers.txt)
+          else
+            CONSUMERS_JSON='[]'
+          fi
+          COUNT=$(jq 'length' <<< "${CONSUMERS_JSON}")
+          echo "consumers=${CONSUMERS_JSON}" >> "$GITHUB_OUTPUT"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Emit empty outputs (pre-release tag rejected)
+        id: empty_outputs
+        if: steps.of_version.outputs.is_release_semver != 'true'
+        run: |
+          echo "consumers=[]" >> "$GITHUB_OUTPUT"
+          echo "count=0" >> "$GITHUB_OUTPUT"
+
+  # Phase 2 — per-consumer bump. One matrix shard per eligible consumer.
+  # bump-and-pr.sh stages the clone; open-mechanical-pr@main opens the PR.
+  # fail-fast: false so a single consumer doesn't abort siblings.
+  bump:
+    if: needs.discover.outputs.count != '0'
+    needs: [discover]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        consumer: ${{ fromJSON(needs.discover.outputs.consumers) }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
+      GH_BOT_USER_PAT: ${{ secrets.GH_BOT_USER_PAT }}
+      OF_VERSION: ${{ needs.discover.outputs.of_version }}
+      OF_SHA: ${{ github.sha }}
+      OF_TAG: ${{ github.ref_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      AUTO_MERGE: ${{ github.event_name == 'workflow_dispatch' && inputs.auto_merge_override && 'false' || 'true' }}
+    steps:
+      - name: Checkout openfilter
+        uses: actions/checkout@v6
+
+      - name: Set up Python (for bump-strategy.sh)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install bump-strategy deps
+        run: pip install --quiet packaging tomlkit
+
+      # `${{ matrix.consumer }}` flows through env: rather than being
+      # interpolated into the shell — defense against expression injection
+      # if discovery ever sources from a less-trusted input.
+      - name: Prepare consumer clone + bump
+        id: prep
+        env:
+          CONSUMER: ${{ matrix.consumer }}
+        run: ./scripts/cascade/bump-and-pr.sh "${CONSUMER}"
+
+      - name: Open mechanical PR
+        if: env.DRY_RUN != 'true' && steps.prep.outputs.has_changes == 'true'
+        uses: PlainsightAI/gh-actions-public/open-mechanical-pr@main
+        with:
+          repo: PlainsightAI/${{ matrix.consumer }}
+          working_directory: ${{ steps.prep.outputs.clone_dir }}
+          branch_prefix: bump-openfilter-
+          commit_message: ${{ steps.prep.outputs.commit_message }}
+          pr_title: ${{ steps.prep.outputs.pr_title }}
+          pr_body: ${{ steps.prep.outputs.pr_body }}
+          gh_token: ${{ secrets.GH_BOT_USER_PAT }}
+          auto_merge: ${{ env.AUTO_MERGE }}
+
+  # Phase 3 — Slack on failure. Block Kit shape from update-api-client.yaml.
+  notify:
+    if: failure()
+    needs: [discover, bump]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Slack on failure
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: ":openfilter: cascade workflow errored"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Cascading openfilter `${{ needs.discover.outputs.of_version }}` to downstream consumers failed. A human needs to investigate before the next release tag, otherwise consumers will not pick up the new version."
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Tag: <https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}|${{ github.ref_name }}>"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Workflow: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.workflow }} – Run #${{ github.run_number }}>"

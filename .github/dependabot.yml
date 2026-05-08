@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Keep workflow action versions fresh — when actions/checkout, actions/setup-python,
+  # slackapi/slack-github-action, etc. cut a new tag, dependabot opens a PR here so
+  # we don't accumulate stale @vN references silently across the workflow set.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"

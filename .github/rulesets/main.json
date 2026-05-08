@@ -1,0 +1,45 @@
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "required_reviewers": [],
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "required_status_checks": [
+          { "context": "run-unit-tests (3.10)" },
+          { "context": "run-unit-tests (3.11)" },
+          { "context": "run-unit-tests (3.12)" },
+          { "context": "run-unit-tests (3.13)" },
+          { "context": "security-scan / grype (3.10)" },
+          { "context": "security-scan / grype (3.11)" },
+          { "context": "security-scan / grype (3.12)" },
+          { "context": "security-scan / grype (3.13)" },
+          { "context": "cascade-pr-checks" }
+        ]
+      }
+    }
+  ]
+}
