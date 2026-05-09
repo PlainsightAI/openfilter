@@ -1,0 +1,30 @@
+name: External review freshness
+
+# Dismiss APPROVED reviews when an untrusted contributor (typically a fork
+# drive-by) pushes new commits. Replaces the GitHub-native
+# `dismiss_stale_reviews_on_push` rule (now off in .github/rulesets/main.json),
+# which dismissed approvals on *every* push including trusted-maintainer
+# self-pushes. This action keys trust on the PR author's repo collaborator
+# permission (admin/maintain/write → trusted) and only dismisses for
+# everyone else, so a maintainer's own fixup commit no longer invalidates a
+# fresh approval.
+#
+# Must run on pull_request_target (not pull_request) so the job has
+# base-repo permissions to dismiss reviews on fork PRs.
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  dismiss:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: PlainsightAI/gh-actions-public/external-review-freshness@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: "false"
