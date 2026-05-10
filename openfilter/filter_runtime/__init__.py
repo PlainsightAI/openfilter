@@ -9,17 +9,52 @@ from .config import (
 )
 from .filter import FilterConfig, Filter, FilterContext
 from .frame import Frame
+from .output import FRAME_DATA_KEY, FilterOutputSchema
+from .shapes import (
+    SHAPE_ID_BASE,
+    BoundingBox,
+    ClassificationResult,
+    Detection,
+    DetectionSet,
+    Keypoint,
+    KeypointSet,
+    Mask,
+    OCRSpan,
+    OCRSpanSet,
+    Polygon,
+    Pose,
+    PoseSet,
+    Track,
+    TrackSet,
+)
 
 __all__ = [
+    "BoundingBox",
+    "ClassificationResult",
+    "Detection",
+    "DetectionSet",
+    "FRAME_DATA_KEY",
     "Filter",
     "FilterConfig",
     "FilterConfigBase",
     "FilterContext",
+    "FilterOutputSchema",
     "Frame",
+    "Keypoint",
+    "KeypointSet",
     "MANAGED_KEY",
     "Managed",
+    "Mask",
+    "OCRSpan",
+    "OCRSpanSet",
     "PREFLIGHT_KEY",
+    "Polygon",
+    "Pose",
+    "PoseSet",
     "RESOLVE_KEY",
     "Resolve",
     "ResolveHint",
+    "SHAPE_ID_BASE",
+    "Track",
+    "TrackSet",
 ]
