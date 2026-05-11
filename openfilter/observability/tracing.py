@@ -22,6 +22,8 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
+from openfilter.observability._otlp import infer_otlp_insecure
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,13 +84,13 @@ def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
             or os.getenv("OTEL_EXPORTER_OTLP_GRPC_ENDPOINT")
             or "http://localhost:4317"
         )
-        # The Plainsight in-cluster collector and the upstream OTel collector
-        # default to plaintext gRPC on 4317. The Python exporter defaults to TLS
-        # unless told otherwise, which silently breaks every export with a TLS
-        # handshake error. Mirror the Go services (otlptracegrpc.WithInsecure)
-        # and opt out by default; operators who need TLS can pass insecure=False
-        # via exporter_config.
-        insecure = config.get("insecure", True)
+        # Infer TLS from the endpoint scheme: http:// is plaintext, https:// or
+        # bare host:port is TLS. An explicit insecure= in exporter_config wins
+        # — operators pointing a bare-host:port endpoint at a plaintext
+        # collector still need to pass insecure=True.
+        insecure = config.get("insecure")
+        if insecure is None:
+            insecure = infer_otlp_insecure(endpoint)
         return OTLPGrpcSpanExporter(endpoint=endpoint, insecure=insecure)
 
     if exporter_type == "otlp_http":

@@ -2,6 +2,16 @@
 
 OpenFilter Library release notes
 
+## v0.2.1 - 2026-05-09
+
+### Changed
+
+- **OTLP gRPC `insecure` flag now inferred from endpoint scheme**: The exporter factory and tracing builder now use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Explicit `insecure=` in `exporter_config` / kwargs always wins. The default `http://localhost:4317` endpoint still infers `insecure=True`, so local collectors keep working with no config change. The metrics factory's missing localhost fallback was also fixed in this change — an unset endpoint no longer falls through to the SDK's TLS default against a plaintext local collector.
+
+### Removed
+
+- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable**: removed from the metrics exporter factory. This variable was previously a full no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a string, and every non-empty string is truthy, so `insecure=True` regardless of what an operator wrote. No deployment was getting TLS through this var. The actual behavior change for operators is narrow: those running with a bare `host:port` endpoint now get TLS, where they used to get plaintext. Set `insecure=True` in `exporter_config` (or use an `http://` URL) to keep plaintext.
+
 ## v0.2.0 - 2026-05-08
 
 ### Added
@@ -361,7 +371,6 @@ OpenFilter Library release notes
     - `TELEMETRY_EXPORTER_TYPE`- OpenTelemetry exporter (eg:console,gcm,OTLP_GRPC,OTLP_HTTP)
     - `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT` - If the client is OTLP_GRPC
     - `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT` - If the client is OTLP_HTTP
-    - `OTLP_GRPC_ENDPOINT_SECURITY` - Sets OpenTelemtry GRPC client endpoint security
     - `TELEMETRY_EXPORTER_ENABLED` - Enable/disable OpenTelemetry
     - `EXPORT_INTERVAL` - OpenTelemetry metrics Export interval
     - `PROJECT_ID` - GCP project

@@ -7,6 +7,8 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
 import logging
 
+from openfilter.observability._otlp import infer_otlp_insecure
+
 class ExporterFactory:
     @staticmethod
     def build(exporter_type: str, **kwargs) -> MetricExporter:
@@ -20,11 +22,24 @@ class ExporterFactory:
 
         elif exporter_type == "otlp_grpc":
             try:
-
-                return OTLPGrpcExporter(
-                    endpoint=kwargs.get("endpoint") or os.getenv("OTEL_EXPORTER_OTLP_GRPC_ENDPOINT"),
-                    insecure=kwargs.get("insecure", os.getenv("OTLP_GRPC_ENDPOINT_SECURITY",True))
+                # Mirror the tracing factory's localhost fallback so an unset
+                # endpoint stays plaintext-against-localhost rather than
+                # falling through to the SDK's TLS default and breaking local
+                # `docker run otel/opentelemetry-collector` setups.
+                endpoint = (
+                    kwargs.get("endpoint")
+                    or os.getenv("OTEL_EXPORTER_OTLP_GRPC_ENDPOINT")
+                    or "http://localhost:4317"
                 )
+                # Infer TLS from the endpoint scheme (http://=plaintext,
+                # https://=TLS, bare host:port=TLS). Explicit insecure=
+                # always wins. Replaces the prior OTLP_GRPC_ENDPOINT_SECURITY
+                # env-var lookup, which never parsed strings to bool and so
+                # was effectively always insecure=True.
+                insecure = kwargs.get("insecure")
+                if insecure is None:
+                    insecure = infer_otlp_insecure(endpoint)
+                return OTLPGrpcExporter(endpoint=endpoint, insecure=insecure)
             except Exception as e:
                 logging.error(f"Failed to set OTLP_GRPC exporter {e}")
 

@@ -949,6 +949,8 @@ The `OpenTelemetryClient` can be configured entirely through environment variabl
 | `OTEL_EXPORTER_OTLP_GRPC_ENDPOINT`   | Endpoint for OTLP gRPC export                                          | `"http://localhost:4317"`       |
 | `OTEL_EXPORTER_OTLP_HTTP_ENDPOINT`   | Endpoint for OTLP HTTP export                                          | `"http://localhost:4318"`       |
 
+> **OTLP gRPC TLS:** the `insecure` flag is inferred from the endpoint URL scheme — `http://` → plaintext, `https://` → TLS, bare `host:port` → TLS (secure default, matches the OTel SDK). Operators running a plaintext collector behind a bare `host:port` endpoint can opt back into plaintext by passing `insecure=True` in `exporter_config`.
+
 ---
 
 ### 🐧 Linux (bash) and 🖥 macOS (zsh)

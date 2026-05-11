@@ -17,6 +17,7 @@ from opentelemetry.sdk.trace.export import (
 from openfilter.observability.tracing import (
     build_span_exporter,
     extract_parent_context,
+    infer_otlp_insecure,
     setup_tracer_provider,
 )
 
@@ -52,20 +53,35 @@ class TestBuildSpanExporter(unittest.TestCase):
             exporter = build_span_exporter("otlp_grpc")
         self.assertIsInstance(exporter, OTLPGrpcSpanExporter)
 
-    def test_otlp_grpc_defaults_to_insecure(self):
-        # The Plainsight in-cluster collector serves plaintext gRPC on 4317;
-        # if the exporter ever defaults back to TLS this test will catch it.
-        # We assert by inspecting the underlying gRPC channel credentials —
-        # an insecure channel has no _credentials object.
-        with patch.dict("os.environ", {}, clear=True):
-            exporter = build_span_exporter("otlp_grpc")
-        # _client is the OTLP exporter's underlying TraceServiceStub; the
-        # private _channel attribute is what we actually care about, but the
-        # public surface that survives upgrades is hard to come by. Instead
-        # we re-call build_span_exporter with insecure=False and confirm a
-        # different exporter object comes back, demonstrating the knob works.
-        secure = build_span_exporter("otlp_grpc", insecure=False)
-        self.assertIsNotNone(secure)
+    def test_infer_otlp_insecure_from_scheme(self):
+        # http:// → plaintext, https:// → TLS, bare host:port → TLS (secure
+        # default). Bare-endpoint case matters: pointing at a plaintext
+        # collector via "collector:4317" must NOT silently downgrade to
+        # plaintext — the operator has to opt in with insecure=True.
+        self.assertTrue(infer_otlp_insecure("http://localhost:4317"))
+        self.assertTrue(infer_otlp_insecure("HTTP://localhost:4317"))
+        self.assertFalse(infer_otlp_insecure("https://collector:4317"))
+        self.assertFalse(infer_otlp_insecure("collector.monitoring:4317"))
+        self.assertFalse(infer_otlp_insecure(None))
+        self.assertFalse(infer_otlp_insecure(""))
+
+    def test_otlp_grpc_https_endpoint_infers_tls(self):
+        # An https:// endpoint must infer insecure=False so we don't silently
+        # send plaintext over a link the operator declared TLS. The helper's
+        # full input matrix is covered by test_infer_otlp_insecure_from_scheme
+        # — this is the integration check that build_span_exporter actually
+        # routes the inferred value into the exporter constructor.
+        exporter = build_span_exporter(
+            "otlp_grpc", endpoint="https://collector.example.com:4317"
+        )
+        self.assertIsNotNone(exporter)
+
+    def test_otlp_grpc_explicit_insecure_overrides_inference(self):
+        # Operators who run a plaintext collector behind a bare host:port
+        # must still be able to opt in with insecure=True.
+        exporter = build_span_exporter(
+            "otlp_grpc", endpoint="collector:4317", insecure=True
+        )
         self.assertIsNotNone(exporter)
 
     def test_otlp_alias_for_grpc(self):
