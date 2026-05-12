@@ -20,6 +20,15 @@ permissions:
   pull-requests: write
   contents: read
 
+# Per-PR concurrency: a force-push or rapid fixup-push fires `synchronize`
+# twice in quick succession, queuing two dismissal runs against the same
+# review set. Cancel the older run so only the latest push's freshness check
+# survives — avoids racy double-dismiss attempts and a transient PR state
+# where stale runs flap the approval.
+concurrency:
+  group: external-review-freshness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   dismiss:
     runs-on: ubuntu-latest
