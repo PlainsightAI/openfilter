@@ -48,13 +48,6 @@ def build_span_exporter(exporter_type: str, **config) -> SpanExporter:
     """Build a span exporter matching the metrics exporter factory pattern.
 
     Supported types: console, silent, otlp, otlp_grpc, otlp_http.
-
-    Note: the metrics factory (``client.py:build_exporter``) only accepts
-    ``"otlp"`` (mapped to gRPC). This factory additionally accepts
-    ``"otlp_grpc"`` and ``"otlp_http"`` for finer control. If someone sets
-    ``TELEMETRY_EXPORTER_TYPE=otlp_http``, traces will go to the HTTP
-    exporter while metrics will fall through to console — a latent
-    inconsistency worth aligning in a follow-up on the metrics side.
     """
     exporter_type = exporter_type.lower()
 

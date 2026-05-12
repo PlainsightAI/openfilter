@@ -49,6 +49,31 @@ class TestOtlpGrpcExporterFactory(unittest.TestCase):
             exporter = ExporterFactory.build("otlp_grpc")
         self.assertIsInstance(exporter, OTLPGrpcExporter)
 
+    def test_telemetry_exporter_otlp_endpoint_takes_precedence(self):
+        # The Plainsight-convention env var must win over the standard OTel
+        # one and over the legacy GRPC-specific one, matching the precedence
+        # in build_span_exporter so an operator setting a single
+        # TELEMETRY_EXPORTER_OTLP_ENDPOINT gets both traces *and* metrics.
+        env = {
+            "TELEMETRY_EXPORTER_OTLP_ENDPOINT": "https://plainsight.example:4317",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example:4317",
+            "OTEL_EXPORTER_OTLP_GRPC_ENDPOINT": "https://grpc.example:4317",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            exporter = ExporterFactory.build("otlp_grpc")
+        self.assertIsInstance(exporter, OTLPGrpcExporter)
+
+    def test_otel_exporter_otlp_endpoint_used_when_telemetry_var_unset(self):
+        # When the Plainsight-convention var is unset, the standard OTel
+        # spec var should take precedence over the legacy GRPC-specific one.
+        env = {
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example:4317",
+            "OTEL_EXPORTER_OTLP_GRPC_ENDPOINT": "https://grpc.example:4317",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            exporter = ExporterFactory.build("otlp_grpc")
+        self.assertIsInstance(exporter, OTLPGrpcExporter)
+
 
 if __name__ == "__main__":
     unittest.main()

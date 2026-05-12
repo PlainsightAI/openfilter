@@ -22,12 +22,19 @@ class ExporterFactory:
 
         elif exporter_type == "otlp_grpc":
             try:
-                # Mirror the tracing factory's localhost fallback so an unset
-                # endpoint stays plaintext-against-localhost rather than
-                # falling through to the SDK's TLS default and breaking local
-                # `docker run otel/opentelemetry-collector` setups.
+                # Endpoint precedence mirrors the tracing factory:
+                #   1. Explicit kwarg
+                #   2. TELEMETRY_EXPORTER_OTLP_ENDPOINT (Plainsight convention)
+                #   3. OTEL_EXPORTER_OTLP_ENDPOINT (standard OTel env var)
+                #   4. OTEL_EXPORTER_OTLP_GRPC_ENDPOINT (non-standard, kept
+                #      for backward compat — not part of the OTel spec)
+                #   5. http://localhost:4317 fallback (plaintext-against-
+                #      localhost so a `docker run otel/opentelemetry-collector`
+                #      setup keeps working unconfigured).
                 endpoint = (
                     kwargs.get("endpoint")
+                    or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+                    or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
                     or os.getenv("OTEL_EXPORTER_OTLP_GRPC_ENDPOINT")
                     or "http://localhost:4317"
                 )
@@ -45,8 +52,14 @@ class ExporterFactory:
 
         elif exporter_type == "otlp_http":
             try:
+                endpoint = (
+                    kwargs.get("endpoint")
+                    or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
+                    or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+                    or os.getenv("OTEL_EXPORTER_OTLP_HTTP_ENDPOINT")
+                )
                 return OTLPHttpExporter(
-                    endpoint=kwargs.get("endpoint") or os.getenv("OTEL_EXPORTER_OTLP_HTTP_ENDPOINT"),
+                    endpoint=endpoint,
                     headers=kwargs.get("headers") or {}
                 )
             except Exception as e:
