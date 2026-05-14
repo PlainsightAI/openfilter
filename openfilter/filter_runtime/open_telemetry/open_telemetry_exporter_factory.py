@@ -52,6 +52,11 @@ class ExporterFactory:
 
         elif exporter_type == "otlp_http":
             try:
+                # Same env-var chain as the otlp_grpc branch above; no
+                # explicit localhost fallback here because the OTLP HTTP
+                # SDK already defaults endpoint=None to
+                # http://localhost:4318/v1/metrics (the path suffix matters,
+                # and hard-coding our own bare-host fallback would drop it).
                 endpoint = (
                     kwargs.get("endpoint")
                     or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
