@@ -770,5 +770,132 @@ class TestBatchDeferredCallable(unittest.TestCase):
         self.assertEqual(f._process_time_ema, prior_ema)
 
 
+class TestAccumulateWindow(unittest.TestCase):
+    """Sliding-window mode: keep accumulate_window frames in a deque, dispatch
+    every batch_size new frames, route through Filter.select_batch().
+    """
+
+    def _make_filter(self, filter_cls, batch_size, window=None, timeout_ms=1000.0):
+        kwargs = {
+            "id": "test-window",
+            "batch_size": batch_size,
+            "accumulate_timeout_ms": timeout_ms,
+        }
+        if window is not None:
+            kwargs["accumulate_window"] = window
+        config = FilterConfig(**kwargs)
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_window_default_is_one_shot_list(self):
+        """Unset accumulate_window: buffer stays a list, sliding mode off."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        self.assertFalse(f._sliding_window)
+        self.assertEqual(f._accumulate_window, 2)
+        # list, not deque — so the original drain-on-dispatch contract holds.
+        self.assertIsInstance(f._frame_buffer, list)
+
+    def test_window_set_uses_bounded_deque(self):
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=8)
+        self.assertTrue(f._sliding_window)
+        self.assertEqual(f._accumulate_window, 8)
+        from collections import deque as _deque
+        self.assertIsInstance(f._frame_buffer, _deque)
+        self.assertEqual(f._frame_buffer.maxlen, 8)
+
+    def test_invalid_window_smaller_than_batch_size(self):
+        config = FilterConfig(id="bad", batch_size=4, accumulate_window=2)
+        with self.assertRaises(ValueError) as ctx:
+            Filter.normalize_config(config)
+        self.assertIn("accumulate_window", str(ctx.exception))
+
+    def test_default_select_batch_returns_last_batch_size(self):
+        """select_batch's default keeps tail semantics — preserves current
+        contract when accumulate_window is unset."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        window = [
+            {"main": Frame({"val": i})} for i in range(5)
+        ]
+        picked = f.select_batch(window)
+        self.assertEqual(len(picked), 2)
+        self.assertEqual(picked[0]["main"].data["val"], 3)
+        self.assertEqual(picked[1]["main"].data["val"], 4)
+
+    def test_sliding_window_does_not_clear_on_dispatch(self):
+        """With accumulate_window set, the ring persists across dispatches —
+        a frame appended for dispatch K is still present for dispatch K+1."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=4)
+        # Feed batch_size frames → dispatch fires.
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Ring should still hold both frames.
+        self.assertEqual(len(f._frame_buffer), 2)
+        # Feeding two more triggers the next dispatch; ring grows to 4.
+        f.process_frames({"main": Frame({"val": 3})})
+        f.process_frames({"main": Frame({"val": 4})})
+        self.assertEqual(len(f.received_batches), 2)
+        self.assertEqual(len(f._frame_buffer), 4)
+
+    def test_sliding_window_evicts_oldest_at_maxlen(self):
+        """When window is full and new frame arrives, deque drops the oldest."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=4)
+        for i in range(6):
+            f.process_frames({"main": Frame({"val": i})})
+        # Ring capped at 4; last four values present.
+        vals = [f._frame_buffer[i]["main"].data["val"] for i in range(len(f._frame_buffer))]
+        self.assertEqual(vals, [2, 3, 4, 5])
+
+    def test_custom_select_batch_routed_through_dispatch(self):
+        """Overriding select_batch lets a filter pick non-tail frames."""
+
+        class StridedFilter(CountingBatchFilter):
+            def select_batch(self, window):
+                # Every other frame, capped at batch_size.
+                return list(window)[::2][: self._batch_size]
+
+        f = self._make_filter(StridedFilter, batch_size=2, window=4)
+        for i in range(4):
+            f.process_frames({"main": Frame({"val": i})})
+        # 4 frames in ring: indices [0, 2] picked.
+        self.assertEqual(len(f.received_batches), 2)
+        # Look at the LAST batch dispatched: should be strided picks from the
+        # then-current ring.
+        last_batch = f.received_batches[-1]
+        picked_vals = [b["main"].data["val"] for b in last_batch]
+        # After 4 frames in a window of 4: ring = [0,1,2,3], stride picks [0,2].
+        self.assertEqual(picked_vals, [0, 2])
+
+    def test_window_frames_since_dispatch_counter_resets(self):
+        """The trigger counter (not the ring) is what advances toward batch_size."""
+        f = self._make_filter(CountingBatchFilter, batch_size=3, window=8)
+        # First two frames: counter at 2, no dispatch yet.
+        f.process_frames({"main": Frame({"val": 0})})
+        f.process_frames({"main": Frame({"val": 1})})
+        self.assertEqual(f._frames_since_last_dispatch, 2)
+        self.assertEqual(len(f.received_batches), 0)
+        # Third frame: counter hits 3 → dispatch, counter resets.
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(f._frames_since_last_dispatch, 0)
+        self.assertEqual(len(f.received_batches), 1)
+        # Next batch_size frames again → second dispatch.
+        f.process_frames({"main": Frame({"val": 3})})
+        f.process_frames({"main": Frame({"val": 4})})
+        f.process_frames({"main": Frame({"val": 5})})
+        self.assertEqual(f._frames_since_last_dispatch, 0)
+        self.assertEqual(len(f.received_batches), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
