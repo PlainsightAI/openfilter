@@ -25,6 +25,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.metrics import Observation, set_meter_provider, get_meter
 
 from .bridge import OTelLineageExporter
+from ._otlp import infer_otlp_insecure
 from .tracing import setup_tracer_provider, extract_parent_context
 
 
@@ -69,7 +70,15 @@ def build_exporter(exporter_type: str, **config):
             or os.getenv("TELEMETRY_EXPORTER_OTLP_ENDPOINT")
             or "http://localhost:4317"
         )
-        return OTLPMetricExporter(endpoint=endpoint)
+        # Infer TLS from the endpoint scheme to match build_span_exporter and
+        # the metrics ExporterFactory. Without this, OTLPMetricExporter
+        # defaults to TLS against every endpoint shape — including the bare
+        # host:port form the Plainsight in-cluster collector exposes — and
+        # every export fails the handshake with WRONG_VERSION_NUMBER.
+        insecure = config.get("insecure")
+        if insecure is None:
+            insecure = infer_otlp_insecure(endpoint)
+        return OTLPMetricExporter(endpoint=endpoint, insecure=insecure)
     else:
         from opentelemetry.sdk.metrics.export import ConsoleMetricExporter
         return ConsoleMetricExporter()
