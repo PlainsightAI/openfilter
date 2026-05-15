@@ -586,5 +586,189 @@ class TestLoopOncePendingResultsDrain(unittest.TestCase):
         f._batch_watcher.join(timeout=1.0)
 
 
+class TestBatchDeferredCallable(unittest.TestCase):
+    """process_batch() may return Callable slots that the runtime invokes later via
+    mq.send's existing Callable polling. Mirrors the deferred-result path that
+    process() already supports.
+    """
+
+    def _make_filter(self, filter_cls, batch_size=3, timeout_ms=1000.0):
+        config = FilterConfig(
+            id="test-deferred",
+            batch_size=batch_size,
+            accumulate_timeout_ms=timeout_ms,
+        )
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_all_callable_slots_returned_to_send_path(self):
+        """A batch where every slot is a Callable: process_frames returns the last
+        Callable, earlier Callables land in _batch_pending_results. Each is still
+        callable() at the point loop_once would hand it to mq.send."""
+
+        class DeferredFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Capture each frame by value so each closure resolves to the right input.
+                return [(lambda fs=fs: fs) for fs in batch]
+
+        f = self._make_filter(DeferredFilter, batch_size=3)
+
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        last = f.process_frames({"main": Frame({"val": 3})})
+
+        self.assertTrue(callable(last))
+        self.assertEqual(len(f._batch_pending_results), 2)
+        for pending in f._batch_pending_results:
+            self.assertTrue(callable(pending))
+
+    def test_callable_slot_resolves_to_dict_on_invocation(self):
+        """Invoking a returned closure resolves it: dict comes out, EMA updates,
+        metadata is queued, _inject_timings stamps the frame.
+
+        Calls _execute_batch directly to keep the assertion focused on the
+        closure's resolution semantics (process_frames only goes through the
+        batched path at batch_size > 1).
+        """
+
+        class DeferredFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                return [lambda: {"main": Frame({"resolved": True})}]
+
+        f = self._make_filter(DeferredFilter, batch_size=2)
+        prior_ema = f._process_time_ema
+        results = f._execute_batch([{"main": Frame({"val": 1})}])
+        self.assertEqual(len(results), 1)
+        closure = results[0]
+        self.assertTrue(callable(closure))
+
+        # EMA should NOT have been touched by the synchronous _execute_batch when
+        # any slot is a Callable — matches _process_frames_single's behavior.
+        self.assertEqual(f._process_time_ema, prior_ema)
+
+        resolved = closure()
+        self.assertIsInstance(resolved, dict)
+        self.assertIn("main", resolved)
+        self.assertTrue(resolved["main"].data["resolved"])
+
+        # Closure resolution should have updated the EMA and queued metadata.
+        self.assertNotEqual(f._process_time_ema, prior_ema)
+        f._metadata_queue.put_nowait.assert_called()
+
+    def test_mixed_dict_and_callable_batch(self):
+        """A batch where some slots are dicts and some are Callables: dicts emerge
+        finalized at submission time, Callables emerge as closures that finalize
+        on invocation. The list order is preserved.
+        """
+
+        class MixedFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Slot 0 immediate, slot 1 deferred, slot 2 immediate.
+                return [
+                    {"main": Frame({"slot": 0})},
+                    lambda: {"main": Frame({"slot": 1, "deferred": True})},
+                    {"main": Frame({"slot": 2})},
+                ]
+
+        f = self._make_filter(MixedFilter, batch_size=3)
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        last = f.process_frames({"main": Frame({"val": 3})})
+
+        # Order: slot 0 dict, slot 1 closure, slot 2 dict — last is slot 2 (dict).
+        self.assertIsInstance(last, dict)
+        self.assertEqual(last["main"].data["slot"], 2)
+
+        self.assertEqual(len(f._batch_pending_results), 2)
+        first, middle = f._batch_pending_results
+        self.assertIsInstance(first, dict)
+        self.assertEqual(first["main"].data["slot"], 0)
+        self.assertTrue(callable(middle))
+        resolved_middle = middle()
+        self.assertEqual(resolved_middle["main"].data["slot"], 1)
+        self.assertTrue(resolved_middle["main"].data["deferred"])
+
+    def test_callable_slot_resolving_to_none(self):
+        """A Callable that returns None on resolution behaves as a sink for that
+        slot. mq.send already handles a None return from a Callable.
+        """
+
+        class DeferredSinkFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                return [lambda: None]
+
+        f = self._make_filter(DeferredSinkFilter, batch_size=2)
+        results = f._execute_batch([{"main": Frame({"val": 1})}])
+        self.assertEqual(len(results), 1)
+        closure = results[0]
+        self.assertTrue(callable(closure))
+        self.assertIsNone(closure())
+
+    def test_ema_not_updated_when_any_slot_callable(self):
+        """If ANY slot is a Callable, the synchronous EMA update in _execute_batch
+        is skipped — each Callable does its own EMA update on resolution. Mirrors
+        _process_frames_single's behavior.
+        """
+
+        class PartialDeferFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Two dicts and one Callable: the presence of a Callable should
+                # suppress the batch-level EMA update.
+                return [
+                    {"main": Frame({"slot": 0})},
+                    {"main": Frame({"slot": 1})},
+                    lambda: {"main": Frame({"slot": 2})},
+                ]
+
+        f = self._make_filter(PartialDeferFilter, batch_size=3)
+        prior_ema = f._process_time_ema
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        f.process_frames({"main": Frame({"val": 3})})
+
+        self.assertEqual(f._process_time_ema, prior_ema)
+
+
 if __name__ == "__main__":
     unittest.main()
