@@ -1026,5 +1026,190 @@ class TestManualBatchTrigger(unittest.TestCase):
         self.assertEqual(len(f._frame_buffer), 5)
 
 
+class TestBatchWorkersPool(unittest.TestCase):
+    """batch_workers > 1: process_batch runs on a ThreadPoolExecutor; per-slot
+    Callables wait on the future. Backpressure via submission semaphore.
+    """
+
+    def _make_filter(
+        self,
+        filter_cls,
+        batch_size,
+        workers,
+        shutdown_timeout=5.0,
+    ):
+        config = FilterConfig(
+            id="test-pool",
+            batch_size=batch_size,
+            accumulate_timeout_ms=1000.0,
+            batch_workers=workers,
+            batch_shutdown_timeout_s=shutdown_timeout,
+        )
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_invalid_batch_workers_zero(self):
+        config = FilterConfig(id="bad", batch_size=2, batch_workers=0)
+        with self.assertRaises(ValueError):
+            Filter.normalize_config(config)
+
+    def test_batch_workers_one_is_inline_path(self):
+        """batch_workers=1 keeps the synchronous path — no pool ever created."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, workers=1)
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Pool was never instantiated.
+        self.assertIsNone(f._batch_pool)
+
+    def test_pool_returns_callables(self):
+        """In pool mode, _execute_batch returns Callables (not dicts)."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, workers=2)
+        try:
+            results = f._execute_batch([
+                {"main": Frame({"val": 1})},
+                {"main": Frame({"val": 2})},
+            ])
+            self.assertEqual(len(results), 2)
+            for r in results:
+                self.assertTrue(callable(r))
+            # Resolve one to verify it returns a real dict.
+            resolved = results[0]()
+            self.assertIsInstance(resolved, dict)
+        finally:
+            f.fini()
+
+    def test_pool_batches_overlap_in_wall_clock(self):
+        """Two batches submitted back-to-back actually run in parallel."""
+
+        barrier = threading.Barrier(2, timeout=5.0)
+
+        class OverlapFilter(Filter):
+            def setup(self, config):
+                self.started_at = []
+                self.ended_at = []
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                self.started_at.append(time.time())
+                # Wait for both workers to enter before either returns —
+                # only possible if they ran concurrently.
+                barrier.wait()
+                self.ended_at.append(time.time())
+                return [{"main": Frame({"slot": 0})}] * len(batch)
+
+        f = self._make_filter(OverlapFilter, batch_size=1, workers=2)
+        try:
+            r1 = f._execute_batch([{"main": Frame({"a": 1})}])
+            r2 = f._execute_batch([{"main": Frame({"a": 2})}])
+            # Resolve both — this drives the futures to completion.
+            r1[0]()
+            r2[0]()
+            self.assertEqual(len(f.started_at), 2)
+            # Both batches must have entered the barrier at the same time
+            # (sequential execution would deadlock at barrier.wait()).
+            self.assertLess(abs(f.started_at[1] - f.started_at[0]), 1.0)
+        finally:
+            f.fini()
+
+    def test_pool_backpressure_blocks_submission_when_full(self):
+        """When the pool is full (all batch_workers slots in use),
+        _execute_batch_pool blocks on the semaphore until a worker frees."""
+
+        gate = threading.Event()
+
+        class GatedFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                gate.wait(timeout=5.0)
+                return [{"main": Frame({"done": True})}] * len(batch)
+
+        # workers=2 so we can saturate with two submissions before the third
+        # backpressures. workers=1 would take the synchronous path entirely.
+        f = self._make_filter(GatedFilter, batch_size=1, workers=2)
+        try:
+            r1 = f._execute_batch([{"main": Frame({"a": 1})}])
+            r2 = f._execute_batch([{"main": Frame({"a": 2})}])
+            # Pool fully busy at 2/2. Third submit should block.
+            blocked = threading.Event()
+            released = threading.Event()
+            r3_holder = []
+
+            def submit_third():
+                blocked.set()
+                r3 = f._execute_batch([{"main": Frame({"a": 3})}])
+                r3_holder.append(r3)
+                released.set()
+
+            t = threading.Thread(target=submit_third)
+            t.start()
+            blocked.wait(timeout=1.0)
+            time.sleep(0.1)
+            self.assertFalse(
+                released.is_set(),
+                "third submit should be blocked while pool is full",
+            )
+            # Let workers finish — semaphore frees, third submission proceeds.
+            gate.set()
+            released.wait(timeout=5.0)
+            self.assertTrue(released.is_set())
+            t.join(timeout=5.0)
+            # Drain to release pool workers cleanly.
+            r1[0]()
+            r2[0]()
+            r3_holder[0][0]()
+        finally:
+            f.fini()
+
+    def test_pool_drains_on_fini(self):
+        """fini() waits for in-flight batches up to batch_shutdown_timeout_s."""
+
+        class SlowFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                time.sleep(0.2)
+                return [{"main": Frame({"done": True})}] * len(batch)
+
+        f = self._make_filter(
+            SlowFilter, batch_size=1, workers=2, shutdown_timeout=5.0
+        )
+        # Submit but don't poll the callables — they're in flight.
+        f._execute_batch([{"main": Frame({"a": 1})}])
+        f._execute_batch([{"main": Frame({"a": 2})}])
+        # Fini should wait for both to finish (< 5s timeout).
+        t0 = time.time()
+        f.fini()
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 5.0)
+        # All futures should have completed (no warning would fire).
+        with f._batch_inflight_lock:
+            # add_done_callback fires async — give it a tick to drain.
+            time.sleep(0.05)
+            self.assertEqual(len(f._batch_inflight), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

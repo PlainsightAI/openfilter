@@ -1,3 +1,4 @@
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -301,6 +302,12 @@ class FilterConfig(
     batch_trigger: (
         Literal["auto", "manual"] | None
     )  # "auto" (default) fires on count or timeout; "manual" disables both — only Filter.flush_batch() drains.
+    batch_workers: (
+        int | None
+    )  # >1 runs process_batch() on a ThreadPoolExecutor; loop accumulates next batch while current is in flight.
+    batch_shutdown_timeout_s: (
+        float | None
+    )  # Max seconds to wait for in-flight batches to drain on fini(). Default 60.
 
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
@@ -559,6 +566,19 @@ class Filter:
             express with (count, timeout) — e.g. media-time intervals, gate predicates, keyframe boundaries. Manual
             mode applies a safety cap at batch_size * 4 buffered frames to surface forgotten flushes via a warning
             and force-dispatch; configure accumulate_window > batch_size * 4 if you intentionally hold more.
+
+        batch_workers:
+            Concurrency cap for in-flight process_batch() calls. Default 1 (current behavior — process_batch runs
+            on the loop thread). When > 1, process_batch is dispatched to a bounded ThreadPoolExecutor and the
+            loop continues to accumulate the next batch while previous batches run. Each batch's result slots are
+            wrapped in Callables that mq.send polls in submission order, so downstream sees results in
+            flush-trigger order even when workers complete out of order. Submission BLOCKS when all workers are
+            busy (natural upstream backpressure rather than silent drops). Useful for network-bound batches
+            (remote VLM/retrieval calls) where call latency > flush interval.
+
+        batch_shutdown_timeout_s:
+            Maximum seconds to wait for in-flight batch workers to drain during fini(). Default 60. Batches still
+            running past this timeout are abandoned with a warning rather than blocking shutdown indefinitely.
 
     Environment variables:
         LOG_LEVEL:
@@ -831,6 +851,22 @@ class Filter:
         self._batch_trigger: str = (
             str(config.get("batch_trigger") or "auto").strip().lower()
         )
+        # Pool-based async dispatch: when batch_workers > 1, process_batch()
+        # runs on a ThreadPoolExecutor and the loop accumulates the next batch
+        # while previous ones are in flight. Pool created lazily on first use
+        # in _execute_batch so test setups that mock the filter don't pay the
+        # thread-creation cost for batch_workers=1 paths.
+        self._batch_workers: int = int(config.get("batch_workers") or 1)
+        self._batch_shutdown_timeout_s: float = float(
+            config.get("batch_shutdown_timeout_s") or 60.0
+        )
+        self._batch_pool = None  # type: concurrent.futures.ThreadPoolExecutor | None
+        self._batch_submit_sem: threading.Semaphore | None = None
+        # In-flight batch futures, tracked for shutdown drain. Manipulated only
+        # by the loop thread (submit) and worker thread (remove on done), so a
+        # lock guards mutations.
+        self._batch_inflight_lock = threading.Lock()
+        self._batch_inflight: set = set()
         self._batch_lock = threading.Lock()
         self._batch_flush_event = threading.Event()
         self._batch_wakeup = threading.Event()
@@ -1494,7 +1530,14 @@ class Filter:
         on the batch's wall-clock duration — same shape as a Callable returned
         from process(). Each closure carries its own per-slot timing: it does
         the EMA update + _inject_timings on resolution, not at submission time.
+
+        When batch_workers > 1, process_batch() runs on the pool — submission
+        blocks if the pool is full (natural upstream backpressure) and the
+        loop continues accumulating the next batch while previous batches are
+        in flight.
         """
+        if self._batch_workers > 1:
+            return self._execute_batch_pool(batch)
         t_in = time.time()
         try:
             results = self.process_batch(batch)
@@ -1575,6 +1618,128 @@ class Filter:
             return result
 
         return _timed_batch_slot
+
+    def _ensure_batch_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Lazily construct the ThreadPoolExecutor + submission semaphore.
+
+        Called on first dispatch when batch_workers > 1. Holding the pool's
+        lifetime to first-use means non-async-pool code paths (every
+        batch_workers == 1 filter, plus every test that mocks the filter) pay
+        zero thread-creation cost.
+        """
+        if self._batch_pool is None:
+            self._batch_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._batch_workers,
+                thread_name_prefix=f"batch-{self.__class__.__name__}",
+            )
+            # Bound in-flight submissions at batch_workers — provides natural
+            # backpressure: when the pool is busy, _execute_batch_pool blocks
+            # on acquire() until a worker frees.
+            self._batch_submit_sem = threading.Semaphore(self._batch_workers)
+        return self._batch_pool
+
+    def _execute_batch_pool(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[Callable[[], dict[str, Frame] | None]]:
+        """Async dispatch path: submit process_batch() to the pool, return
+        per-slot Callables that mq.send polls in submission order.
+
+        Submission blocks when the pool is full so the loop thread sees
+        backpressure rather than queuing without bound. Result ordering is
+        preserved automatically: loop_once feeds these Callables to mq.send
+        in batch order, and mq.send dispatches them sequentially per the
+        existing Callable contract on process().
+        """
+        pool = self._ensure_batch_pool()
+        # Capture stop_evt-aware semaphore wait. Acquire blocks here when all
+        # workers are busy; this is the backpressure point on the loop thread.
+        while not self._batch_submit_sem.acquire(timeout=POLL_TIMEOUT_MS / 1000.0):
+            if self.stop_evt.is_set():
+                # Shutting down — abandon this batch rather than wait forever.
+                logger.warning(
+                    "batch_workers pool busy during stop_evt; dropping batch of %d frame(s)",
+                    len(batch),
+                )
+                return []
+
+        future = pool.submit(self._batch_pool_worker, batch)
+        with self._batch_inflight_lock:
+            self._batch_inflight.add(future)
+
+        def _on_done(f: concurrent.futures.Future) -> None:
+            self._batch_submit_sem.release()
+            with self._batch_inflight_lock:
+                self._batch_inflight.discard(f)
+
+        future.add_done_callback(_on_done)
+
+        return [
+            self._wrap_pool_slot_callable(future, i, len(batch))
+            for i in range(len(batch))
+        ]
+
+    def _batch_pool_worker(
+        self, batch: list[dict[str, Frame]]
+    ) -> tuple[float, float, list]:
+        """Pool-thread entry point. Runs process_batch() and returns the raw
+        result list bracketed by start/end timestamps. Per-slot normalization
+        + EMA + metadata enqueue all happen on resolution, not here, so
+        results emerge with timing tied to when downstream actually pulls."""
+        t_in = time.time()
+        results = self.process_batch(batch)
+        t_out = time.time()
+        if results is None:
+            results = [None] * len(batch)
+        return (t_in, t_out, results)
+
+    def _wrap_pool_slot_callable(
+        self,
+        future: concurrent.futures.Future,
+        slot_idx: int,
+        batch_len: int,
+    ) -> Callable[[], dict[str, Frame] | None]:
+        """Closure that waits on a pool future and resolves a single slot.
+
+        Mirrors _wrap_batch_slot_callable's per-slot timing/normalization shape
+        but sources its data from a Future shared across all slots in the
+        batch. The first slot to resolve pays the wait; subsequent slots from
+        the same batch see the resolved future and return immediately.
+        """
+
+        def _resolve():
+            try:
+                t_in, t_out, results = future.result()
+            except Exception:
+                logger.exception(
+                    "Pool batch worker raised; slot %d/%d will not emit",
+                    slot_idx,
+                    batch_len,
+                )
+                raise
+            if slot_idx >= len(results):
+                return None
+            slot = results[slot_idx]
+            if slot is None:
+                return None
+            if callable(slot):
+                # FILTER-457: per-slot Callable returned by process_batch.
+                # Resolve inline so this acts as a single deferred slot.
+                slot = slot()
+                if slot is None:
+                    return None
+            frames = self._normalize_frame_result(slot)
+            process_time_ms = (t_out - t_in) * 1000
+            self._filter_time_in = t_in
+            self._filter_time_out = t_out
+            self._update_process_time_ema(process_time_ms)
+            self._inject_timings(frames, t_in, t_out, process_time_ms)
+            try:
+                self._metadata_queue.put_nowait((frames, self.emitter))
+            except queue.Full:
+                pass
+            return frames
+
+        return _resolve
 
     def _send_frames(self, frames, outputs_timeout: float) -> None:
         while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
@@ -1984,6 +2149,28 @@ class Filter:
                     len(window_snapshot),
                     exc_info=True,
                 )
+        # Drain the worker pool with the configured timeout. Batches still in
+        # flight past batch_shutdown_timeout_s are abandoned with a warning.
+        if self._batch_pool is not None:
+            with self._batch_inflight_lock:
+                pending = list(self._batch_inflight)
+            if pending:
+                done, not_done = concurrent.futures.wait(
+                    pending, timeout=self._batch_shutdown_timeout_s
+                )
+                if not_done:
+                    logger.warning(
+                        "batch_workers shutdown abandoned %d in-flight batch(es) "
+                        "after %.1fs timeout",
+                        len(not_done),
+                        self._batch_shutdown_timeout_s,
+                    )
+            # cancel_futures=False — futures already submitted should finish so
+            # mq.send can poll their slot callables; not_done futures are best-
+            # effort and will eventually resolve in the background.
+            self._batch_pool.shutdown(wait=False)
+            self._batch_pool = None
+            self._batch_submit_sem = None
         self._stop_metadata_worker()
         if hasattr(self, "emitter") and self.emitter is not None:
             self.emitter.emit_stop()
@@ -2072,6 +2259,20 @@ class Filter:
                     f"batch_trigger must be 'auto' or 'manual', got {trigger!r}"
                 )
             config.batch_trigger = trigger
+
+        if (workers := config.get("batch_workers")) is not None:
+            workers = int(workers)
+            if workers < 1:
+                raise ValueError(f"batch_workers must be >= 1, got {workers}")
+            config.batch_workers = workers
+
+        if (shutdown_to := config.get("batch_shutdown_timeout_s")) is not None:
+            shutdown_to = float(shutdown_to)
+            if shutdown_to <= 0:
+                raise ValueError(
+                    f"batch_shutdown_timeout_s must be > 0, got {shutdown_to}"
+                )
+            config.batch_shutdown_timeout_s = shutdown_to
 
         return config
 
