@@ -897,5 +897,134 @@ class TestAccumulateWindow(unittest.TestCase):
         self.assertEqual(len(f.received_batches), 2)
 
 
+class TestManualBatchTrigger(unittest.TestCase):
+    """batch_trigger='manual' disables auto count/timeout triggers; only
+    Filter.flush_batch() drains.
+    """
+
+    def _make_filter(
+        self,
+        filter_cls,
+        batch_size,
+        trigger="auto",
+        window=None,
+        timeout_ms=1000.0,
+    ):
+        kwargs = {
+            "id": "test-manual",
+            "batch_size": batch_size,
+            "accumulate_timeout_ms": timeout_ms,
+            "batch_trigger": trigger,
+        }
+        if window is not None:
+            kwargs["accumulate_window"] = window
+        config = FilterConfig(**kwargs)
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_invalid_batch_trigger(self):
+        config = FilterConfig(id="bad", batch_size=2, batch_trigger="sometimes")
+        with self.assertRaises(ValueError) as ctx:
+            Filter.normalize_config(config)
+        self.assertIn("batch_trigger", str(ctx.exception))
+
+    def test_default_trigger_is_auto(self):
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        self.assertEqual(f._batch_trigger, "auto")
+
+    def test_manual_mode_suppresses_count_trigger(self):
+        """In manual mode, accumulating batch_size frames does NOT dispatch."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="manual")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        f.process_frames({"main": Frame({"val": 3})})
+        self.assertEqual(len(f.received_batches), 0)
+        # Frames pile up in the buffer.
+        self.assertEqual(len(f._frame_buffer), 3)
+
+    def test_manual_mode_does_not_start_watcher(self):
+        """Manual mode skips the timeout watcher entirely."""
+        f = self._make_filter(
+            CountingBatchFilter, batch_size=5, trigger="manual", timeout_ms=50.0
+        )
+        f.process_frames({"main": Frame({"val": 1})})
+        # No watcher should have been started — _reset_batch_timer isn't called.
+        self.assertIsNone(f._batch_watcher)
+
+    def test_flush_batch_triggers_dispatch_on_next_frame(self):
+        """flush_batch() sets the event; the next frame append picks it up and
+        dispatches."""
+        f = self._make_filter(CountingBatchFilter, batch_size=5, trigger="manual")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 0)
+        f.flush_batch()
+        f.process_frames({"main": Frame({"val": 3})})
+        self.assertEqual(len(f.received_batches), 1)
+        # All three frames should be in the dispatched batch (manual mode without
+        # accumulate_window keeps the simple list buffer that drains on dispatch).
+        dispatched = f.received_batches[0]
+        self.assertEqual(len(dispatched), 3)
+
+    def test_flush_batch_noop_in_non_batch_mode(self):
+        """At batch_size == 1, flush_batch is a documented no-op."""
+        f = self._make_filter(FallbackBatchFilter, batch_size=1)
+        # Should not raise, should not flip the event (event doesn't gate
+        # anything in batch_size=1 path, but verify the contract).
+        f.flush_batch()
+        self.assertFalse(f._batch_flush_event.is_set())
+
+    def test_manual_mode_safety_cap_force_flushes(self):
+        """If a manual-mode filter never calls flush_batch(), the runtime
+        force-flushes at batch_size * 4 to bound memory."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="manual")
+        # batch_size=2 → safety cap at 8 frames.
+        for i in range(8):
+            f.process_frames({"main": Frame({"val": i})})
+        # 8th frame should have tripped the safety cap and force-dispatched.
+        self.assertEqual(len(f.received_batches), 1)
+        self.assertEqual(len(f.received_batches[0]), 8)
+
+    def test_auto_mode_count_trigger_still_fires(self):
+        """batch_trigger='auto' (default) — count trigger behaves as before."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="auto")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+
+    def test_manual_mode_with_sliding_window(self):
+        """Manual mode composes with accumulate_window: flush_batch() picks
+        from the ring via select_batch()."""
+        f = self._make_filter(
+            CountingBatchFilter, batch_size=2, trigger="manual", window=6
+        )
+        for i in range(4):
+            f.process_frames({"main": Frame({"val": i})})
+        self.assertEqual(len(f.received_batches), 0)
+        # Ring should hold all 4 frames.
+        self.assertEqual(len(f._frame_buffer), 4)
+        f.flush_batch()
+        f.process_frames({"main": Frame({"val": 4})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Sliding mode preserves ring; default select_batch returns last batch_size.
+        dispatched = f.received_batches[0]
+        self.assertEqual(len(dispatched), 2)
+        vals = [b["main"].data["val"] for b in dispatched]
+        self.assertEqual(vals, [3, 4])
+        # Ring should still hold the 5 frames (capped at 6 maxlen).
+        self.assertEqual(len(f._frame_buffer), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

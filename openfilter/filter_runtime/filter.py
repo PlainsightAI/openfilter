@@ -298,6 +298,9 @@ class FilterConfig(
     accumulate_window: (
         int | None
     )  # Ring buffer size in sliding-window mode; must be >= batch_size. Unset = one-shot buffer (current behavior).
+    batch_trigger: (
+        Literal["auto", "manual"] | None
+    )  # "auto" (default) fires on count or timeout; "manual" disables both — only Filter.flush_batch() drains.
 
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
@@ -547,6 +550,15 @@ class Filter:
             with temporal sampling needs (caption/VLM, re-ID, audio-visual sync) reach across a wider window than
             what fits in a single batch. Unset (the default) preserves the original one-shot drain-on-dispatch
             behavior — equivalent to accumulate_window=batch_size.
+
+        batch_trigger:
+            "auto" (default) or "manual". In auto mode dispatch fires on the count-based trigger
+            (batch_size new frames) and the accumulate_timeout_ms watcher — original behavior. In manual mode both
+            automatic triggers are suppressed (the watcher is never started) and dispatch only happens when the
+            filter explicitly calls self.flush_batch(). Use manual mode for cadence policies the runtime can't
+            express with (count, timeout) — e.g. media-time intervals, gate predicates, keyframe boundaries. Manual
+            mode applies a safety cap at batch_size * 4 buffered frames to surface forgotten flushes via a warning
+            and force-dispatch; configure accumulate_window > batch_size * 4 if you intentionally hold more.
 
     Environment variables:
         LOG_LEVEL:
@@ -814,6 +826,11 @@ class Filter:
         # mode the buffer itself doesn't reset on dispatch, so we need an
         # independent count to know when to fire again.
         self._frames_since_last_dispatch: int = 0
+        # "auto" (default) → count + timeout triggers fire; "manual" → only
+        # Filter.flush_batch() drains. Stored verbatim, normalized in config.
+        self._batch_trigger: str = (
+            str(config.get("batch_trigger") or "auto").strip().lower()
+        )
         self._batch_lock = threading.Lock()
         self._batch_flush_event = threading.Event()
         self._batch_wakeup = threading.Event()
@@ -1389,16 +1406,41 @@ class Filter:
     ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         if not frames:
             return None
+        manual = self._batch_trigger == "manual"
         with self._batch_lock:
-            self._cancel_batch_timer()
-            # Also clear any stale flush event: if the watcher's timeout just
-            # fired as a new frame arrives, we don't want a premature flush.
-            self._batch_flush_event.clear()
+            if not manual:
+                # In auto mode the watcher times the partial-batch flush; cancel
+                # the in-flight timer because we just received a frame.
+                self._cancel_batch_timer()
+            # Drain a pending manual flush set BEFORE this frame arrived, but
+            # don't clear it before checking — flush_batch() may have fired
+            # exactly to include this frame in the dispatch.
+            manual_flush_pending = self._batch_flush_event.is_set()
             self._frame_buffer.append(frames)
             self._frames_since_last_dispatch += 1
 
-            if self._frames_since_last_dispatch < self._batch_size:
-                self._reset_batch_timer()
+            count_trigger = (
+                not manual and self._frames_since_last_dispatch >= self._batch_size
+            )
+            safety_force = False
+            if manual and not manual_flush_pending:
+                # Safety cap: if a manual-mode filter forgets to call
+                # flush_batch(), force a dispatch once the buffer reaches
+                # batch_size * 4 so memory stays bounded. Log a warning so the
+                # forgotten flush is visible rather than silently absorbed.
+                if len(self._frame_buffer) >= self._batch_size * 4:
+                    logger.warning(
+                        "batch_trigger=manual but buffer reached %d frames "
+                        "(>= batch_size * 4 = %d) without flush_batch(); "
+                        "force-flushing to bound memory",
+                        len(self._frame_buffer),
+                        self._batch_size * 4,
+                    )
+                    safety_force = True
+
+            if not (manual_flush_pending or count_trigger or safety_force):
+                if not manual:
+                    self._reset_batch_timer()
                 return None
 
             # Snapshot the ring under the lock; selection happens outside so an
@@ -1411,7 +1453,14 @@ class Filter:
                 self._frame_buffer.clear()
             self._batch_flush_event.clear()
 
-        batch = self.select_batch(window_snapshot)
+        if safety_force:
+            # Safety dispatch is a bailout — drain everything we've accumulated
+            # rather than letting an overridden select_batch() decide. The user
+            # is already in a bug (forgot flush_batch); the priority is bounded
+            # memory, not picking semantics.
+            batch = window_snapshot
+        else:
+            batch = self.select_batch(window_snapshot)
 
         results = self._execute_batch(batch)
         # Stash intermediate results for loop_once to drain.
@@ -2016,6 +2065,14 @@ class Filter:
                 )
             config.accumulate_window = acc_window
 
+        if (trigger := config.get("batch_trigger")) is not None:
+            trigger = str(trigger).strip().lower()
+            if trigger not in ("auto", "manual"):
+                raise ValueError(
+                    f"batch_trigger must be 'auto' or 'manual', got {trigger!r}"
+                )
+            config.batch_trigger = trigger
+
         return config
 
     def setup(self, config: FilterConfig) -> None:
@@ -2113,6 +2170,28 @@ class Filter:
                 r = r()
             results.append(r)
         return results
+
+    def flush_batch(self) -> None:
+        """Trigger a dispatch of the current ring buffer on the next opportunity.
+
+        Safe to call from process() or from any other thread. Sets an event the
+        runtime checks at the next frame append (via _process_frames_batched)
+        and at every recv poll (via loop_once's _process_batch_flush path) so
+        the dispatch fires either when the next frame arrives OR when the loop
+        idles, whichever happens first.
+
+        Required for cadence policies the runtime can't express with
+        (batch_size, accumulate_timeout_ms) — for example a filter that fires
+        every N seconds of media-time, when an active-key gate opens, or on
+        detected keyframe boundaries. Combine with batch_trigger="manual" to
+        suppress the runtime's automatic count/timeout triggers entirely;
+        otherwise flush_batch() coexists with auto triggers and fires sooner.
+
+        In non-batch mode (batch_size == 1) this is a no-op.
+        """
+        if self._batch_size <= 1:
+            return
+        self._batch_flush_event.set()
 
     def select_batch(
         self, window: Sequence[dict[str, Frame]]
