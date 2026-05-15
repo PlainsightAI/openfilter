@@ -33,6 +33,38 @@ def _strip_meta(d):
 getdatas = lambda q, t=5: {t: _strip_meta(f.data) for t, f in q.get(True, t).items()}
 
 
+def wait_for_runner_exit(runner, timeout=5.0, interval=0.1):
+    """Poll ``runner.step()`` until it returns something other than ``False``, or timeout.
+
+    Used after sending the shutdown sentinel (``qout.put(None)``) to give all
+    filters time to drain + report exit codes. Returns whatever ``step()``
+    yields at that point — typically the exit-codes list, or ``False`` on
+    timeout (in which case the caller's ``assertEqual`` will fail loudly
+    with that ``False``, surfacing the actual problem rather than a
+    timing-flaky pass on some Python versions and not others).
+
+    Why a test-local helper instead of ``Runner.wait(timeout)``:
+    ``Runner.wait`` already implements a timeout-bounded step loop, but it
+    relies on the runner's ``step_wait`` parameter (a ZMQ-poll timeout
+    threaded into ``step()``) for its waiting discipline. Tests elsewhere
+    in this file drive the runner via bare ``step()`` calls; reaching for
+    ``wait()`` only at the shutdown step would break that pattern. The
+    explicit ``sleep(interval)`` here also gives the kernel a deterministic
+    scheduling gap between attempts, which mattered on Python 3.10 under
+    #82's zero-copy IPC where a single ``step()`` immediately after
+    ``qout.put(None)`` was racing the filters' drain-and-report path. See
+    FILTER-461.
+    """
+    deadline = time() + timeout
+    while True:
+        result = runner.step()
+        if result is not False:
+            return result
+        if time() >= deadline:
+            return result
+        sleep(interval)
+
+
 class FilterFromQueue(Filter):
     def setup(self, config):
         if (start_sleep := config.start_sleep):
@@ -285,7 +317,7 @@ class TestFilterOld(unittest.TestCase):
 
             qout1.put(None)  # tell them nicely to stop
             qout2.put(None)
-            self.assertEqual(runner.step(), [0, 0, 0])
+            self.assertEqual(wait_for_runner_exit(runner), [0, 0, 0])
 
         finally:
             runner.stop()
@@ -318,12 +350,12 @@ class TestFilterOld(unittest.TestCase):
                 self.assertEqual(getdatas(qin1), d)
 
                 qout.put(None)  # tell it nicely to stop
-                self.assertEqual(runner2.step(), [0])
+                self.assertEqual(wait_for_runner_exit(runner2), [0])
 
             finally:
                 runner2.stop()
 
-            self.assertEqual(runner1.step(), [0, 0])
+            self.assertEqual(wait_for_runner_exit(runner1), [0, 0])
 
         finally:
             runner1.stop()
@@ -355,7 +387,7 @@ class TestFilterOld(unittest.TestCase):
             self.assertEqual(set(r), set(('main', '_metrics', '_filter')))
 
             qout.put(None)  # tell it nicely to stop
-            self.assertEqual(runner.step(), [0, 0])
+            self.assertEqual(wait_for_runner_exit(runner), [0, 0])
 
         finally:
             runner.stop()
@@ -495,7 +527,7 @@ class TestFilterOld(unittest.TestCase):
             # self.assertTrue(qworker2.empty())
 
             qout.put(None)  # tell it nicely to stop
-            self.assertEqual(runner.step(), [0, 0, 0, 0, 0])
+            self.assertEqual(wait_for_runner_exit(runner), [0, 0, 0, 0, 0])
 
         finally:
             runner.stop()
