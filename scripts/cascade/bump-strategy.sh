@@ -14,18 +14,30 @@ set -euo pipefail
 BUMP_HELPER_DIR=$(mktemp -d)
 trap 'rm -rf "${BUMP_HELPER_DIR}"' EXIT
 cat > "${BUMP_HELPER_DIR}/_bump.py" <<'HELPER'
-"""rewrite_requirement: bump ==/>=/~= clauses in a PEP 508 requirement.
+"""rewrite_requirement: bump ==/>=/~= clauses in a PEP 508 requirement,
+and widen `<` / `<=` upper bounds that would otherwise exclude OF_VERSION.
 
-Lower-bound clauses go to OF_VERSION; upper-bound clauses (<, <=, !=),
-clause order, surrounding whitespace, and any environment marker are
-preserved verbatim.
+Lower-bound clauses (==, >=, ~=) go to OF_VERSION. Upper-bound clauses
+(<, <=) are widened to admit OF_VERSION when they currently exclude it;
+otherwise they stay verbatim. != exclusions, `>` lower bounds, clause
+order, surrounding whitespace, and any environment marker are preserved
+verbatim regardless.
+
+Widening rule for the new upper bound:
+    * target.major == 0 (pre-1.0 / unstable): `<target.major>.<target.minor + 1>.0`
+      (e.g. 0.2.0 -> 0.3.0). Matches the org's existing "track next minor"
+      pin pattern for 0.X filters.
+    * target.major >= 1: `<target.major + 1>.0.0` (e.g. 1.0.0 -> 2.0.0).
+      Standard SemVer "track next major" for post-1.0 filters.
 """
 from __future__ import annotations
 
 from packaging.requirements import Requirement
 from packaging.specifiers import Specifier
+from packaging.version import Version
 
 _BUMPABLE_OPS = ("==", ">=", "~=")
+_UPPER_BOUND_OPS = ("<", "<=")
 
 
 def _specifier_span(text: str, req: Requirement) -> tuple[int, int]:
@@ -54,10 +66,20 @@ def _specifier_span(text: str, req: Requirement) -> tuple[int, int]:
     return spec_start, spec_end
 
 
+def next_upper_bound(target: Version) -> str:
+    """Compute the widened upper bound to admit `target` and a reasonable
+    forward range. See module docstring for the rule.
+    """
+    if target.major == 0:
+        return f"0.{target.minor + 1}.0"
+    return f"{target.major + 1}.0.0"
+
+
 def rewrite_requirement(old: str, of_version: str) -> str:
     req = Requirement(old)
     if not req.specifier:
         return old
+    target = Version(of_version)
     spec_start, spec_end = _specifier_span(old, req)
     spec_text = old[spec_start:spec_end]
     new_clauses: list[str] = []
@@ -68,13 +90,25 @@ def rewrite_requirement(old: str, of_version: str) -> str:
             new_clauses.append(raw)
             continue
         s = Specifier(stripped)
+        leading = raw[: len(raw) - len(raw.lstrip())]
+        trailing = raw[len(raw.rstrip()) :]
         if s.operator in _BUMPABLE_OPS:
-            leading = raw[: len(raw) - len(raw.lstrip())]
-            trailing = raw[len(raw.rstrip()) :]
             new_clauses.append(f"{leading}{s.operator}{of_version}{trailing}")
             bumped = True
-        else:
-            new_clauses.append(raw)
+            continue
+        if s.operator in _UPPER_BOUND_OPS:
+            bound = Version(s.version)
+            needs_widen = (
+                (s.operator == "<" and target >= bound)
+                or (s.operator == "<=" and target > bound)
+            )
+            if needs_widen:
+                new_clauses.append(
+                    f"{leading}<{next_upper_bound(target)}{trailing}"
+                )
+                bumped = True
+                continue
+        new_clauses.append(raw)
     if not bumped:
         return old
     return old[:spec_start] + ",".join(new_clauses) + old[spec_end:]

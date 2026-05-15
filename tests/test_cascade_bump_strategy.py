@@ -223,3 +223,114 @@ def test_pyproject_idempotent_rerun_is_noop(tmp_path: Path) -> None:
     _run(tmp_path)
     second = py.read_text()
     assert first == second
+
+
+# ───────────────────────── upper-bound widening ──────────────────────────
+# DT-145 augmentation: bump-strategy.sh now widens `<` / `<=` upper bounds
+# that would exclude OF_VERSION. Widening rule: for 0.X targets, next minor
+# after target; for 1.0+ targets, next major after target. Lower bounds
+# (`>=`), exclusions (`!=`), and `>` clauses are still preserved verbatim.
+
+
+def test_pyproject_widens_upper_bound_for_0_x_target(tmp_path: Path) -> None:
+    """Org-canonical case: filter pinning `>=0.1.30,<0.2.0` cascades to 0.2.0."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter[all]>=0.1.30,<0.2.0"]\n'
+    )
+    _run(tmp_path, of_version="0.2.0")
+    rewritten = py.read_text()
+    # Lower bound bumped to target; upper bound widened to next minor.
+    assert '"openfilter[all]>=0.2.0,<0.3.0"' in rewritten
+
+
+def test_pyproject_widens_upper_bound_for_1_0_target(tmp_path: Path) -> None:
+    """1.0+ targets widen to next-major rather than next-minor."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter>=0.2.0,<1.0.0"]\n'
+    )
+    _run(tmp_path, of_version="1.0.0")
+    rewritten = py.read_text()
+    assert '"openfilter>=1.0.0,<2.0.0"' in rewritten
+
+
+def test_pyproject_widens_le_upper_bound(tmp_path: Path) -> None:
+    """`<=X` upper bound widens when target > X."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter>=0.1.30,<=0.1.99"]\n'
+    )
+    _run(tmp_path, of_version="0.2.0")
+    rewritten = py.read_text()
+    # Both `<=` and `<` widen to the `<<next>` form.
+    assert '"openfilter>=0.2.0,<0.3.0"' in rewritten
+
+
+def test_pyproject_does_not_widen_when_upper_bound_already_admits_target(
+    tmp_path: Path,
+) -> None:
+    """No widening when `<X` already permits target — bound preserved verbatim."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter>=0.1.10,<2"]\n'
+    )
+    _run(tmp_path, of_version="1.2.3")
+    rewritten = py.read_text()
+    # Lower bound bumped; upper bound `<2` preserved verbatim (1.2.3 < 2).
+    assert '"openfilter>=1.2.3,<2"' in rewritten
+
+
+def test_pyproject_preserves_inline_comment_when_widening(tmp_path: Path) -> None:
+    """tomlkit + the rewriter together preserve the trailing inline comment
+    even though both the lower and upper bound are rewritten."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = [\n'
+        '    "openfilter>=0.1.30,<0.2.0",  # widened by cascade on 0.2.0 release\n'
+        ']\n'
+    )
+    _run(tmp_path, of_version="0.2.0")
+    rewritten = py.read_text()
+    assert '"openfilter>=0.2.0,<0.3.0"' in rewritten
+    assert "# widened by cascade on 0.2.0 release" in rewritten
+
+
+def test_requirements_widens_upper_bound(tmp_path: Path) -> None:
+    """requirements.txt path goes through the same _bump.py helper."""
+    req = tmp_path / "requirements.txt"
+    req.write_text("openfilter>=0.1.30,<0.2.0\n")
+    _run(tmp_path, of_version="0.2.0")
+    assert req.read_text() == "openfilter>=0.2.0,<0.3.0\n"
+
+
+def test_pyproject_widening_is_idempotent(tmp_path: Path) -> None:
+    """Re-running bump-strategy on an already-widened pin is a no-op."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter>=0.1.30,<0.2.0"]\n'
+    )
+    _run(tmp_path, of_version="0.2.0")
+    first = py.read_text()
+    _run(tmp_path, of_version="0.2.0")
+    second = py.read_text()
+    assert first == second
+    assert '"openfilter>=0.2.0,<0.3.0"' in second

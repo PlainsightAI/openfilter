@@ -1,7 +1,7 @@
 """Check openfilter version constraint compatibility.
 
 Reads OF_VERSION from env, scans pyproject.toml for openfilter dependency.
-Outputs: none | none:poetry-format | ok:<spec> | skip:<spec> | error:<msg>
+Outputs: none | none:poetry-format | ok:<spec> | widen:<spec> | skip:<spec> | error:<msg>
 
 `none:poetry-format` is emitted when no openfilter dep was found in PEP 621
 [project.dependencies] / [project.optional-dependencies] but one IS present
@@ -9,6 +9,14 @@ under Poetry's [tool.poetry.dependencies] (or dev-dependencies). The cascade
 only knows how to rewrite PEP 621 pins, so Poetry consumers are still
 skipped — but the operator gets a distinguishable diagnostic instead of a
 silent "no openfilter dep" line.
+
+`widen:<spec>` means OF_VERSION is outside the current constraint, BUT the
+only blocking clauses are upper bounds (`<` / `<=`) that bump-strategy.sh
+can safely widen. `skip:<spec>` is reserved for blocks the cascade refuses
+to rewrite automatically: lower-bound exclusions (would be a downgrade) and
+explicit `!=` exclusions (deliberate gating). Splitting `widen` from `skip`
+lets the cascade discover this filter as eligible while keeping a hard
+boundary against silent semantic regressions.
 
 When openfilter appears in MULTIPLE PEP 621 tables (e.g. [project.dependencies]
 AND [project.optional-dependencies.gpu]), all matching specifiers are
@@ -20,8 +28,30 @@ the optional specifier rejects.
 import sys, os, tomllib
 
 from packaging.requirements import Requirement
-from packaging.specifiers import SpecifierSet
+from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import Version
+
+
+def _is_widenable_block(combined: SpecifierSet, target: Version) -> bool:
+    """True when every clause that excludes `target` is a widenable upper bound.
+
+    Widenable: `<X` or `<=X` — bump-strategy.sh's rewriter handles these
+    in place.
+
+    Not widenable: `>=X` / `>X` lower bounds (widening would be a downgrade),
+    `!=X` exclusions (deliberate gating), and `==X` / `~=X` pins (the
+    rewriter can bump these in place, but if they're still excluding
+    target after intersection it means another clause makes the situation
+    unsalvageable; operator should inspect).
+    """
+    for s in combined:
+        if target in SpecifierSet(str(s)):
+            continue
+        if s.operator in ("<", "<="):
+            continue
+        return False
+    return True
+
 
 try:
     if not os.path.exists("pyproject.toml"):
@@ -65,6 +95,11 @@ try:
         sys.exit(0)
     v = Version(v_str)
     spec_str = str(combined)
-    print(("ok:" if v in combined else "skip:") + spec_str)
+    if v in combined:
+        print("ok:" + spec_str)
+    elif _is_widenable_block(combined, v):
+        print("widen:" + spec_str)
+    else:
+        print("skip:" + spec_str)
 except Exception as e:
     print("error:" + str(e))
