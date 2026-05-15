@@ -792,7 +792,9 @@ class Filter:
         self._batch_stop = threading.Event()
         self._batch_watcher: threading.Thread | None = None
         # Accessed only from the loop_once thread — no lock needed.
-        self._batch_pending_results: list[dict[str, Frame]] = []
+        self._batch_pending_results: list[
+            dict[str, Frame] | Callable[[], dict[str, Frame] | None]
+        ] = []
 
         try:
             self.telemetry_enabled: bool = (
@@ -1356,7 +1358,7 @@ class Filter:
 
     def _process_frames_batched(
         self, frames: dict[str, Frame]
-    ) -> dict[str, Frame] | None:
+    ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         if not frames:
             return None
         with self._batch_lock:
@@ -1382,18 +1384,30 @@ class Filter:
             self._batch_pending_results.extend(results[:-1])
         return results[-1] if results else None
 
-    def _process_batch_flush(self) -> list[dict[str, Frame]] | None:
+    def _process_batch_flush(
+        self,
+    ) -> list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]] | None:
         batch = self._take_flush_batch()
         if batch is None:
             return None
         results = self._execute_batch(batch)
         return results if results else None
 
-    def _execute_batch(self, batch: list[dict[str, Frame]]) -> list[dict[str, Frame]]:
+    def _execute_batch(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]]:
         """Run process_batch() and return normalized, timing-injected results.
 
-        Returns a list of frame dicts (possibly empty). The caller is
-        responsible for sending each result downstream.
+        Returns a list of either resolved frame dicts or Callable closures that
+        the runtime will invoke later (via mq.send's existing Callable polling).
+        Heterogeneous lists are allowed: a process_batch() implementation may
+        return any per-slot mix of dict, Frame, None, or Callable.
+
+        Callable slots let a filter hand the batch's actual work to a worker
+        thread and return a poll closure rather than blocking the loop thread
+        on the batch's wall-clock duration — same shape as a Callable returned
+        from process(). Each closure carries its own per-slot timing: it does
+        the EMA update + _inject_timings on resolution, not at submission time.
         """
         t_in = time.time()
         try:
@@ -1415,18 +1429,26 @@ class Filter:
             )
 
         process_time_ms = (t_out - t_in) * 1000
-        # Use full batch duration for each frame: batch processing is indivisible,
-        # so per-frame timing should reflect the actual batch wall-clock time.
-        self._filter_time_in = t_in
-        self._filter_time_out = t_out
-        self._update_process_time_ema(process_time_ms)
+        has_callable = any(callable(r) for r in results)
+        if not has_callable:
+            # Pure synchronous batch: record the process_batch() wall-clock as
+            # the per-batch EMA. Mirrors the immediate path in
+            # _process_frames_single, which only updates EMA when the result
+            # isn't a Callable.
+            self._filter_time_in = t_in
+            self._filter_time_out = t_out
+            self._update_process_time_ema(process_time_ms)
 
-        # Normalize results: wrap bare Frames, skip Nones
-        normalized = []
+        normalized: list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]] = []
         for result in results:
             if result is None:
                 continue
-            normalized.append(self._normalize_frame_result(result))
+            if callable(result):
+                normalized.append(self._wrap_batch_slot_callable(result))
+                continue
+            frames = self._normalize_frame_result(result)
+            self._finalize_frames(frames, t_in, t_out, process_time_ms)
+            normalized.append(frames)
 
         if not normalized:
             # Sink filter (all None results): inject timing into every input
@@ -1436,11 +1458,37 @@ class Filter:
                     self._inject_timings(b_frames, t_in, t_out, process_time_ms)
             return []
 
-        # Inject per-frame timing metadata into every result
-        for frames in normalized:
-            self._finalize_frames(frames, t_in, t_out, process_time_ms)
-
         return normalized
+
+    def _wrap_batch_slot_callable(
+        self, slot: Callable[[], dict[str, Frame] | Frame | None]
+    ) -> Callable[[], dict[str, Frame] | None]:
+        """Mirror _process_frames_single._timed_callable for a single batch slot.
+
+        Each slot records its own wall-clock so EMA reflects the per-slot
+        deferred work (e.g. a Future.result() wait), not the synchronous
+        portion of process_batch().
+        """
+
+        def _timed_batch_slot():
+            ct_in = time.time()
+            f = slot()
+            ct_out = time.time()
+            if f is None:
+                return None
+            result = self._normalize_frame_result(f)
+            ct_ms = (ct_out - ct_in) * 1000
+            self._filter_time_in = ct_in
+            self._filter_time_out = ct_out
+            self._update_process_time_ema(ct_ms)
+            self._inject_timings(result, ct_in, ct_out, ct_ms)
+            try:
+                self._metadata_queue.put_nowait((result, self.emitter))
+            except queue.Full:
+                pass
+            return result
+
+        return _timed_batch_slot
 
     def _send_frames(self, frames, outputs_timeout: float) -> None:
         while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
@@ -1978,7 +2026,12 @@ class Filter:
 
     def process_batch(
         self, batch: list[dict[str, Frame]]
-    ) -> list[dict[str, Frame] | Frame | None]:
+    ) -> list[
+        dict[str, Frame]
+        | Frame
+        | Callable[[], dict[str, Frame] | Frame | None]
+        | None
+    ]:
         """Process a batch of accumulated frames. Override this to implement batched processing.
 
         Called when batch_size > 1 and the batch is full or the accumulate timeout fires.
@@ -1990,9 +2043,16 @@ class Filter:
 
         Returns:
             List of results, one per input frame. Each element follows the same contract
-            as process() return values (dict, Frame, None). Callables returned from
-            this method are NOT supported. (The default implementation handles
-            Callable returns from process() by evaluating them eagerly.)
+            as process() return values: dict, Frame, None, or Callable. A Callable slot
+            is invoked by the runtime at the point downstream demand arrives (same
+            semantics as a Callable returned from process()) — use it to hand the batch
+            to a worker thread and return a poll closure instead of blocking the loop on
+            slow per-batch operations (e.g. remote VLM calls). Per-slot wall-clock is
+            recorded into the timing EMA when the closure resolves, not at submission.
+
+            The default implementation calls process() per frame and evaluates any
+            Callable returns eagerly to preserve pre-existing behavior; override
+            process_batch() to opt into deferred-callable semantics.
         """
         results = []
         for frames in batch:
