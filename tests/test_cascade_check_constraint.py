@@ -9,9 +9,11 @@ policy: which pin shapes get auto-cascaded vs. left to operators.
 Coverage:
 - `<X` / `<=X` upper bounds — widenable (historical behavior).
 - `~=X` / `==X` pins — widenable. Almost half the filter fleet uses `~=` per
-  org convention (Mundim's stylistic preference, no semantic intent claim);
-  classifying them as skip strands them out of the cascade.
-- `!=X` exclusions and `>X` strict lower bounds — skip (rewriter can't handle).
+  org convention; classifying them as skip strands them out of the cascade.
+- `!=X` exclusions, `>X` strict lower bounds, and `>=X` blocking floors —
+  skip. The first two have no rewriter rule; `>=X` does have one in
+  `_BUMPABLE_OPS`, but only blocks when target < X, so applying it would
+  downgrade the consumer's stated floor — kept as a skip-class guardrail.
 """
 
 from __future__ import annotations
@@ -110,6 +112,18 @@ def test_not_equal_blocking_is_skip(tmp_path: Path) -> None:
 def test_gt_strict_lower_bound_blocking_is_skip(tmp_path: Path) -> None:
     """`>X` strict lower bound — not in the rewriter's handled op set."""
     _write_pyproject(tmp_path, "openfilter>0.3.0")
+    assert _run(tmp_path, of_version="0.3.0").startswith("skip:")
+
+
+def test_ge_lower_bound_blocking_is_skip(tmp_path: Path) -> None:
+    """`>=X` floor above target — skip, even though the rewriter could rewrite it.
+
+    `>=0.5.0` with target 0.3.0 is a blocking floor: target < floor. The
+    rewriter has `>=` in `_BUMPABLE_OPS` and would emit `>=0.3.0`, but that
+    is a downgrade of the consumer's stated minimum, not a widening. Kept
+    as a skip-class guardrail so the cascade never silently downgrades.
+    """
+    _write_pyproject(tmp_path, "openfilter>=0.5.0")
     assert _run(tmp_path, of_version="0.3.0").startswith("skip:")
 
 

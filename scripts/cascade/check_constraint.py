@@ -12,10 +12,14 @@ silent "no openfilter dep" line.
 
 `widen:<spec>` — OF_VERSION is outside the current constraint and every
 blocking clause is one bump-strategy.sh's rewriter can rewrite in place
-(`<`, `<=`, `==`, `~=`, `>=`). `skip:<spec>` is reserved for blocks the
-rewriter can't handle: `!=X` exclusions and `>X` strict lower bounds.
+without downgrading: `<`, `<=`, `==`, `~=`. `skip:<spec>` covers the rest:
+`!=X` and `>X` (rewriter has no rule), and `>=X` blocking (rewriter has
+`>=` in `_BUMPABLE_OPS`, but a `>=X` clause only blocks when target < X,
+so applying that rule would downgrade the consumer's floor — different
+semantic category from widening, kept as a skip-class guardrail).
 Cascade PRs are human-reviewed before merge, so the split exists to filter
-mechanically-unhandled clauses, not to gate operator-intent decisions.
+mechanically-unhandled-or-unsafe clauses, not to gate operator-intent
+decisions.
 
 When openfilter appears in MULTIPLE PEP 621 tables (e.g. [project.dependencies]
 AND [project.optional-dependencies.gpu]), all matching specifiers are
@@ -36,7 +40,7 @@ def _is_widenable_block(combined: SpecifierSet, target: Version) -> bool:
     for s in combined:
         if target in SpecifierSet(str(s)):
             continue
-        if s.operator in ("<", "<=", "==", "~=", ">="):
+        if s.operator in ("<", "<=", "==", "~="):
             continue
         return False
     return True
