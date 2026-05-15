@@ -319,6 +319,37 @@ def test_requirements_widens_upper_bound(tmp_path: Path) -> None:
     assert req.read_text() == "openfilter>=0.2.0,<0.3.0\n"
 
 
+def test_pyproject_tilde_pin_bumps_in_place(tmp_path: Path) -> None:
+    """`~=0.1.30` cascading to 0.3.0 — rewriter emits `~=0.3.0`.
+
+    Companion to the `widen:` classification in check_constraint.py: the
+    classifier dispatches `~=` pins, and the rewriter handles them via
+    _BUMPABLE_OPS.
+    """
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter[all]~=0.1.30"]\n'
+    )
+    _run(tmp_path, of_version="0.3.0")
+    assert '"openfilter[all]~=0.3.0"' in py.read_text()
+
+
+def test_pyproject_exact_pin_bumps_in_place(tmp_path: Path) -> None:
+    """`==0.1.18` cascading to 0.3.0 — rewriter emits `==0.3.0`."""
+    py = tmp_path / "pyproject.toml"
+    py.write_text(
+        '[project]\n'
+        'name = "filter-x"\n'
+        'version = "0.0.1"\n'
+        'dependencies = ["openfilter==0.1.18"]\n'
+    )
+    _run(tmp_path, of_version="0.3.0")
+    assert '"openfilter==0.3.0"' in py.read_text()
+
+
 def test_pyproject_widening_is_idempotent(tmp_path: Path) -> None:
     """Re-running bump-strategy on an already-widened pin is a no-op."""
     py = tmp_path / "pyproject.toml"

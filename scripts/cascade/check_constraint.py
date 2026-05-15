@@ -10,13 +10,12 @@ only knows how to rewrite PEP 621 pins, so Poetry consumers are still
 skipped — but the operator gets a distinguishable diagnostic instead of a
 silent "no openfilter dep" line.
 
-`widen:<spec>` means OF_VERSION is outside the current constraint, BUT the
-only blocking clauses are upper bounds (`<` / `<=`) that bump-strategy.sh
-can safely widen. `skip:<spec>` is reserved for blocks the cascade refuses
-to rewrite automatically: lower-bound exclusions (would be a downgrade) and
-explicit `!=` exclusions (deliberate gating). Splitting `widen` from `skip`
-lets the cascade discover this filter as eligible while keeping a hard
-boundary against silent semantic regressions.
+`widen:<spec>` — OF_VERSION is outside the current constraint and every
+blocking clause is one bump-strategy.sh's rewriter can rewrite in place
+(`<`, `<=`, `==`, `~=`, `>=`). `skip:<spec>` is reserved for blocks the
+rewriter can't handle: `!=X` exclusions and `>X` strict lower bounds.
+Cascade PRs are human-reviewed before merge, so the split exists to filter
+mechanically-unhandled clauses, not to gate operator-intent decisions.
 
 When openfilter appears in MULTIPLE PEP 621 tables (e.g. [project.dependencies]
 AND [project.optional-dependencies.gpu]), all matching specifiers are
@@ -33,21 +32,11 @@ from packaging.version import Version
 
 
 def _is_widenable_block(combined: SpecifierSet, target: Version) -> bool:
-    """True when every clause that excludes `target` is a widenable upper bound.
-
-    Widenable: `<X` or `<=X` — bump-strategy.sh's rewriter handles these
-    in place.
-
-    Not widenable: `>=X` / `>X` lower bounds (widening would be a downgrade),
-    `!=X` exclusions (deliberate gating), and `==X` / `~=X` pins (the
-    rewriter can bump these in place, but if they're still excluding
-    target after intersection it means another clause makes the situation
-    unsalvageable; operator should inspect).
-    """
+    """True when every clause excluding `target` is one bump-strategy.sh rewrites."""
     for s in combined:
         if target in SpecifierSet(str(s)):
             continue
-        if s.operator in ("<", "<="):
+        if s.operator in ("<", "<=", "==", "~=", ">="):
             continue
         return False
     return True
