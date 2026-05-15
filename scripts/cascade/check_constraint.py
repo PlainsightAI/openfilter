@@ -1,7 +1,7 @@
 """Check openfilter version constraint compatibility.
 
 Reads OF_VERSION from env, scans pyproject.toml for openfilter dependency.
-Outputs: none | none:poetry-format | ok:<spec> | skip:<spec> | error:<msg>
+Outputs: none | none:poetry-format | ok:<spec> | widen:<spec> | skip:<spec> | error:<msg>
 
 `none:poetry-format` is emitted when no openfilter dep was found in PEP 621
 [project.dependencies] / [project.optional-dependencies] but one IS present
@@ -9,6 +9,17 @@ under Poetry's [tool.poetry.dependencies] (or dev-dependencies). The cascade
 only knows how to rewrite PEP 621 pins, so Poetry consumers are still
 skipped — but the operator gets a distinguishable diagnostic instead of a
 silent "no openfilter dep" line.
+
+`widen:<spec>` — OF_VERSION is outside the current constraint and every
+blocking clause is one bump-strategy.sh's rewriter can rewrite in place
+without downgrading: `<`, `<=`, `==`, `~=`. `skip:<spec>` covers the rest:
+`!=X` and `>X` (rewriter has no rule), and `>=X` blocking (rewriter has
+`>=` in `_BUMPABLE_OPS`, but a `>=X` clause only blocks when target < X,
+so applying that rule would downgrade the consumer's floor — different
+semantic category from widening, kept as a skip-class guardrail).
+Cascade PRs are human-reviewed before merge, so the split exists to filter
+mechanically-unhandled-or-unsafe clauses, not to gate operator-intent
+decisions.
 
 When openfilter appears in MULTIPLE PEP 621 tables (e.g. [project.dependencies]
 AND [project.optional-dependencies.gpu]), all matching specifiers are
@@ -20,8 +31,20 @@ the optional specifier rejects.
 import sys, os, tomllib
 
 from packaging.requirements import Requirement
-from packaging.specifiers import SpecifierSet
+from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import Version
+
+
+def _is_widenable_block(combined: SpecifierSet, target: Version) -> bool:
+    """True when every clause excluding `target` is one bump-strategy.sh rewrites."""
+    for s in combined:
+        if target in SpecifierSet(str(s)):
+            continue
+        if s.operator in ("<", "<=", "==", "~="):
+            continue
+        return False
+    return True
+
 
 try:
     if not os.path.exists("pyproject.toml"):
@@ -65,6 +88,11 @@ try:
         sys.exit(0)
     v = Version(v_str)
     spec_str = str(combined)
-    print(("ok:" if v in combined else "skip:") + spec_str)
+    if v in combined:
+        print("ok:" + spec_str)
+    elif _is_widenable_block(combined, v):
+        print("widen:" + spec_str)
+    else:
+        print("skip:" + spec_str)
 except Exception as e:
     print("error:" + str(e))

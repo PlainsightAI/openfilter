@@ -6,8 +6,13 @@
 #   1. `filter-*` name and not on the static exclude list
 #   2. No `.github/no-cascade-openfilter` opt-out marker
 #   3. Has a VERSION file at the default branch tip
-#   4. Declares an `openfilter` PEP 621 dependency whose constraint allows
-#      ${OF_VERSION} (delegated to scripts/cascade/check_constraint.py)
+#   4. Declares an `openfilter` PEP 621 dependency whose constraint either
+#      already permits ${OF_VERSION} (check_constraint.py emits `ok:`) or
+#      is blocked only by clauses bump-strategy.sh's rewriter can adjust
+#      without downgrading (`<` / `<=` upper bounds, `==` / `~=` pins —
+#      emits `widen:`). `>=X` blocking floors stay `skip:` (rewriting them
+#      would downgrade the consumer); `!=X` exclusions and `>X` strict
+#      lower bounds stay `skip:` (rewriter has no rule).
 # Required env: OF_VERSION (bare semver), GH_TOKEN (plainsight-bot PAT).
 # Optional env: SINGLE_FILTER (precedes), FILTER_SUBSET (comma-separated).
 # Note: SINGLE_FILTER not-found hard-exits — behavior change vs build-filters.sh,
@@ -170,7 +175,18 @@ while IFS= read -r REPO; do
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       continue ;;
     ok:*)
-      # Eligible.
+      # Eligible — target already permitted by the current pin range.
+      ;;
+    widen:*)
+      # Eligible — target outside the current pin range, but every
+      # blocking clause is one bump-strategy.sh's rewriter can adjust
+      # without downgrading: `<` / `<=` upper bounds (widened to a fresh
+      # upper bound via next_upper_bound() — next-minor-after-target for
+      # 0.X, next-major-after-target for 1.0+) and `==` / `~=` pins
+      # (re-pointed to OF_VERSION). Surfaced separately in diagnostics so
+      # the operator knows this PR is more than a lower-bound bump.
+      CONSTRAINT="${COMPAT#widen:}"
+      echo "  ${REPO}: eligible — pin ${CONSTRAINT} will be widened for ${OF_VERSION}" >&2
       ;;
     skip:*)
       CONSTRAINT="${COMPAT#skip:}"
