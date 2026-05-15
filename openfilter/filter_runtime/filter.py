@@ -9,6 +9,8 @@ import sys
 import threading
 import time
 import warnings
+from collections import deque
+from collections.abc import Sequence
 from datetime import datetime
 from multiprocessing import synchronize
 from typing import Any, Callable, Literal, List
@@ -293,6 +295,9 @@ class FilterConfig(
     accumulate_timeout_ms: (
         float | None
     )  # Max ms to wait for a full batch before flushing partial (default 100.0)
+    accumulate_window: (
+        int | None
+    )  # Ring buffer size in sliding-window mode; must be >= batch_size. Unset = one-shot buffer (current behavior).
 
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
@@ -534,6 +539,14 @@ class Filter:
             Maximum time in milliseconds to wait for a full batch before flushing a partial batch. Only used when
             batch_size > 1. Default 100.0. If frames arrive slower than this window the partial batch is flushed
             rather than waiting indefinitely.
+
+        accumulate_window:
+            Sliding-window ring buffer size; must be >= batch_size. When set, the runtime keeps the most recent
+            accumulate_window frames in a bounded ring rather than draining the buffer on each dispatch. The full
+            ring is passed to Filter.select_batch() which picks which frames go to process_batch(). Lets filters
+            with temporal sampling needs (caption/VLM, re-ID, audio-visual sync) reach across a wider window than
+            what fits in a single batch. Unset (the default) preserves the original one-shot drain-on-dispatch
+            behavior — equivalent to accumulate_window=batch_size.
 
     Environment variables:
         LOG_LEVEL:
@@ -785,7 +798,22 @@ class Filter:
         self._accumulate_timeout_ms = float(
             config.get("accumulate_timeout_ms") or 100.0
         )
-        self._frame_buffer: list[dict[str, Frame]] = []
+        # When accumulate_window is set, the buffer is a bounded sliding ring of that
+        # size and frames are NOT removed on dispatch — select_batch() picks the
+        # subset to send to process_batch(). When unset, the buffer behaves exactly
+        # as before: a one-shot list cleared on every dispatch.
+        raw_window = config.get("accumulate_window")
+        self._sliding_window: bool = raw_window is not None
+        self._accumulate_window: int = (
+            int(raw_window) if raw_window is not None else self._batch_size
+        )
+        self._frame_buffer: deque[dict[str, Frame]] | list[dict[str, Frame]] = (
+            deque(maxlen=self._accumulate_window) if self._sliding_window else []
+        )
+        # Counter of frames received since the last dispatch trigger. In sliding
+        # mode the buffer itself doesn't reset on dispatch, so we need an
+        # independent count to know when to fire again.
+        self._frames_since_last_dispatch: int = 0
         self._batch_lock = threading.Lock()
         self._batch_flush_event = threading.Event()
         self._batch_wakeup = threading.Event()
@@ -1367,14 +1395,23 @@ class Filter:
             # fired as a new frame arrives, we don't want a premature flush.
             self._batch_flush_event.clear()
             self._frame_buffer.append(frames)
+            self._frames_since_last_dispatch += 1
 
-            if len(self._frame_buffer) < self._batch_size:
+            if self._frames_since_last_dispatch < self._batch_size:
                 self._reset_batch_timer()
                 return None
 
-            batch = list(self._frame_buffer)
-            self._frame_buffer.clear()
+            # Snapshot the ring under the lock; selection happens outside so an
+            # overridden select_batch() can run arbitrary user code without
+            # blocking new appends.
+            window_snapshot: list[dict[str, Frame]] = list(self._frame_buffer)
+            self._frames_since_last_dispatch = 0
+            if not self._sliding_window:
+                # Original semantics: dispatch consumes the buffer.
+                self._frame_buffer.clear()
             self._batch_flush_event.clear()
+
+        batch = self.select_batch(window_snapshot)
 
         results = self._execute_batch(batch)
         # Stash intermediate results for loop_once to drain.
@@ -1538,13 +1575,16 @@ class Filter:
         if batch_mode and not frames:
             with self._batch_lock:
                 if self._frame_buffer:
-                    batch = list(self._frame_buffer)
-                    self._frame_buffer.clear()
+                    window_snapshot = list(self._frame_buffer)
+                    self._frames_since_last_dispatch = 0
+                    if not self._sliding_window:
+                        self._frame_buffer.clear()
                     self._batch_flush_event.clear()
                     self._cancel_batch_timer()
                 else:
-                    batch = None
-            if batch is not None:
+                    window_snapshot = None
+            if window_snapshot is not None:
+                batch = self.select_batch(window_snapshot)
                 flushed_results = self._execute_batch(batch)
                 for r in flushed_results:
                     self._send_frames(r, outputs_timeout)
@@ -1877,19 +1917,22 @@ class Filter:
             self._batch_pending_results.clear()
         with self._batch_lock:
             if self._frame_buffer:
-                batch = list(self._frame_buffer)
-                self._frame_buffer.clear()
+                window_snapshot = list(self._frame_buffer)
+                self._frames_since_last_dispatch = 0
+                if not self._sliding_window:
+                    self._frame_buffer.clear()
             else:
-                batch = None
-        if batch is not None:
+                window_snapshot = None
+        if window_snapshot is not None:
             try:
+                batch = self.select_batch(window_snapshot)
                 results = self._execute_batch(batch)
                 for r in results:
                     self.mq.send(r, POLL_TIMEOUT_MS)
             except Exception:
                 logger.warning(
                     "Failed to flush partial batch of %d frame(s) on shutdown",
-                    len(batch),
+                    len(window_snapshot),
                     exc_info=True,
                 )
         self._stop_metadata_worker()
@@ -1963,6 +2006,15 @@ class Filter:
                     f"accumulate_timeout_ms must be > 0, got {acc_timeout}"
                 )
             config.accumulate_timeout_ms = acc_timeout
+
+        if (acc_window := config.get("accumulate_window")) is not None:
+            acc_window = int(acc_window)
+            effective_batch = int(config.get("batch_size") or 1)
+            if acc_window < effective_batch:
+                raise ValueError(
+                    f"accumulate_window must be >= batch_size ({effective_batch}), got {acc_window}"
+                )
+            config.accumulate_window = acc_window
 
         return config
 
@@ -2062,6 +2114,34 @@ class Filter:
             results.append(r)
         return results
 
+    def select_batch(
+        self, window: Sequence[dict[str, Frame]]
+    ) -> list[dict[str, Frame]]:
+        """Pick which frames in the sliding-window ring go to process_batch().
+
+        Called by the runtime before every dispatch (count-driven, timeout-driven,
+        or shutdown drain). Override to implement temporal sampling — e.g. uniform
+        subsampling from a wider window than what fits in a single batch.
+
+        The default returns the most recent ``batch_size`` entries, which keeps
+        single-buffer mode (``accumulate_window`` unset or equal to ``batch_size``)
+        identical to pre-sliding-window behavior.
+
+        Contract:
+            * Must return a list of length <= batch_size; longer lists are
+              accepted but trigger a warning in _execute_batch.
+            * Must not mutate ``window``; the runtime owns the deque.
+            * May select non-contiguous slices.
+
+        Args:
+            window: Snapshot of the current ring buffer in arrival order
+                (oldest first). Always non-empty when this is called.
+
+        Returns:
+            The frames to hand to process_batch(), in the desired order.
+        """
+        return list(window)[-self._batch_size:]
+
     def _ensure_batch_watcher(self) -> None:
         """Start the batch watcher thread if not already running."""
         if self._batch_watcher is not None and self._batch_watcher.is_alive():
@@ -2113,14 +2193,22 @@ class Filter:
                 logger.exception("batch watcher loop raised; continuing")
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
-        """If a flush is pending and buffer is non-empty, return the batch and reset state."""
+        """If a flush is pending and buffer is non-empty, return the batch and reset state.
+
+        Routes the snapshot through select_batch() so timeout-driven flushes go
+        through the same picking surface as count-driven dispatches. In non-sliding
+        mode the buffer is drained as before; in sliding-window mode the ring is
+        preserved (the deque's maxlen still bounds growth).
+        """
         with self._batch_lock:
             if self._batch_flush_event.is_set() and self._frame_buffer:
-                batch = list(self._frame_buffer)
-                self._frame_buffer.clear()
+                window_snapshot = list(self._frame_buffer)
+                self._frames_since_last_dispatch = 0
+                if not self._sliding_window:
+                    self._frame_buffer.clear()
                 self._batch_flush_event.clear()
                 self._cancel_batch_timer()
-                return batch
+                return self.select_batch(window_snapshot)
             self._batch_flush_event.clear()
             return None
 
