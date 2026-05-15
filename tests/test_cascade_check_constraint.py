@@ -43,6 +43,10 @@ pytestmark = [
         not _module_available("packaging"),
         reason="`packaging` required for check_constraint.py",
     ),
+    pytest.mark.skipif(
+        sys.version_info < (3, 11),
+        reason="check_constraint.py uses stdlib `tomllib` (3.11+); cascade runs on GHA Python 3.11+",
+    ),
 ]
 
 
