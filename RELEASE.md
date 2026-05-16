@@ -4,7 +4,7 @@ OpenFilter Library release notes
 
 ## v0.2.1 - 2026-05-16
 
-This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) with the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)). `v0.2.0` was never tagged — its contents ship here under `v0.2.1`.
+This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) and the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)) under a single tag. `v0.2.0` was never tagged — its contents ship here under `v0.2.1`. Also folded in: the DT-145 cascade infrastructure (#85 / #93) and the FILTER-461 test-fragility fix (#94), all merged after the original `v0.2.0` changelog window.
 
 ### Added
 
@@ -27,7 +27,8 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Infrastructure
 
-- **Cascade widens consumer pyproject upper bounds when target excludes them ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145))**: `cascade-on-tag.yaml`'s bump-strategy now rewrites `<X` / `<=X` upper bounds in consumer pyproject pins when the target openfilter version would otherwise be excluded. Rule: 0.X targets widen to next-minor; 1.0+ targets widen to next-major. Without this, every consumer pinning `>=0.1.30,<0.2.0` (the org-canonical pattern) would skip the cascade for any minor/major openfilter bump — 30 of 55 filter-* repos in the current sweep. Lower-bound exclusions (`>=X`) and `!=X` exclusions still skip per the prior behavior. (#93)
+- **Tag-triggered bump-PR cascade ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145))**: New `cascade-on-tag.yaml` workflow and `scripts/cascade/{discover.sh,bump-and-pr.sh,bump-strategy.sh,check_constraint.py}` replace the previous `cloudbuild-cascade.yaml` mechanism (`scripts/build-filters.sh` removed in the same change). Fires on release-semver tag push, discovers eligible `filter-*` consumers via the GitHub Contents API + PEP 621 specifier intersection, opens mechanical bump PRs through `PlainsightAI/gh-actions-public/open-mechanical-pr`. Auto-merge enabled by default on bot PRs; `workflow_dispatch` inputs (`dry_run`, `single_filter`, `filter_subset`, `auto_merge_override`) support staged rollouts. (#85)
+- **Cascade widens consumer pyproject upper bounds when target excludes them**: `bump-strategy.sh` now rewrites `<X` / `<=X` upper bounds in consumer pyproject pins when the target openfilter version would otherwise be excluded. Rule: 0.X targets widen to next-minor; 1.0+ targets widen to next-major. Without this, every consumer pinning `>=0.1.30,<0.2.0` (the org-canonical pattern) would skip the cascade for any minor/major openfilter bump — 30 of 55 `filter-*` repos in the current sweep. Lower-bound exclusions (`>=X`) and `!=X` exclusions still skip per the prior behavior. (#93)
 
 ## v0.1.30 - 2026-04-21
 
