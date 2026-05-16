@@ -2,17 +2,9 @@
 
 OpenFilter Library release notes
 
-## v0.2.1 - 2026-05-09
+## v0.2.1 - 2026-05-16
 
-### Changed
-
-- **OTLP gRPC `insecure` flag now inferred from endpoint scheme**: The exporter factory and tracing builder now use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Explicit `insecure=` in `exporter_config` / kwargs always wins. The default `http://localhost:4317` endpoint still infers `insecure=True`, so local collectors keep working with no config change. The metrics factory's missing localhost fallback was also fixed in this change — an unset endpoint no longer falls through to the SDK's TLS default against a plaintext local collector.
-
-### Removed
-
-- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable**: removed from the metrics exporter factory. This variable was previously a full no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a string, and every non-empty string is truthy, so `insecure=True` regardless of what an operator wrote. No deployment was getting TLS through this var. The actual behavior change for operators is narrow: those running with a bare `host:port` endpoint now get TLS, where they used to get plaintext. Set `insecure=True` in `exporter_config` (or use an `http://` URL) to keep plaintext.
-
-## v0.2.0 - 2026-05-08
+This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) with the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)). `v0.2.0` was never tagged — its contents ship here under `v0.2.1`.
 
 ### Added
 
@@ -20,9 +12,22 @@ OpenFilter Library release notes
 - **`openfilter emit-schema` CLI ([FILTER-442](https://plainsight-ai.atlassian.net/browse/FILTER-442))**: New CLI subcommand writes a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts an explicit `module:Class` qualifier. Default `--kind config` emits a `FilterConfigBase` schema; `--kind output` emits a `FilterOutputSchema` (FILTER-444). `--include-managed` surfaces orchestrator-controlled fields for platform inspection; default is operator-facing surface only. (#87)
 - **`FilterOutputSchema` + `frame.data` shape catalog ([FILTER-444](https://plainsight-ai.atlassian.net/browse/FILTER-444))**: New `openfilter.filter_runtime.FilterOutputSchema` lets filters declare what they place on `frame.data` as a build-time JSON Schema. The catalog at `openfilter.filter_runtime.shapes` ships canonical shapes — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference catalog shapes via `$ref` instead of negotiating dialects out-of-band. Coordinate conventions (pixel-space for bbox/polygon/mask; normalized `[0, 1]` for keypoints) are documented per shape with the production filter that motivated each choice. Catalog shapes carry runtime-only invariants enforced by pydantic validators: `BoundingBox` xyxy ordering (zero-area allowed, inverted rejected), `ClassificationResult` parallel-array length equality, and `Pose` 17-keypoint arity when `skeleton="coco-17"`. The whole FILTER-444 surface is re-exported from `openfilter.filter_runtime` so `from openfilter.filter_runtime import FilterOutputSchema, Detection` works the same way the FILTER-441 import idiom does. (#88)
 
+### Changed
+
+- **OTLP gRPC `insecure` flag now inferred from endpoint scheme**: The exporter factory and tracing builder now use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Explicit `insecure=` in `exporter_config` / kwargs always wins. The default `http://localhost:4317` endpoint still infers `insecure=True`, so local collectors keep working with no config change. The metrics factory's missing localhost fallback was also fixed in this change — an unset endpoint no longer falls through to the SDK's TLS default against a plaintext local collector. (#90)
+
 ### Fixed
 
 - **Silent `$id` inheritance on `FilterOutputSchema` subclasses ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452))**: A subclass of any `$id`-bearing `FilterOutputSchema` (catalog shape or filter-author output) that did not explicitly override `__schema_id__` silently inherited the parent's `$id` on the wire, causing two distinct classes to claim the same JSON Schema identity for `$ref` resolution. `__init_subclass__` now refuses to construct such subclasses at class-definition time; authors must override `__schema_id__` with their own URI or set it to `None` as an explicit opt-out. (#88)
+- **`test_topo_balance_step` shutdown race on Python 3.10 ([FILTER-461](https://plainsight-ai.atlassian.net/browse/FILTER-461))**: After PR #82's zero-copy IPC tightened pipeline timing, four `TestFilterOld` topology tests' shutdown assertions started failing on 3.10 — a single `runner.step()` immediately after `qout.put(None)` was racing the filters' drain-and-report path. New `wait_for_runner_exit` helper polls `step()` up to 5 s for the exit-codes list. Test-only change, no runtime impact. (#94)
+
+### Removed
+
+- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable**: removed from the metrics exporter factory. This variable was previously a full no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a string, and every non-empty string is truthy, so `insecure=True` regardless of what an operator wrote. No deployment was getting TLS through this var. The actual behavior change for operators is narrow: those running with a bare `host:port` endpoint now get TLS, where they used to get plaintext. Set `insecure=True` in `exporter_config` (or use an `http://` URL) to keep plaintext. (#90)
+
+### Infrastructure
+
+- **Cascade widens consumer pyproject upper bounds when target excludes them ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145))**: `cascade-on-tag.yaml`'s bump-strategy now rewrites `<X` / `<=X` upper bounds in consumer pyproject pins when the target openfilter version would otherwise be excluded. Rule: 0.X targets widen to next-minor; 1.0+ targets widen to next-major. Without this, every consumer pinning `>=0.1.30,<0.2.0` (the org-canonical pattern) would skip the cascade for any minor/major openfilter bump — 30 of 55 filter-* repos in the current sweep. Lower-bound exclusions (`>=X`) and `!=X` exclusions still skip per the prior behavior. (#93)
 
 ## v0.1.30 - 2026-04-21
 
