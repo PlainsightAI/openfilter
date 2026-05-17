@@ -4,7 +4,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  # contents: read (not write): tag creation + GH release creation moved
+  # to GH_BOT_USER_PAT in the Create GitHub Release step (FILTER-462), so
+  # the workflow's intrinsic GITHUB_TOKEN no longer needs write on repo
+  # contents. The remaining GITHUB_TOKEN consumers are read-only
+  # (mukunku/tag-exists-action queries the tags API; everything else
+  # reads code or writes to external registries — PyPI, Docker Hub).
+  contents: read
   pull-requests: read
 
 jobs:
@@ -90,7 +96,18 @@ jobs:
             --title "Release ${{ env.CHANGELOG_VERSION }}" \
             --notes-file release-notes.md
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_BOT_USER_PAT (org-level PAT) rather than secrets.GITHUB_TOKEN:
+          # events created by the intrinsic GITHUB_TOKEN do not trigger
+          # downstream workflows (GitHub's anti-recursion safeguard). The
+          # tag-push from this step is what cascade-on-tag.yaml listens for
+          # (`on: push: tags: ['v[0-9]+.[0-9]+.[0-9]+']`); with GITHUB_TOKEN
+          # the tag is created but no workflow run is registered for the
+          # event, so the cascade silently fails to auto-fire on releases
+          # and has to be manually dispatched every time. Using the bot PAT
+          # attributes the push to plainsight-bot, which is a real user
+          # identity from GitHub's perspective and does trigger downstream
+          # workflows. See FILTER-462.
+          GH_TOKEN: ${{ secrets.GH_BOT_USER_PAT }}
           RELEASE_NOTES: ${{ steps.changelog.outputs.description }}
         shell: bash
 
