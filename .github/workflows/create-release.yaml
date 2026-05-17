@@ -4,7 +4,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  # contents: read (not write): tag creation + GH release creation moved
+  # to GH_BOT_USER_PAT in the Create GitHub Release step (FILTER-462), so
+  # the workflow's intrinsic GITHUB_TOKEN no longer needs write on repo
+  # contents. The remaining GITHUB_TOKEN consumers are read-only
+  # (mukunku/tag-exists-action queries the tags API; everything else
+  # reads code or writes to external registries — PyPI, Docker Hub).
+  contents: read
   pull-requests: read
 
 jobs:
