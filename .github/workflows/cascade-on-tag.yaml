@@ -186,7 +186,7 @@ jobs:
     permissions: {}
     steps:
       - name: Slack on failure
-        uses: slackapi/slack-github-action@v2.1.1
+        uses: slackapi/slack-github-action@v3.0.3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
