@@ -1,3 +1,4 @@
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -9,6 +10,8 @@ import sys
 import threading
 import time
 import warnings
+from collections import deque
+from collections.abc import Sequence
 from datetime import datetime
 from multiprocessing import synchronize
 from typing import Any, Callable, Literal, List
@@ -293,6 +296,18 @@ class FilterConfig(
     accumulate_timeout_ms: (
         float | None
     )  # Max ms to wait for a full batch before flushing partial (default 100.0)
+    accumulate_window: (
+        int | None
+    )  # Ring buffer size in sliding-window mode; must be >= batch_size. Unset = one-shot buffer (current behavior).
+    batch_trigger: (
+        Literal["auto", "manual"] | None
+    )  # "auto" (default) fires on count or timeout; "manual" disables both — only Filter.flush_batch() drains.
+    batch_workers: (
+        int | None
+    )  # >1 runs process_batch() on a ThreadPoolExecutor; loop accumulates next batch while current is in flight.
+    batch_shutdown_timeout_s: (
+        float | None
+    )  # Max seconds to wait for in-flight batches to drain on fini(). Default 60.
 
     def clean(self):  # -> Self:
         """Return a clean instance of this config without any hidden items starting with '_'."""
@@ -534,6 +549,36 @@ class Filter:
             Maximum time in milliseconds to wait for a full batch before flushing a partial batch. Only used when
             batch_size > 1. Default 100.0. If frames arrive slower than this window the partial batch is flushed
             rather than waiting indefinitely.
+
+        accumulate_window:
+            Sliding-window ring buffer size; must be >= batch_size. When set, the runtime keeps the most recent
+            accumulate_window frames in a bounded ring rather than draining the buffer on each dispatch. The full
+            ring is passed to Filter.select_batch() which picks which frames go to process_batch(). Lets filters
+            with temporal sampling needs (caption/VLM, re-ID, audio-visual sync) reach across a wider window than
+            what fits in a single batch. Unset (the default) preserves the original one-shot drain-on-dispatch
+            behavior — equivalent to accumulate_window=batch_size.
+
+        batch_trigger:
+            "auto" (default) or "manual". In auto mode dispatch fires on the count-based trigger
+            (batch_size new frames) and the accumulate_timeout_ms watcher — original behavior. In manual mode both
+            automatic triggers are suppressed (the watcher is never started) and dispatch only happens when the
+            filter explicitly calls self.flush_batch(). Use manual mode for cadence policies the runtime can't
+            express with (count, timeout) — e.g. media-time intervals, gate predicates, keyframe boundaries. Manual
+            mode applies a safety cap at batch_size * 4 buffered frames to surface forgotten flushes via a warning
+            and force-dispatch; configure accumulate_window > batch_size * 4 if you intentionally hold more.
+
+        batch_workers:
+            Concurrency cap for in-flight process_batch() calls. Default 1 (current behavior — process_batch runs
+            on the loop thread). When > 1, process_batch is dispatched to a bounded ThreadPoolExecutor and the
+            loop continues to accumulate the next batch while previous batches run. Each batch's result slots are
+            wrapped in Callables that mq.send polls in submission order, so downstream sees results in
+            flush-trigger order even when workers complete out of order. Submission BLOCKS when all workers are
+            busy (natural upstream backpressure rather than silent drops). Useful for network-bound batches
+            (remote VLM/retrieval calls) where call latency > flush interval.
+
+        batch_shutdown_timeout_s:
+            Maximum seconds to wait for in-flight batch workers to drain during fini(). Default 60. Batches still
+            running past this timeout are abandoned with a warning rather than blocking shutdown indefinitely.
 
     Environment variables:
         LOG_LEVEL:
@@ -785,14 +830,52 @@ class Filter:
         self._accumulate_timeout_ms = float(
             config.get("accumulate_timeout_ms") or 100.0
         )
-        self._frame_buffer: list[dict[str, Frame]] = []
+        # When accumulate_window is set, the buffer is a bounded sliding ring of that
+        # size and frames are NOT removed on dispatch — select_batch() picks the
+        # subset to send to process_batch(). When unset, the buffer behaves exactly
+        # as before: a one-shot list cleared on every dispatch.
+        raw_window = config.get("accumulate_window")
+        self._sliding_window: bool = raw_window is not None
+        self._accumulate_window: int = (
+            int(raw_window) if raw_window is not None else self._batch_size
+        )
+        self._frame_buffer: deque[dict[str, Frame]] | list[dict[str, Frame]] = (
+            deque(maxlen=self._accumulate_window) if self._sliding_window else []
+        )
+        # Counter of frames received since the last dispatch trigger. In sliding
+        # mode the buffer itself doesn't reset on dispatch, so we need an
+        # independent count to know when to fire again.
+        self._frames_since_last_dispatch: int = 0
+        # "auto" (default) → count + timeout triggers fire; "manual" → only
+        # Filter.flush_batch() drains. Stored verbatim, normalized in config.
+        self._batch_trigger: str = (
+            str(config.get("batch_trigger") or "auto").strip().lower()
+        )
+        # Pool-based async dispatch: when batch_workers > 1, process_batch()
+        # runs on a ThreadPoolExecutor and the loop accumulates the next batch
+        # while previous ones are in flight. Pool created lazily on first use
+        # in _execute_batch so test setups that mock the filter don't pay the
+        # thread-creation cost for batch_workers=1 paths.
+        self._batch_workers: int = int(config.get("batch_workers") or 1)
+        self._batch_shutdown_timeout_s: float = float(
+            config.get("batch_shutdown_timeout_s") or 60.0
+        )
+        self._batch_pool = None  # type: concurrent.futures.ThreadPoolExecutor | None
+        self._batch_submit_sem: threading.Semaphore | None = None
+        # In-flight batch futures, tracked for shutdown drain. Manipulated only
+        # by the loop thread (submit) and worker thread (remove on done), so a
+        # lock guards mutations.
+        self._batch_inflight_lock = threading.Lock()
+        self._batch_inflight: set = set()
         self._batch_lock = threading.Lock()
         self._batch_flush_event = threading.Event()
         self._batch_wakeup = threading.Event()
         self._batch_stop = threading.Event()
         self._batch_watcher: threading.Thread | None = None
         # Accessed only from the loop_once thread — no lock needed.
-        self._batch_pending_results: list[dict[str, Frame]] = []
+        self._batch_pending_results: list[
+            dict[str, Frame] | Callable[[], dict[str, Frame] | None]
+        ] = []
 
         try:
             self.telemetry_enabled: bool = (
@@ -1356,23 +1439,64 @@ class Filter:
 
     def _process_frames_batched(
         self, frames: dict[str, Frame]
-    ) -> dict[str, Frame] | None:
+    ) -> dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None:
         if not frames:
             return None
+        manual = self._batch_trigger == "manual"
         with self._batch_lock:
-            self._cancel_batch_timer()
-            # Also clear any stale flush event: if the watcher's timeout just
-            # fired as a new frame arrives, we don't want a premature flush.
-            self._batch_flush_event.clear()
+            if not manual:
+                # In auto mode the watcher times the partial-batch flush; cancel
+                # the in-flight timer because we just received a frame.
+                self._cancel_batch_timer()
+            # Drain a pending manual flush set BEFORE this frame arrived, but
+            # don't clear it before checking — flush_batch() may have fired
+            # exactly to include this frame in the dispatch.
+            manual_flush_pending = self._batch_flush_event.is_set()
             self._frame_buffer.append(frames)
+            self._frames_since_last_dispatch += 1
 
-            if len(self._frame_buffer) < self._batch_size:
-                self._reset_batch_timer()
+            count_trigger = (
+                not manual and self._frames_since_last_dispatch >= self._batch_size
+            )
+            safety_force = False
+            if manual and not manual_flush_pending:
+                # Safety cap: if a manual-mode filter forgets to call
+                # flush_batch(), force a dispatch once the buffer reaches
+                # batch_size * 4 so memory stays bounded. Log a warning so the
+                # forgotten flush is visible rather than silently absorbed.
+                if len(self._frame_buffer) >= self._batch_size * 4:
+                    logger.warning(
+                        "batch_trigger=manual but buffer reached %d frames "
+                        "(>= batch_size * 4 = %d) without flush_batch(); "
+                        "force-flushing to bound memory",
+                        len(self._frame_buffer),
+                        self._batch_size * 4,
+                    )
+                    safety_force = True
+
+            if not (manual_flush_pending or count_trigger or safety_force):
+                if not manual:
+                    self._reset_batch_timer()
                 return None
 
-            batch = list(self._frame_buffer)
-            self._frame_buffer.clear()
+            # Snapshot the ring under the lock; selection happens outside so an
+            # overridden select_batch() can run arbitrary user code without
+            # blocking new appends.
+            window_snapshot: list[dict[str, Frame]] = list(self._frame_buffer)
+            self._frames_since_last_dispatch = 0
+            if not self._sliding_window:
+                # Original semantics: dispatch consumes the buffer.
+                self._frame_buffer.clear()
             self._batch_flush_event.clear()
+
+        if safety_force:
+            # Safety dispatch is a bailout — drain everything we've accumulated
+            # rather than letting an overridden select_batch() decide. The user
+            # is already in a bug (forgot flush_batch); the priority is bounded
+            # memory, not picking semantics.
+            batch = window_snapshot
+        else:
+            batch = self.select_batch(window_snapshot)
 
         results = self._execute_batch(batch)
         # Stash intermediate results for loop_once to drain.
@@ -1382,19 +1506,38 @@ class Filter:
             self._batch_pending_results.extend(results[:-1])
         return results[-1] if results else None
 
-    def _process_batch_flush(self) -> list[dict[str, Frame]] | None:
+    def _process_batch_flush(
+        self,
+    ) -> list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]] | None:
         batch = self._take_flush_batch()
         if batch is None:
             return None
         results = self._execute_batch(batch)
         return results if results else None
 
-    def _execute_batch(self, batch: list[dict[str, Frame]]) -> list[dict[str, Frame]]:
+    def _execute_batch(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]]:
         """Run process_batch() and return normalized, timing-injected results.
 
-        Returns a list of frame dicts (possibly empty). The caller is
-        responsible for sending each result downstream.
+        Returns a list of either resolved frame dicts or Callable closures that
+        the runtime will invoke later (via mq.send's existing Callable polling).
+        Heterogeneous lists are allowed: a process_batch() implementation may
+        return any per-slot mix of dict, Frame, None, or Callable.
+
+        Callable slots let a filter hand the batch's actual work to a worker
+        thread and return a poll closure rather than blocking the loop thread
+        on the batch's wall-clock duration — same shape as a Callable returned
+        from process(). Each closure carries its own per-slot timing: it does
+        the EMA update + _inject_timings on resolution, not at submission time.
+
+        When batch_workers > 1, process_batch() runs on the pool — submission
+        blocks if the pool is full (natural upstream backpressure) and the
+        loop continues accumulating the next batch while previous batches are
+        in flight.
         """
+        if self._batch_workers > 1:
+            return self._execute_batch_pool(batch)
         t_in = time.time()
         try:
             results = self.process_batch(batch)
@@ -1415,18 +1558,26 @@ class Filter:
             )
 
         process_time_ms = (t_out - t_in) * 1000
-        # Use full batch duration for each frame: batch processing is indivisible,
-        # so per-frame timing should reflect the actual batch wall-clock time.
-        self._filter_time_in = t_in
-        self._filter_time_out = t_out
-        self._update_process_time_ema(process_time_ms)
+        has_callable = any(callable(r) for r in results)
+        if not has_callable:
+            # Pure synchronous batch: record the process_batch() wall-clock as
+            # the per-batch EMA. Mirrors the immediate path in
+            # _process_frames_single, which only updates EMA when the result
+            # isn't a Callable.
+            self._filter_time_in = t_in
+            self._filter_time_out = t_out
+            self._update_process_time_ema(process_time_ms)
 
-        # Normalize results: wrap bare Frames, skip Nones
-        normalized = []
+        normalized: list[dict[str, Frame] | Callable[[], dict[str, Frame] | None]] = []
         for result in results:
             if result is None:
                 continue
-            normalized.append(self._normalize_frame_result(result))
+            if callable(result):
+                normalized.append(self._wrap_batch_slot_callable(result))
+                continue
+            frames = self._normalize_frame_result(result)
+            self._finalize_frames(frames, t_in, t_out, process_time_ms)
+            normalized.append(frames)
 
         if not normalized:
             # Sink filter (all None results): inject timing into every input
@@ -1436,11 +1587,159 @@ class Filter:
                     self._inject_timings(b_frames, t_in, t_out, process_time_ms)
             return []
 
-        # Inject per-frame timing metadata into every result
-        for frames in normalized:
-            self._finalize_frames(frames, t_in, t_out, process_time_ms)
-
         return normalized
+
+    def _wrap_batch_slot_callable(
+        self, slot: Callable[[], dict[str, Frame] | Frame | None]
+    ) -> Callable[[], dict[str, Frame] | None]:
+        """Mirror _process_frames_single._timed_callable for a single batch slot.
+
+        Each slot records its own wall-clock so EMA reflects the per-slot
+        deferred work (e.g. a Future.result() wait), not the synchronous
+        portion of process_batch().
+        """
+
+        def _timed_batch_slot():
+            ct_in = time.time()
+            f = slot()
+            ct_out = time.time()
+            if f is None:
+                return None
+            result = self._normalize_frame_result(f)
+            ct_ms = (ct_out - ct_in) * 1000
+            self._filter_time_in = ct_in
+            self._filter_time_out = ct_out
+            self._update_process_time_ema(ct_ms)
+            self._inject_timings(result, ct_in, ct_out, ct_ms)
+            try:
+                self._metadata_queue.put_nowait((result, self.emitter))
+            except queue.Full:
+                pass
+            return result
+
+        return _timed_batch_slot
+
+    def _ensure_batch_pool(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Lazily construct the ThreadPoolExecutor + submission semaphore.
+
+        Called on first dispatch when batch_workers > 1. Holding the pool's
+        lifetime to first-use means non-async-pool code paths (every
+        batch_workers == 1 filter, plus every test that mocks the filter) pay
+        zero thread-creation cost.
+        """
+        if self._batch_pool is None:
+            self._batch_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._batch_workers,
+                thread_name_prefix=f"batch-{self.__class__.__name__}",
+            )
+            # Bound in-flight submissions at batch_workers — provides natural
+            # backpressure: when the pool is busy, _execute_batch_pool blocks
+            # on acquire() until a worker frees.
+            self._batch_submit_sem = threading.Semaphore(self._batch_workers)
+        return self._batch_pool
+
+    def _execute_batch_pool(
+        self, batch: list[dict[str, Frame]]
+    ) -> list[Callable[[], dict[str, Frame] | None]]:
+        """Async dispatch path: submit process_batch() to the pool, return
+        per-slot Callables that mq.send polls in submission order.
+
+        Submission blocks when the pool is full so the loop thread sees
+        backpressure rather than queuing without bound. Result ordering is
+        preserved automatically: loop_once feeds these Callables to mq.send
+        in batch order, and mq.send dispatches them sequentially per the
+        existing Callable contract on process().
+        """
+        pool = self._ensure_batch_pool()
+        # Capture stop_evt-aware semaphore wait. Acquire blocks here when all
+        # workers are busy; this is the backpressure point on the loop thread.
+        while not self._batch_submit_sem.acquire(timeout=POLL_TIMEOUT_MS / 1000.0):
+            if self.stop_evt.is_set():
+                # Shutting down — abandon this batch rather than wait forever.
+                logger.warning(
+                    "batch_workers pool busy during stop_evt; dropping batch of %d frame(s)",
+                    len(batch),
+                )
+                return []
+
+        future = pool.submit(self._batch_pool_worker, batch)
+        with self._batch_inflight_lock:
+            self._batch_inflight.add(future)
+
+        def _on_done(f: concurrent.futures.Future) -> None:
+            self._batch_submit_sem.release()
+            with self._batch_inflight_lock:
+                self._batch_inflight.discard(f)
+
+        future.add_done_callback(_on_done)
+
+        return [
+            self._wrap_pool_slot_callable(future, i, len(batch))
+            for i in range(len(batch))
+        ]
+
+    def _batch_pool_worker(
+        self, batch: list[dict[str, Frame]]
+    ) -> tuple[float, float, list]:
+        """Pool-thread entry point. Runs process_batch() and returns the raw
+        result list bracketed by start/end timestamps. Per-slot normalization
+        + EMA + metadata enqueue all happen on resolution, not here, so
+        results emerge with timing tied to when downstream actually pulls."""
+        t_in = time.time()
+        results = self.process_batch(batch)
+        t_out = time.time()
+        if results is None:
+            results = [None] * len(batch)
+        return (t_in, t_out, results)
+
+    def _wrap_pool_slot_callable(
+        self,
+        future: concurrent.futures.Future,
+        slot_idx: int,
+        batch_len: int,
+    ) -> Callable[[], dict[str, Frame] | None]:
+        """Closure that waits on a pool future and resolves a single slot.
+
+        Mirrors _wrap_batch_slot_callable's per-slot timing/normalization shape
+        but sources its data from a Future shared across all slots in the
+        batch. The first slot to resolve pays the wait; subsequent slots from
+        the same batch see the resolved future and return immediately.
+        """
+
+        def _resolve():
+            try:
+                t_in, t_out, results = future.result()
+            except Exception:
+                logger.exception(
+                    "Pool batch worker raised; slot %d/%d will not emit",
+                    slot_idx,
+                    batch_len,
+                )
+                raise
+            if slot_idx >= len(results):
+                return None
+            slot = results[slot_idx]
+            if slot is None:
+                return None
+            if callable(slot):
+                # FILTER-457: per-slot Callable returned by process_batch.
+                # Resolve inline so this acts as a single deferred slot.
+                slot = slot()
+                if slot is None:
+                    return None
+            frames = self._normalize_frame_result(slot)
+            process_time_ms = (t_out - t_in) * 1000
+            self._filter_time_in = t_in
+            self._filter_time_out = t_out
+            self._update_process_time_ema(process_time_ms)
+            self._inject_timings(frames, t_in, t_out, process_time_ms)
+            try:
+                self._metadata_queue.put_nowait((frames, self.emitter))
+            except queue.Full:
+                pass
+            return frames
+
+        return _resolve
 
     def _send_frames(self, frames, outputs_timeout: float) -> None:
         while not self.mq.send(frames, min(POLL_TIMEOUT_MS, outputs_timeout)):
@@ -1490,13 +1789,16 @@ class Filter:
         if batch_mode and not frames:
             with self._batch_lock:
                 if self._frame_buffer:
-                    batch = list(self._frame_buffer)
-                    self._frame_buffer.clear()
+                    window_snapshot = list(self._frame_buffer)
+                    self._frames_since_last_dispatch = 0
+                    if not self._sliding_window:
+                        self._frame_buffer.clear()
                     self._batch_flush_event.clear()
                     self._cancel_batch_timer()
                 else:
-                    batch = None
-            if batch is not None:
+                    window_snapshot = None
+            if window_snapshot is not None:
+                batch = self.select_batch(window_snapshot)
                 flushed_results = self._execute_batch(batch)
                 for r in flushed_results:
                     self._send_frames(r, outputs_timeout)
@@ -1829,21 +2131,46 @@ class Filter:
             self._batch_pending_results.clear()
         with self._batch_lock:
             if self._frame_buffer:
-                batch = list(self._frame_buffer)
-                self._frame_buffer.clear()
+                window_snapshot = list(self._frame_buffer)
+                self._frames_since_last_dispatch = 0
+                if not self._sliding_window:
+                    self._frame_buffer.clear()
             else:
-                batch = None
-        if batch is not None:
+                window_snapshot = None
+        if window_snapshot is not None:
             try:
+                batch = self.select_batch(window_snapshot)
                 results = self._execute_batch(batch)
                 for r in results:
                     self.mq.send(r, POLL_TIMEOUT_MS)
             except Exception:
                 logger.warning(
                     "Failed to flush partial batch of %d frame(s) on shutdown",
-                    len(batch),
+                    len(window_snapshot),
                     exc_info=True,
                 )
+        # Drain the worker pool with the configured timeout. Batches still in
+        # flight past batch_shutdown_timeout_s are abandoned with a warning.
+        if self._batch_pool is not None:
+            with self._batch_inflight_lock:
+                pending = list(self._batch_inflight)
+            if pending:
+                done, not_done = concurrent.futures.wait(
+                    pending, timeout=self._batch_shutdown_timeout_s
+                )
+                if not_done:
+                    logger.warning(
+                        "batch_workers shutdown abandoned %d in-flight batch(es) "
+                        "after %.1fs timeout",
+                        len(not_done),
+                        self._batch_shutdown_timeout_s,
+                    )
+            # cancel_futures=False — futures already submitted should finish so
+            # mq.send can poll their slot callables; not_done futures are best-
+            # effort and will eventually resolve in the background.
+            self._batch_pool.shutdown(wait=False)
+            self._batch_pool = None
+            self._batch_submit_sem = None
         self._stop_metadata_worker()
         if hasattr(self, "emitter") and self.emitter is not None:
             self.emitter.emit_stop()
@@ -1916,6 +2243,37 @@ class Filter:
                 )
             config.accumulate_timeout_ms = acc_timeout
 
+        if (acc_window := config.get("accumulate_window")) is not None:
+            acc_window = int(acc_window)
+            effective_batch = int(config.get("batch_size") or 1)
+            if acc_window < effective_batch:
+                raise ValueError(
+                    f"accumulate_window must be >= batch_size ({effective_batch}), got {acc_window}"
+                )
+            config.accumulate_window = acc_window
+
+        if (trigger := config.get("batch_trigger")) is not None:
+            trigger = str(trigger).strip().lower()
+            if trigger not in ("auto", "manual"):
+                raise ValueError(
+                    f"batch_trigger must be 'auto' or 'manual', got {trigger!r}"
+                )
+            config.batch_trigger = trigger
+
+        if (workers := config.get("batch_workers")) is not None:
+            workers = int(workers)
+            if workers < 1:
+                raise ValueError(f"batch_workers must be >= 1, got {workers}")
+            config.batch_workers = workers
+
+        if (shutdown_to := config.get("batch_shutdown_timeout_s")) is not None:
+            shutdown_to = float(shutdown_to)
+            if shutdown_to <= 0:
+                raise ValueError(
+                    f"batch_shutdown_timeout_s must be > 0, got {shutdown_to}"
+                )
+            config.batch_shutdown_timeout_s = shutdown_to
+
         return config
 
     def setup(self, config: FilterConfig) -> None:
@@ -1978,7 +2336,12 @@ class Filter:
 
     def process_batch(
         self, batch: list[dict[str, Frame]]
-    ) -> list[dict[str, Frame] | Frame | None]:
+    ) -> list[
+        dict[str, Frame]
+        | Frame
+        | Callable[[], dict[str, Frame] | Frame | None]
+        | None
+    ]:
         """Process a batch of accumulated frames. Override this to implement batched processing.
 
         Called when batch_size > 1 and the batch is full or the accumulate timeout fires.
@@ -1990,9 +2353,16 @@ class Filter:
 
         Returns:
             List of results, one per input frame. Each element follows the same contract
-            as process() return values (dict, Frame, None). Callables returned from
-            this method are NOT supported. (The default implementation handles
-            Callable returns from process() by evaluating them eagerly.)
+            as process() return values: dict, Frame, None, or Callable. A Callable slot
+            is invoked by the runtime at the point downstream demand arrives (same
+            semantics as a Callable returned from process()) — use it to hand the batch
+            to a worker thread and return a poll closure instead of blocking the loop on
+            slow per-batch operations (e.g. remote VLM calls). Per-slot wall-clock is
+            recorded into the timing EMA when the closure resolves, not at submission.
+
+            The default implementation calls process() per frame and evaluates any
+            Callable returns eagerly to preserve pre-existing behavior; override
+            process_batch() to opt into deferred-callable semantics.
         """
         results = []
         for frames in batch:
@@ -2001,6 +2371,56 @@ class Filter:
                 r = r()
             results.append(r)
         return results
+
+    def flush_batch(self) -> None:
+        """Trigger a dispatch of the current ring buffer on the next opportunity.
+
+        Safe to call from process() or from any other thread. Sets an event the
+        runtime checks at the next frame append (via _process_frames_batched)
+        and at every recv poll (via loop_once's _process_batch_flush path) so
+        the dispatch fires either when the next frame arrives OR when the loop
+        idles, whichever happens first.
+
+        Required for cadence policies the runtime can't express with
+        (batch_size, accumulate_timeout_ms) — for example a filter that fires
+        every N seconds of media-time, when an active-key gate opens, or on
+        detected keyframe boundaries. Combine with batch_trigger="manual" to
+        suppress the runtime's automatic count/timeout triggers entirely;
+        otherwise flush_batch() coexists with auto triggers and fires sooner.
+
+        In non-batch mode (batch_size == 1) this is a no-op.
+        """
+        if self._batch_size <= 1:
+            return
+        self._batch_flush_event.set()
+
+    def select_batch(
+        self, window: Sequence[dict[str, Frame]]
+    ) -> list[dict[str, Frame]]:
+        """Pick which frames in the sliding-window ring go to process_batch().
+
+        Called by the runtime before every dispatch (count-driven, timeout-driven,
+        or shutdown drain). Override to implement temporal sampling — e.g. uniform
+        subsampling from a wider window than what fits in a single batch.
+
+        The default returns the most recent ``batch_size`` entries, which keeps
+        single-buffer mode (``accumulate_window`` unset or equal to ``batch_size``)
+        identical to pre-sliding-window behavior.
+
+        Contract:
+            * Must return a list of length <= batch_size; longer lists are
+              accepted but trigger a warning in _execute_batch.
+            * Must not mutate ``window``; the runtime owns the deque.
+            * May select non-contiguous slices.
+
+        Args:
+            window: Snapshot of the current ring buffer in arrival order
+                (oldest first). Always non-empty when this is called.
+
+        Returns:
+            The frames to hand to process_batch(), in the desired order.
+        """
+        return list(window)[-self._batch_size:]
 
     def _ensure_batch_watcher(self) -> None:
         """Start the batch watcher thread if not already running."""
@@ -2053,14 +2473,22 @@ class Filter:
                 logger.exception("batch watcher loop raised; continuing")
 
     def _take_flush_batch(self) -> list[dict[str, Frame]] | None:
-        """If a flush is pending and buffer is non-empty, return the batch and reset state."""
+        """If a flush is pending and buffer is non-empty, return the batch and reset state.
+
+        Routes the snapshot through select_batch() so timeout-driven flushes go
+        through the same picking surface as count-driven dispatches. In non-sliding
+        mode the buffer is drained as before; in sliding-window mode the ring is
+        preserved (the deque's maxlen still bounds growth).
+        """
         with self._batch_lock:
             if self._batch_flush_event.is_set() and self._frame_buffer:
-                batch = list(self._frame_buffer)
-                self._frame_buffer.clear()
+                window_snapshot = list(self._frame_buffer)
+                self._frames_since_last_dispatch = 0
+                if not self._sliding_window:
+                    self._frame_buffer.clear()
                 self._batch_flush_event.clear()
                 self._cancel_batch_timer()
-                return batch
+                return self.select_batch(window_snapshot)
             self._batch_flush_event.clear()
             return None
 
