@@ -78,6 +78,10 @@ from typing import Callable, NamedTuple
 
 import zmq
 
+from opentelemetry.propagate import extract as otel_extract, inject as otel_inject
+
+from openfilter.observability.tracing import maybe_start_span
+
 from .utils import JSONType, json_getval, rndstr, once
 
 __all__ = ['is_zeromq_addr', 'ZMQMessage', 'ZMQReceiver', 'ZMQSender']
@@ -186,6 +190,9 @@ class ZMQSender:
         self.outs_required = outs_required or []
         self.clients       = {}  # {'full_id': Client, ...}
         self.min_send_id   = MSG_ID_INITIAL
+        # bytes pushed on the wire by the last successful send_maybe — read by MQ.send
+        # to stamp the outer mq.send hop span's payload_bytes attribute.
+        self.last_send_bytes = 0
         self.pull2addr     = pull2addr = {}  # {PULL Socket: 'addr', ...}
         context            = ZMQContext.get()
         self.pulls         = pulls  = []
@@ -468,19 +475,40 @@ class ZMQSender:
             if balance or balanced:
                 env['bal'] = balance or balanced + 1  # increment balanced index if that is coming from upstream
 
+            # Inject current W3C trace context (traceparent/tracestate) into the envelope
+            # dict so downstream receivers can extract it. Uses the global propagator,
+            # which is the standard TraceContextTextMapPropagator unless the host process
+            # has registered a custom one. The env dict is serialized into every per-topic
+            # message and into the topics-info heartbeat, so context travels with the data.
+            otel_inject(env)
+
             msg_topics = [TOPIC_DELIM_B2, json_dumps(env, separators=(',', ':')).encode()]
 
-            for topic, msg in topicmsgs.items():
-                env['xtra'] = msg[0]
-                topic       = f'{"" if topic.startswith("_") else TOPIC_DELIM}{topic}{TOPIC_DELIM}'.encode()
-                msg         = [topic, json_dumps(env, separators=(',', ':')).encode(), *msg[1:]]
+            # zmq.send_multipart span aggregates the kernel cost of every pub.send_multipart
+            # call in this batch (one per topic per bind, plus one for the topics heartbeat).
+            # Duration of this span minus zero — there are no sibling spans inside — is the
+            # raw kernel-copy cost; that is the diagnostic signal that motivates work like
+            # the SHM transport investigation (FILTER-419).
+            total_bytes = 0
+            with maybe_start_span("zmq.send_multipart", {"n_topics": len(topicmsgs), "n_pubs": len(pubs)}):
+                for topic, msg in topicmsgs.items():
+                    env['xtra'] = msg[0]
+                    topic       = f'{"" if topic.startswith("_") else TOPIC_DELIM}{topic}{TOPIC_DELIM}'.encode()
+                    msg         = [topic, json_dumps(env, separators=(',', ':')).encode(), *msg[1:]]
 
-                for pub in pubs:
-                    pub.send_multipart(msg, copy=False)
+                    for part in msg:
+                        try:
+                            total_bytes += len(part) if part is not None else 0
+                        except TypeError:
+                            pass
 
-            for pub in pubs:  # publish heartbeat / topics informative message
-                pub.send_multipart(msg_topics)
+                    for pub in pubs:
+                        pub.send_multipart(msg, copy=False)
 
+                for pub in pubs:  # publish heartbeat / topics informative message
+                    pub.send_multipart(msg_topics)
+
+            self.last_send_bytes = total_bytes
             self.min_send_id = msg_id + 1
 
             return True
@@ -668,6 +696,25 @@ class ZMQReceiver:
         self.low_latency = ZMQ_LOW_LATENCY if low_latency is None else low_latency
         self.prev_id     = MSG_ID_INITIAL_PREV
         self.senders     = senders = {}
+        # Telemetry handoff state, read by MQ.recv to retroactively stamp the
+        # mq.recv hop span. Reset at the start of each recv() so a partial poll
+        # cycle never leaves stale state behind.
+        # - last_extracted_ctx: W3C trace context extracted from the receiving
+        #   envelope. Used as the parent for the mq.recv span AND the downstream
+        #   {FilterClass}.process span so the per-frame distributed trace nests
+        #   across filters.
+        # - last_recv_total_ns: cumulative time spent inside sub.recv_multipart
+        #   syscalls during the recv() that produced this state — the kernel-copy
+        #   cost of the hop, the signal that motivates work like FILTER-419.
+        # - last_recv_bytes: cumulative bytes pulled off the wire.
+        # - last_recv_t_start_ns / t_end_ns: wall-clock bracket for the
+        #   accumulated syscalls; used as start_time / end_time on the
+        #   retroactive zmq.recv_multipart span.
+        self.last_extracted_ctx  = None
+        self.last_recv_total_ns  = 0
+        self.last_recv_bytes     = 0
+        self.last_recv_t_start_ns = 0
+        self.last_recv_t_end_ns   = 0
         context          = ZMQContext.get()
 
         for addr_n_topics in [addrs_n_topics] if isinstance(addrs_n_topics, str) else addrs_n_topics:
@@ -745,6 +792,14 @@ class ZMQReceiver:
         sendervs    = senders.values()
         poller      = self.poller
 
+        # Reset per-recv hop telemetry. MQ.recv reads these after we return to
+        # build the mq.recv / zmq.recv_multipart spans retroactively.
+        self.last_extracted_ctx   = None
+        self.last_recv_total_ns   = 0
+        self.last_recv_bytes      = 0
+        self.last_recv_t_start_ns = 0
+        self.last_recv_t_end_ns   = 0
+
         def recv_once(timeout) -> bool:  # got_all
             nonlocal balanced, min_recv_id
 
@@ -755,13 +810,37 @@ class ZMQReceiver:
                     if flags != zmq.POLLIN:
                         raise RuntimeError(f'unexpected poll flags {flags}')
 
+                    # Bracket the actual recv_multipart syscall so MQ.recv can stamp
+                    # the zmq.recv_multipart span with a duration that reflects pure
+                    # kernel-copy cost (no JSON parsing, no Python overhead). We use
+                    # cumulative timing across the poll loop because one MQ.recv may
+                    # involve several recv_multipart calls to drain multiple sources.
+                    _t_recv_start = time_ns()
                     msg = sub.recv_multipart(copy=False)  # payload parts stay as zmq.Frame so np.frombuffer can view them zero-copy downstream
+                    _t_recv_end = time_ns()
+                    if not self.last_recv_t_start_ns:
+                        self.last_recv_t_start_ns = _t_recv_start
+                    self.last_recv_t_end_ns   = _t_recv_end
+                    self.last_recv_total_ns  += _t_recv_end - _t_recv_start
+                    for _part in msg:
+                        try:
+                            self.last_recv_bytes += len(_part) if _part is not None else 0
+                        except TypeError:
+                            pass
 
                     sender     = senders[sub]
                     sender_eph = sender.ephemeral
                     topic_b    = msg[0].bytes  # topic/env are small control parts, copy them out eagerly
                     topic      = topic_b[topic_b.startswith(TOPIC_DELIM_B) : -1].decode()  # empty topics indicates ignore actual message (topics count tho for information)
                     env        = json_loads(msg[1].bytes.decode())
+                    # Extract W3C trace context from the envelope (added by ZMQSender via
+                    # otel_inject). Last extraction wins for a given recv batch — frames
+                    # from the same upstream sender share trace context within a hop, so
+                    # this is correct; if multiple upstreams contribute, the last one's
+                    # context becomes the parent for the consumer-side {Filter}.process
+                    # span, which is the closest we can do without joining traces.
+                    if 'traceparent' in env:
+                        self.last_extracted_ctx = otel_extract(env)
                     server_id  = sender.server_id = env['sid']
                     msg_id     = env['mid']
                     topics     = env.get('topics')

@@ -1286,7 +1286,17 @@ class Filter:
         # metrics reflect pure process() cost, not span creation overhead.
         otel = getattr(self, 'otel', None)
         tracer = getattr(otel, 'tracer', None) if otel else None
-        parent_ctx = getattr(otel, 'parent_context', None) if tracer else None
+        # Prefer the per-frame trace context extracted from the incoming ZMQ envelope
+        # (set by MQ.recv) so this process span nests under the producer's mq.send
+        # span across the wire — that is the load-bearing piece of PLAT-866 that makes
+        # per-frame distributed traces actually work. Fall back to the static
+        # TRACEPARENT pod-level context (PLAT-848 behavior) when there is no per-frame
+        # context: source filters that never call mq.recv (e.g. VideoIn) still need
+        # to start their spans under the orchestration trace.
+        mq = getattr(self, 'mq', None)
+        parent_ctx = getattr(mq, 'recv_parent_ctx', None) if (tracer and mq) else None
+        if parent_ctx is None:
+            parent_ctx = getattr(otel, 'parent_context', None) if tracer else None
         span_ctx_mgr = (
             tracer.start_as_current_span(
                 f"{self.__class__.__name__}.process",
@@ -1780,6 +1790,9 @@ class Filter:
             on_exit_msg=on_exit_msg,
             mq_log=config.mq_log,
             mq_msgid_sync=config.mq_msgid_sync,
+            # Hop-span tracer (mq.send / mq.recv and children). None means tracing is
+            # disabled, which is the contract that keeps the hot path Span-allocation-free.
+            tracer=getattr(getattr(self, 'otel', None), 'tracer', None),
         )
 
         # Detect last filter in pipeline (no downstream outputs)

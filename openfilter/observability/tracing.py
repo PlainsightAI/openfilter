@@ -6,9 +6,10 @@ TRACEPARENT environment variable, and a span exporter factory that mirrors
 the metrics ExporterFactory pattern.
 """
 
+import contextlib
 import os
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 from opentelemetry import context, trace
 from opentelemetry.context.context import Context
@@ -25,6 +26,43 @@ from opentelemetry.sdk.trace.export import (
 from openfilter.observability._otlp import infer_otlp_insecure
 
 logger = logging.getLogger(__name__)
+
+
+_HOP_TRACER_NAME = "openfilter.filter_runtime.mq"
+_HOP_TRACER: Optional[trace.Tracer] = None
+
+
+def register_hop_tracer(tracer: Optional[trace.Tracer]) -> None:
+    """Register the tracer used by ``maybe_start_span`` for nested hop spans
+    (``frame.encode_jpg`` / ``frame.decode_jpg`` / ``zmq.send_multipart`` /
+    ``zmq.recv_multipart``). Called by ``MQ.__init__`` once the Filter has built
+    its OpenTelemetryClient — without this, ``maybe_start_span`` would fall back to
+    ``trace.get_tracer`` against the global provider, which is not set in unit
+    tests that build their own provider locally."""
+    global _HOP_TRACER
+    _HOP_TRACER = tracer
+
+
+@contextlib.contextmanager
+def maybe_start_span(name: str, attributes: Optional[dict] = None) -> Iterator[None]:
+    """Start a child span ONLY if there is already a recording span in the current context.
+
+    Used for spans nested inside an outer ``mq.send`` / ``mq.recv`` (``frame.encode_jpg``,
+    ``frame.decode_jpg``, ``zmq.send_multipart``, ``zmq.recv_multipart``): if the outer hop
+    isn't being traced, this is a single ``is_recording()`` check and a no-op
+    ``nullcontext`` — no Span object is allocated, no tracer lookup happens on the hot path.
+
+    The gating condition for the OUTER hop span is the ``self.tracer`` attribute cached on
+    ``MQ`` at init; that attribute is ``None`` when tracing is disabled, so no outer span
+    means no recording context, which means this helper short-circuits cleanly.
+    """
+    current = trace.get_current_span()
+    if not current.is_recording():
+        yield
+        return
+    tracer = _HOP_TRACER or trace.get_tracer(_HOP_TRACER_NAME)
+    with tracer.start_as_current_span(name, attributes=attributes or None):
+        yield
 
 
 class SilentSpanExporter(SpanExporter):
