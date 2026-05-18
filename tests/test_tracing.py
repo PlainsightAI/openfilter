@@ -626,5 +626,72 @@ class TestMQReceiverExtractsTraceContext(unittest.TestCase):
         self.assertEqual(extracted_span.get_span_context().trace_id, producer_trace_id)
 
 
+class TestMQRecvSpanEndsOnException(unittest.TestCase):
+    """Regression guard for the shingonoide review on PLAT-866: the retroactive
+    ``mq.recv`` span is created without ``start_as_current_span``, so it MUST be
+    wrapped in a try/finally that calls ``recv_span.end()`` even if
+    ``topicmsgs2frames`` / ``metrics_.incoming`` raises mid-deserialize. Without
+    the finally guard the span object stays buffered in the BatchSpanProcessor's
+    pending queue with no end time and never reaches the exporter."""
+
+    def test_recv_span_ends_when_topicmsgs2frames_raises(self):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        from openfilter.filter_runtime.mq import MQ
+        from openfilter.observability.tracing import register_hop_tracer
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer("recv-exception-test")
+        register_hop_tracer(tracer)
+        self.addCleanup(register_hop_tracer, None)
+
+        class _BoomReceiver:
+            """Stand-in for ZMQReceiver — returns a malformed envelope so
+            ``MQ.topicmsgs2frames`` raises while deserializing. Implements the
+            small surface MQ.recv actually touches: ``recv()``, ``last_*``
+            telemetry handoff fields. recv() returns a topicmsg whose first
+            element is the wrong type so topicmsgs2frames raises on
+            ``xtra_dict['img']``."""
+
+            last_extracted_ctx = None
+            last_recv_t_start_ns = 0
+            last_recv_t_end_ns = 0
+            last_recv_bytes = 0
+
+            def recv(self, *_a, **_kw):
+                # Tuple of (topicmsgs, send_state). The msg[0] = 12345 is not a
+                # dict, so topicmsgs2frames will raise on `xtra_dict['img']`.
+                return ({"main": [12345, b"junk"]}, None)
+
+        mq = MQ.__new__(MQ)
+        mq.mq_id = "test-mq"
+        mq.tracer = tracer
+        mq.recv_parent_ctx = None
+        mq.receiver = _BoomReceiver()
+        mq.recv_state = None
+        mq.mq_msgid_sync = False
+        mq.shm_cache = None
+        # DummyMetrics-shaped: only .incoming is touched on the recv path.
+        mq.metrics_ = type("M", (), {"incoming": staticmethod(lambda *_: None)})()
+
+        with self.assertRaises(Exception):
+            mq.recv()
+
+        # The mq.recv span must have been ended despite the deserialize exception,
+        # so it appears in the exporter's finished-span list with a non-None end_time.
+        names = {s.name for s in exporter.get_finished_spans()}
+        self.assertIn(
+            "mq.recv", names,
+            "mq.recv span was not ended; SimpleSpanProcessor never saw it. "
+            "The try/finally around recv_span lifetime is missing or broken.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

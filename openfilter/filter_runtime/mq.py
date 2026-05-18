@@ -264,7 +264,10 @@ class MQ:
         send_cm = tracer.start_as_current_span("mq.send", attributes=MQ._hop_attrs(frames if isinstance(frames, dict) else None)) if tracer else contextlib.nullcontext()
         with send_cm as send_span:
             recv_state = self.sender.send(callback, self.send_state if self.mq_msgid_sync else None, timeout)
-            if send_span is not None:
+            # Gate on `tracer` rather than `send_span is not None` — the latter happens to
+            # work today because contextlib.nullcontext() yields None, but a future refactor
+            # to nullcontext(some_obj) would silently break the guard.
+            if tracer:
                 # Stamp payload_bytes once we know what actually got pushed on the wire,
                 # and re-stamp frame attrs in case the callback resolved a lazy frames
                 # source (frames was a Callable when send() was invoked).
@@ -300,13 +303,15 @@ class MQ:
             return {}
 
         tracer = self.tracer
-        # Wall-clock bracket for the retroactive mq.recv span. Includes poll wait time,
-        # which is operationally useful — an idle filter shows up as a long mq.recv with
-        # almost no zmq.recv_multipart sibling time, immediately distinguishable from a
-        # slow kernel copy (long mq.recv AND long zmq.recv_multipart).
+        # Wall-clock start of the retroactive mq.recv span. The matching end_time is
+        # captured AFTER the deserialize work completes (further down) so the span
+        # window encloses its frame.deserialize child rather than ending right after
+        # the recv() syscall returns. Includes poll wait time — operationally useful
+        # because an idle filter shows up as a long mq.recv with almost no
+        # zmq.recv_multipart sibling time, immediately distinguishable from a slow
+        # kernel copy (long mq.recv AND long zmq.recv_multipart).
         t_recv_start = time_ns()
         res = self.receiver.recv(self.recv_state if self.mq_msgid_sync else None, timeout)
-        t_recv_end = time_ns()
         if res is None:
             return None
 
@@ -316,6 +321,14 @@ class MQ:
         # Stash extracted W3C trace context so Filter._process_frames_single can use it
         # as the parent context for the {FilterClass}.process span, joining this filter's
         # per-frame work onto the producer's distributed trace.
+        #
+        # Fan-in caveat: when this receiver subscribes to multiple upstream senders, the
+        # last envelope parsed during the recv() call wins (see ZMQReceiver.recv_once
+        # `last_extracted_ctx = otel_extract(env)`). Frames produced by other upstreams in
+        # the same recv batch end up parented under that one arbitrary upstream's mq.send
+        # context. Joining all of them properly would require span links across producer
+        # traces, which is intentionally out of scope for PLAT-866 — flagging here so a
+        # future maintainer investigating "incomplete fan-in traces" finds the explanation.
         extracted_ctx = getattr(self.receiver, 'last_extracted_ctx', None)
         self.recv_parent_ctx = extracted_ctx
 
@@ -332,46 +345,57 @@ class MQ:
             start_time=t_recv_start,
             attributes=recv_attrs,
         )
-        recv_ctx = otel_trace.set_span_in_context(recv_span)
-
-        # zmq.recv_multipart sibling span captures cumulative kernel-copy cost across
-        # whatever recv_multipart syscalls fired inside the wait/poll loop. Its duration
-        # minus the (zero) sibling spans inside is the raw kernel cost — the diagnostic
-        # signal that motivates work like FILTER-419 (SHM transport).
-        zmq_t_start = getattr(self.receiver, 'last_recv_t_start_ns', 0) or t_recv_start
-        zmq_t_end   = getattr(self.receiver, 'last_recv_t_end_ns', 0) or zmq_t_start
-        zmq_bytes   = int(getattr(self.receiver, 'last_recv_bytes', 0) or 0)
-        zmq_span = tracer.start_span(
-            "zmq.recv_multipart",
-            context=recv_ctx,
-            start_time=zmq_t_start,
-            attributes={"payload_bytes": zmq_bytes},
-        )
-        zmq_span.end(end_time=zmq_t_end)
-
-        # frame.deserialize wraps topicmsgs2frames; frame.decode_jpg fires as a child
-        # only when the jpg transport is in use (via maybe_start_span inside Frame.decode).
-        # Use start_as_current_span here so Frame.decode's maybe_start_span sees a recording
-        # parent and creates the codec child span correctly.
-        token = otel_context.attach(recv_ctx)
         try:
-            with tracer.start_as_current_span("frame.deserialize"):
-                self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
-        finally:
-            otel_context.detach(token)
+            recv_ctx = otel_trace.set_span_in_context(recv_span)
 
-        # Stamp frame-derived attributes onto the recv span now that we have decoded frames.
-        for k, v in MQ._hop_attrs(frames).items():
+            # zmq.recv_multipart sibling span captures cumulative kernel-copy cost across
+            # whatever recv_multipart syscalls fired inside the wait/poll loop. Its
+            # duration minus the (zero) sibling spans inside is the raw kernel cost —
+            # the diagnostic signal that motivates work like FILTER-419 (SHM transport).
+            # Skip the span when ZMQReceiver didn't observe a recv_multipart that updated
+            # its timing state (e.g., a degenerate path where only special / OOB messages
+            # arrived) rather than emit a zero-duration span pinned to t_recv_start.
+            zmq_t_start = getattr(self.receiver, 'last_recv_t_start_ns', 0)
+            zmq_t_end   = getattr(self.receiver, 'last_recv_t_end_ns', 0)
+            zmq_bytes   = int(getattr(self.receiver, 'last_recv_bytes', 0) or 0)
+            if zmq_t_start and zmq_t_end:
+                zmq_span = tracer.start_span(
+                    "zmq.recv_multipart",
+                    context=recv_ctx,
+                    start_time=zmq_t_start,
+                    attributes={"payload_bytes": zmq_bytes},
+                )
+                zmq_span.end(end_time=zmq_t_end)
+
+            # frame.deserialize wraps topicmsgs2frames; frame.decode_jpg fires as a child
+            # only when the jpg transport is in use (via maybe_start_span inside Frame.decode).
+            # Use start_as_current_span here so Frame.decode's maybe_start_span sees a recording
+            # parent and creates the codec child span correctly.
+            token = otel_context.attach(recv_ctx)
             try:
-                recv_span.set_attribute(k, v)
+                with tracer.start_as_current_span("frame.deserialize"):
+                    self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
+            finally:
+                otel_context.detach(token)
+
+            # Stamp frame-derived attributes onto the recv span now that we have decoded frames.
+            for k, v in MQ._hop_attrs(frames).items():
+                try:
+                    recv_span.set_attribute(k, v)
+                except Exception:
+                    pass
+            try:
+                recv_span.set_attribute("payload_bytes", zmq_bytes)
             except Exception:
                 pass
-        try:
-            recv_span.set_attribute("payload_bytes", zmq_bytes)
-        except Exception:
-            pass
-
-        recv_span.end(end_time=t_recv_end)
+        finally:
+            # End the span post-deserialize and inside finally so an exception in
+            # topicmsgs2frames / metrics_.incoming can't drop the span on the floor.
+            # End time is captured here (not at the t_recv_end snapshot above) so the
+            # span window encloses its child frame.deserialize, instead of ending before
+            # its own children — t_recv_end is captured pre-deserialize and would
+            # produce a span whose children appear to live outside its time window.
+            recv_span.end(end_time=time_ns())
         return frames
 
     @staticmethod
