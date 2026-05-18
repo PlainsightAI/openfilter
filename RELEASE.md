@@ -2,6 +2,63 @@
 
 OpenFilter Library release notes
 
+## v1.0.0 - 2026-05-17
+
+**A new foundation for production Vision AI.** OpenFilter 1.0 transitions the runtime from an evolving framework into a stable, production-grade platform. Filters built against earlier versions keep running unchanged — every addition in this release is additive, with the legacy `dict`-based `FilterConfig` coexisting alongside the new typed surface.
+
+### Declarative Configuration Foundations
+
+Each filter can now publish a build-time JSON Schema artifact alongside the runtime validation OpenFilter has always done — consumers can validate, document, and render configuration UIs against a filter without ever running it.
+
+- **Typed `FilterConfigBase` with `emit_schema()`** ([FILTER-441](https://plainsight-ai.atlassian.net/browse/FILTER-441), #86): filters can declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. `Managed` / `Resolve` helpers mark fields as orchestrator-controlled or platform-resolved.
+- **`FilterOutputSchema` + `frame.data` shape catalog** ([FILTER-444](https://plainsight-ai.atlassian.net/browse/FILTER-444), #88): declarative `frame.data` shape declaration. The catalog at `openfilter.filter_runtime.shapes` ships canonical types — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference shapes via `$ref` instead of negotiating dialects out-of-band.
+- **`openfilter emit-schema` CLI** ([FILTER-442](https://plainsight-ai.atlassian.net/browse/FILTER-442), #87): emits a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts `module:Class` to disambiguate.
+
+Reference migrations ship in `filter-template` and `filter-sam3-detector`; every other filter in the library keeps working unchanged through the runtime fallback.
+
+### Backward-Compatible Runtime Improvements
+
+Two runtime improvements teams have been asking for, landed underneath the compatibility surface:
+
+- **Zero-copy shared-memory transport** between co-located filters (#82) — eliminates inter-stage serialization on the same host.
+- **Batched inference** via `process_batch()` and `batch_size > 1` (#61, v0.1.29) — meaningful throughput gains for SAM3, YOLO, and transformer-OCR filters that benefit from batched forward passes.
+
+### Production-Grade Engineering
+
+- **First-class observability**: per-filter OpenTelemetry distributed tracing (#79), OpenLineage events (v0.1.5), per-frame timing metrics, and a turn-key Grafana stack (v0.1.21–22). Wall-clock latency dashboards separate `process()` time from ZMQ and queue overhead.
+- **Supply-chain hygiene**: SLSA provenance and SBOM attestations on every Docker image; token auth and CORS for HTTP-exposed filters (v0.1.30).
+- **GPU and deployment ergonomics**: framework-agnostic GPU detection via `ctypes` (v0.1.28); GKE-compatible `LD_LIBRARY_PATH` injection (v0.1.26), so CUDA-dependent images deploy without per-cluster fixups.
+- **Filter library refresh**: new `ImageIn` / `ImageOut` filters for still-image pipelines (#21, #29); `VideoIn` moved off `vidgear` to `cv2` / PyAV (#66, #67) for stability against odd-codec sources.
+
+### Breaking Changes
+
+- **OTLP gRPC `insecure` flag now inferred from endpoint scheme** (#90): the exporter factory and tracing builder use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Deployments configuring bare-host endpoints against plaintext collectors must prefix `http://` to maintain prior behavior. Explicit `insecure=` in `exporter_config` / kwargs always wins.
+
+### Stability commitments
+
+Surfaces committed under 1.0 — breaking changes will require a 2.0 bump:
+
+- `openfilter.filter_runtime.FilterConfigBase` and its `Managed` / `Resolve` field shorthands, including the `ResolveHint` literal that parameterizes them
+- `openfilter.filter_runtime.FilterOutputSchema` and the shape catalog in `openfilter.filter_runtime.shapes`
+- The `openfilter emit-schema` CLI
+
+The legacy `dict`-based `FilterConfig` continues to coexist with `FilterConfigBase` — unmigrated filters keep working unchanged.
+
+### Fixed
+
+- **Silent `$id` inheritance on `FilterOutputSchema` subclasses** ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452), #88): subclasses no longer silently inherit a parent's `$id`. `__init_subclass__` refuses ambiguous construction at class-definition time.
+- **`test_topo_balance_step` shutdown race on Python 3.10** ([FILTER-461](https://plainsight-ai.atlassian.net/browse/FILTER-461), #94): the `TestFilterOld` topology tests poll for runner termination instead of asserting on a single `step()` call after the shutdown sentinel. Test-only change; no runtime impact.
+
+### Removed
+
+- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable** (#90): was previously a no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a truthy string, so `insecure=True` regardless of operator intent.
+
+### Infrastructure
+
+- **`gh release create` uses `secrets.GH_BOT_USER_PAT`** ([FILTER-462](https://plainsight-ai.atlassian.net/browse/FILTER-462), #97) so the release-tag push triggers `cascade-on-tag.yaml` automatically. Workflow `permissions:` tightened to `contents: read`.
+- **Tag-triggered bump-PR cascade** ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145), #85): `cascade-on-tag.yaml` workflow + `scripts/cascade/*` replace the previous `cloudbuild-cascade.yaml` mechanism. Fires on release-semver tag push, discovers eligible `filter-*` consumers, opens mechanical bump PRs through `gh-actions-public/open-mechanical-pr`.
+- **Cascade widens consumer pyproject upper bounds when target excludes them** (#93): 1.0+ targets widen to next-major (`<2.0.0`).
+
 ## v0.2.1 - 2026-05-16
 
 This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) and the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)) under a single tag. `v0.2.0` was never tagged — its contents ship here under `v0.2.1`. Also folded in: the DT-145 cascade infrastructure (#85 / #93) and the FILTER-461 test-fragility fix (#94), all merged after the original `v0.2.0` changelog window.
