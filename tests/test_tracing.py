@@ -626,6 +626,27 @@ class TestMQReceiverExtractsTraceContext(unittest.TestCase):
         self.assertEqual(extracted_span.get_span_context().trace_id, producer_trace_id)
 
 
+class TestFanInLastExtractedWins(unittest.TestCase):
+    """Placeholder for the fan-in trace-context-joining case documented in
+    ``MQ.recv``: when a receiver subscribes to multiple upstream senders, frames
+    from non-last upstreams in a single recv batch end up parented under the one
+    last-extracted upstream's mq.send context. Joining all of them would require
+    span links across producer traces — intentionally out of scope for PLAT-866.
+
+    Marked skip rather than left out so a future maintainer working on multi-
+    upstream tracing finds the documented intent + the test stub to fill in,
+    instead of having to rediscover the design decision."""
+
+    @unittest.skip("Out of scope for PLAT-866 — see fan-in caveat in MQ.recv docstring")
+    def test_multiple_upstreams_produce_span_links_per_envelope(self):
+        # Future work: drive MQ.recv with a stand-in receiver whose recv()
+        # returns multiple topicmsgs each tagged with a different upstream's
+        # extracted context. Assert each resulting frame.deserialize child span
+        # is parented under its own upstream's mq.send via span links, not
+        # under the arbitrary last-extracted one.
+        self.fail("not implemented")
+
+
 class TestMQRecvSpanEndsOnException(unittest.TestCase):
     """Regression guard for the shingonoide review on PLAT-866: the retroactive
     ``mq.recv`` span is created without ``start_as_current_span``, so it MUST be
@@ -685,11 +706,34 @@ class TestMQRecvSpanEndsOnException(unittest.TestCase):
 
         # The mq.recv span must have been ended despite the deserialize exception,
         # so it appears in the exporter's finished-span list with a non-None end_time.
-        names = {s.name for s in exporter.get_finished_spans()}
+        finished = exporter.get_finished_spans()
+        names = {s.name for s in finished}
         self.assertIn(
             "mq.recv", names,
             "mq.recv span was not ended; SimpleSpanProcessor never saw it. "
             "The try/finally around recv_span lifetime is missing or broken.",
+        )
+
+        # And the span must carry an ERROR status + recorded exception event —
+        # tracer.start_span() + manual .end() does NOT auto-record exceptions the
+        # way `with start_as_current_span` does, so this requires an explicit
+        # record_exception / set_status in the except branch. Without that, the
+        # span lands in Cloud Trace as a normal-looking recv with no error
+        # indication, which is exactly the failure mode this guard prevents.
+        from opentelemetry.trace import StatusCode
+
+        recv_span = next(s for s in finished if s.name == "mq.recv")
+        self.assertEqual(
+            recv_span.status.status_code,
+            StatusCode.ERROR,
+            "mq.recv span did not carry ERROR status after topicmsgs2frames raised; "
+            "the except branch must call set_status(StatusCode.ERROR).",
+        )
+        exc_events = [e for e in recv_span.events if e.name == "exception"]
+        self.assertTrue(
+            exc_events,
+            "mq.recv span did not record the exception; "
+            "the except branch must call record_exception(e).",
         )
 
 

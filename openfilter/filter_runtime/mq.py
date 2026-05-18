@@ -271,20 +271,11 @@ class MQ:
                 # Stamp payload_bytes once we know what actually got pushed on the wire,
                 # and re-stamp frame attrs in case the callback resolved a lazy frames
                 # source (frames was a Callable when send() was invoked).
-                try:
-                    send_span.set_attribute("payload_bytes", int(getattr(self.sender, 'last_send_bytes', 0) or 0))
-                except Exception:
-                    pass
+                send_span.set_attribute("payload_bytes", int(self.sender.last_send_bytes))
                 if isinstance(frames, dict):
                     for k, v in MQ._hop_attrs(frames).items():
-                        try:
-                            send_span.set_attribute(k, v)
-                        except Exception:
-                            pass
-                try:
-                    send_span.set_attribute("mq.id", self.mq_id)
-                except Exception:
-                    pass
+                        send_span.set_attribute(k, v)
+                send_span.set_attribute("mq.id", self.mq_id)
 
         if recv_state is None:
             return False
@@ -310,9 +301,16 @@ class MQ:
         # because an idle filter shows up as a long mq.recv with almost no
         # zmq.recv_multipart sibling time, immediately distinguishable from a slow
         # kernel copy (long mq.recv AND long zmq.recv_multipart).
-        t_recv_start = time_ns()
+        # Only pay for time_ns() when tracing is on — cheap, but adds up at 30 fps per hop.
+        t_recv_start = time_ns() if tracer is not None else 0
         res = self.receiver.recv(self.recv_state if self.mq_msgid_sync else None, timeout)
         if res is None:
+            # Symmetric with the `self.receiver is None` early return: clear so a
+            # caller (or a future read) can't see a stale per-frame context from a
+            # previous successful recv(). Currently benign because callers don't read
+            # recv_parent_ctx after recv() returns None, but the asymmetry was a trap
+            # waiting for a future maintainer.
+            self.recv_parent_ctx = None
             return None
 
         topicmsgs, self.send_state = res
@@ -329,7 +327,7 @@ class MQ:
         # context. Joining all of them properly would require span links across producer
         # traces, which is intentionally out of scope for PLAT-866 — flagging here so a
         # future maintainer investigating "incomplete fan-in traces" finds the explanation.
-        extracted_ctx = getattr(self.receiver, 'last_extracted_ctx', None)
+        extracted_ctx = self.receiver.last_extracted_ctx
         self.recv_parent_ctx = extracted_ctx
 
         if tracer is None:
@@ -355,9 +353,9 @@ class MQ:
             # Skip the span when ZMQReceiver didn't observe a recv_multipart that updated
             # its timing state (e.g., a degenerate path where only special / OOB messages
             # arrived) rather than emit a zero-duration span pinned to t_recv_start.
-            zmq_t_start = getattr(self.receiver, 'last_recv_t_start_ns', 0)
-            zmq_t_end   = getattr(self.receiver, 'last_recv_t_end_ns', 0)
-            zmq_bytes   = int(getattr(self.receiver, 'last_recv_bytes', 0) or 0)
+            zmq_t_start = self.receiver.last_recv_t_start_ns
+            zmq_t_end   = self.receiver.last_recv_t_end_ns
+            zmq_bytes   = int(self.receiver.last_recv_bytes)
             if zmq_t_start and zmq_t_end:
                 zmq_span = tracer.start_span(
                     "zmq.recv_multipart",
@@ -365,7 +363,10 @@ class MQ:
                     start_time=zmq_t_start,
                     attributes={"payload_bytes": zmq_bytes},
                 )
-                zmq_span.end(end_time=zmq_t_end)
+                try:
+                    zmq_span.end(end_time=zmq_t_end)
+                except Exception:  # pragma: no cover - end() shouldn't raise
+                    pass
 
             # frame.deserialize wraps topicmsgs2frames; frame.decode_jpg fires as a child
             # only when the jpg transport is in use (via maybe_start_span inside Frame.decode).
@@ -380,14 +381,17 @@ class MQ:
 
             # Stamp frame-derived attributes onto the recv span now that we have decoded frames.
             for k, v in MQ._hop_attrs(frames).items():
-                try:
-                    recv_span.set_attribute(k, v)
-                except Exception:
-                    pass
-            try:
-                recv_span.set_attribute("payload_bytes", zmq_bytes)
-            except Exception:
-                pass
+                recv_span.set_attribute(k, v)
+            recv_span.set_attribute("payload_bytes", zmq_bytes)
+        except Exception as e:
+            # tracer.start_span + manual .end() does NOT auto-record exceptions the way
+            # `with start_as_current_span` does, so without this the span would close
+            # successfully but land in Cloud Trace as a normal-looking recv with no error
+            # indication — making genuine deserialize bugs hide as missing data, not
+            # failures.
+            recv_span.record_exception(e)
+            recv_span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(e)))
+            raise
         finally:
             # End the span post-deserialize and inside finally so an exception in
             # topicmsgs2frames / metrics_.incoming can't drop the span on the floor.
