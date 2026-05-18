@@ -17,13 +17,17 @@ Environment variables:
         thing, don't touch unless u know what u doing.
 """
 
+import contextlib
 import logging
 import os
 from json import loads as json_loads, dumps as json_dumps
-from time import time
+from time import time, time_ns
 from typing import Callable
 
 import numpy as np
+from opentelemetry import context as otel_context, trace as otel_trace
+
+from openfilter.observability.tracing import register_hop_tracer as _register_hop_tracer
 
 from .frame import Frame
 from .metrics import Metrics
@@ -72,8 +76,24 @@ class MQ:
         on_exit_msg:   Callable[[str], None] | None = None,
         mq_log:        str | bool | None = None,
         mq_msgid_sync: bool | None = None,
+        tracer:        "otel_trace.Tracer | None" = None,
     ):
         self.mq_id         = mq_id or rndstr(8)
+        # Cached tracer for hop spans (mq.send / mq.recv and children). Passed in by
+        # Filter.init when telemetry is on; None when tracing is disabled so the hot
+        # path short-circuits before allocating any Span objects.
+        self.tracer        = tracer
+        # Register (or clear) the module-level hop tracer used by the codec /
+        # kernel sub-span helper (maybe_start_span). Doing this unconditionally
+        # — including the None case — prevents a torn-down tracer from a previous
+        # MQ instance from being reused; the helper still no-ops in the
+        # no-tracer case because maybe_start_span first checks is_recording() on
+        # the current span, which is False without an outer mq.send / mq.recv.
+        _register_hop_tracer(tracer)
+        # Per-frame trace context extracted from the last received envelope. Filter
+        # consults this to parent the {FilterClass}.process span so that downstream
+        # spans on this filter join the producer's per-frame distributed trace.
+        self.recv_parent_ctx = None
         on_exit_msg_       = (lambda m: None) if on_exit_msg is None else (lambda m: on_exit_msg(m[0]))
         self.sender        = ZMQSender(outs_bind, self.mq_id, on_exit_msg_, outs_balance, outs_required) \
             if outs_bind else None
@@ -99,6 +119,38 @@ class MQ:
 
         self.shm_pool  = SHMPool(prefix=f'of-{self.mq_id}') if (shm_enabled() and self.sender is not None) else None
         self.shm_cache = SHMAttachCache() if (shm_enabled() and self.receiver is not None) else None
+
+    @staticmethod
+    def _hop_attrs(frames: dict[str, Frame] | None) -> dict:
+        """Best-effort extraction of frame.id / frame.format / topic for hop span attrs.
+
+        Hidden topics (``_metrics``, ``_filter``) are ignored — the hop span describes
+        the user-visible frames, and metrics-only sends should still produce a span
+        (just without frame.id / frame.format) so the trace shows the hop happened.
+        """
+        attrs: dict = {}
+        if not frames:
+            return attrs
+        topics: list[str] = []
+        frame_id = None
+        fmt = None
+        for topic, frame in frames.items():
+            if topic.startswith('_'):
+                continue
+            topics.append(topic)
+            if frame_id is None and frame is not None and isinstance(frame.data, dict):
+                meta = frame.data.get('meta')
+                if isinstance(meta, dict) and meta.get('id') is not None:
+                    frame_id = meta['id']
+            if fmt is None and frame is not None and getattr(frame, 'format', None):
+                fmt = frame.format
+        if topics:
+            attrs['topic'] = topics[0] if len(topics) == 1 else ','.join(topics)
+        if frame_id is not None:
+            attrs['frame.id'] = str(frame_id)
+        if fmt:
+            attrs['frame.format'] = fmt
+        return attrs
 
     def _get_filter_data(self, frames: dict[str, Frame]) -> dict:
         """Extract frame IDs from frames or generate one. Returns data for _filter topic."""
@@ -173,6 +225,8 @@ class MQ:
             if self.metrics_cb:
                 self.metrics_cb(metrics)
 
+        tracer = self.tracer
+
         def callback():  # callback instead of direct send in order to get metrics at time of actual send to have correct latency (at point of send)
             nonlocal frames, metrics
 
@@ -187,7 +241,12 @@ class MQ:
             if self.outs_filter is True:
                 frames = {**frames, '_filter': Frame(self._get_filter_data(frames))}
 
-            return MQ.frames2topicmsgs(frames, self.outs_jpg, pool=self.shm_pool)
+            # frame.serialize wraps frames2topicmsgs so the trace breaks out CPU /
+            # codec cost (frame.encode_jpg fires as a child here when jpg transport
+            # is selected) from the kernel cost (zmq.send_multipart, sibling).
+            ser_cm = tracer.start_as_current_span("frame.serialize") if tracer else contextlib.nullcontext()
+            with ser_cm:
+                return MQ.frames2topicmsgs(frames, self.outs_jpg, pool=self.shm_pool)
 
         metrics = None
 
@@ -197,7 +256,37 @@ class MQ:
 
             return True
 
-        if (recv_state := self.sender.send(callback, self.send_state if self.mq_msgid_sync else None, timeout)) is None:
+        # mq.send hop span wraps the entire ZMQSender.send call (which is what blocks
+        # for downstream readiness, runs the callback, and pushes bytes on the wire).
+        # The trace context active here is what gets injected into the outgoing envelope
+        # by ZMQSender.send_maybe via opentelemetry.propagate.inject, so the downstream
+        # filter's mq.recv / {Filter}.process spans nest under THIS span across the wire.
+        send_cm = tracer.start_as_current_span("mq.send", attributes=MQ._hop_attrs(frames if isinstance(frames, dict) else None)) if tracer else contextlib.nullcontext()
+        with send_cm as send_span:
+            recv_state = self.sender.send(callback, self.send_state if self.mq_msgid_sync else None, timeout)
+            # Gate on `tracer` rather than `send_span is not None` — the latter happens to
+            # work today because contextlib.nullcontext() yields None, but a future refactor
+            # to nullcontext(some_obj) would silently break the guard.
+            if tracer:
+                # Stamp payload_bytes once we know what actually got pushed on the wire,
+                # and re-stamp frame attrs in case the callback resolved a lazy frames
+                # source (frames was a Callable when send() was invoked).
+                try:
+                    send_span.set_attribute("payload_bytes", int(getattr(self.sender, 'last_send_bytes', 0) or 0))
+                except Exception:
+                    pass
+                if isinstance(frames, dict):
+                    for k, v in MQ._hop_attrs(frames).items():
+                        try:
+                            send_span.set_attribute(k, v)
+                        except Exception:
+                            pass
+                try:
+                    send_span.set_attribute("mq.id", self.mq_id)
+                except Exception:
+                    pass
+
+        if recv_state is None:
             return False
 
         self.recv_state = recv_state if frames is not None else None  # callback might haver returned None in which case send returns same state as previously, we don't want this because it will set recv wrong and cause a newer message warning
@@ -210,16 +299,103 @@ class MQ:
 
     def recv(self, timeout: int | None = None) -> dict[str, Frame] | None:
         if self.receiver is None:
+            self.recv_parent_ctx = None
             return {}
 
-        if (res := self.receiver.recv(self.recv_state if self.mq_msgid_sync else None, timeout)) is None:
+        tracer = self.tracer
+        # Wall-clock start of the retroactive mq.recv span. The matching end_time is
+        # captured AFTER the deserialize work completes (further down) so the span
+        # window encloses its frame.deserialize child rather than ending right after
+        # the recv() syscall returns. Includes poll wait time — operationally useful
+        # because an idle filter shows up as a long mq.recv with almost no
+        # zmq.recv_multipart sibling time, immediately distinguishable from a slow
+        # kernel copy (long mq.recv AND long zmq.recv_multipart).
+        t_recv_start = time_ns()
+        res = self.receiver.recv(self.recv_state if self.mq_msgid_sync else None, timeout)
+        if res is None:
             return None
 
         topicmsgs, self.send_state = res
         self.recv_state            = None  # we already used up this recv_state so set to None to increment automatically next time in case send() is not called to get new state
 
-        self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
+        # Stash extracted W3C trace context so Filter._process_frames_single can use it
+        # as the parent context for the {FilterClass}.process span, joining this filter's
+        # per-frame work onto the producer's distributed trace.
+        #
+        # Fan-in caveat: when this receiver subscribes to multiple upstream senders, the
+        # last envelope parsed during the recv() call wins (see ZMQReceiver.recv_once
+        # `last_extracted_ctx = otel_extract(env)`). Frames produced by other upstreams in
+        # the same recv batch end up parented under that one arbitrary upstream's mq.send
+        # context. Joining all of them properly would require span links across producer
+        # traces, which is intentionally out of scope for PLAT-866 — flagging here so a
+        # future maintainer investigating "incomplete fan-in traces" finds the explanation.
+        extracted_ctx = getattr(self.receiver, 'last_extracted_ctx', None)
+        self.recv_parent_ctx = extracted_ctx
 
+        if tracer is None:
+            self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
+            return frames
+
+        # Retroactive mq.recv span — created with the extracted context as parent so the
+        # consumer-side hop nests under the producer's mq.send span across the wire.
+        recv_attrs = {"mq.id": self.mq_id}
+        recv_span = tracer.start_span(
+            "mq.recv",
+            context=extracted_ctx,
+            start_time=t_recv_start,
+            attributes=recv_attrs,
+        )
+        try:
+            recv_ctx = otel_trace.set_span_in_context(recv_span)
+
+            # zmq.recv_multipart sibling span captures cumulative kernel-copy cost across
+            # whatever recv_multipart syscalls fired inside the wait/poll loop. Its
+            # duration minus the (zero) sibling spans inside is the raw kernel cost —
+            # the diagnostic signal that motivates work like FILTER-419 (SHM transport).
+            # Skip the span when ZMQReceiver didn't observe a recv_multipart that updated
+            # its timing state (e.g., a degenerate path where only special / OOB messages
+            # arrived) rather than emit a zero-duration span pinned to t_recv_start.
+            zmq_t_start = getattr(self.receiver, 'last_recv_t_start_ns', 0)
+            zmq_t_end   = getattr(self.receiver, 'last_recv_t_end_ns', 0)
+            zmq_bytes   = int(getattr(self.receiver, 'last_recv_bytes', 0) or 0)
+            if zmq_t_start and zmq_t_end:
+                zmq_span = tracer.start_span(
+                    "zmq.recv_multipart",
+                    context=recv_ctx,
+                    start_time=zmq_t_start,
+                    attributes={"payload_bytes": zmq_bytes},
+                )
+                zmq_span.end(end_time=zmq_t_end)
+
+            # frame.deserialize wraps topicmsgs2frames; frame.decode_jpg fires as a child
+            # only when the jpg transport is in use (via maybe_start_span inside Frame.decode).
+            # Use start_as_current_span here so Frame.decode's maybe_start_span sees a recording
+            # parent and creates the codec child span correctly.
+            token = otel_context.attach(recv_ctx)
+            try:
+                with tracer.start_as_current_span("frame.deserialize"):
+                    self.metrics_.incoming(frames := MQ.topicmsgs2frames(topicmsgs, cache=self.shm_cache))
+            finally:
+                otel_context.detach(token)
+
+            # Stamp frame-derived attributes onto the recv span now that we have decoded frames.
+            for k, v in MQ._hop_attrs(frames).items():
+                try:
+                    recv_span.set_attribute(k, v)
+                except Exception:
+                    pass
+            try:
+                recv_span.set_attribute("payload_bytes", zmq_bytes)
+            except Exception:
+                pass
+        finally:
+            # End the span post-deserialize and inside finally so an exception in
+            # topicmsgs2frames / metrics_.incoming can't drop the span on the floor.
+            # End time is captured here (not at the t_recv_end snapshot above) so the
+            # span window encloses its child frame.deserialize, instead of ending before
+            # its own children — t_recv_end is captured pre-deserialize and would
+            # produce a span whose children appear to live outside its time window.
+            recv_span.end(end_time=time_ns())
         return frames
 
     @staticmethod
@@ -308,6 +484,7 @@ class MQSender(MQ):
         metrics_cb:    Callable[[dict], None] | None = None,
         on_exit_msg:   Callable[[str], None] | None = None,
         mq_log:        str | bool | None = None,
+        tracer:        "otel_trace.Tracer | None" = None,
     ):
         super().__init__(
             srcs_n_topics = None,
@@ -320,6 +497,7 @@ class MQSender(MQ):
             metrics_cb    = metrics_cb,
             on_exit_msg   = on_exit_msg,
             mq_log        = mq_log,
+            tracer        = tracer,
         )
 
 
@@ -333,6 +511,7 @@ class MQReceiver(MQ):
         srcs_balance:  bool = False,
         srcs_low_lat:  bool | None = None,
         on_exit_msg:   Callable[[str], None] | None = None,
+        tracer:        "otel_trace.Tracer | None" = None,
     ):
         super().__init__(
             srcs_n_topics = srcs_n_topics,
@@ -341,4 +520,5 @@ class MQReceiver(MQ):
             srcs_balance  = srcs_balance,
             srcs_low_lat  = srcs_low_lat,
             on_exit_msg   = on_exit_msg,
+            tracer        = tracer,
         )
