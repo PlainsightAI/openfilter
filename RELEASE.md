@@ -2,7 +2,7 @@
 
 OpenFilter Library release notes
 
-## v1.0.0 - 2026-05-17
+## v1.0.0 - 2026-05-18
 
 **A new foundation for production Vision AI.** OpenFilter 1.0 transitions the runtime from an evolving framework into a stable, production-grade platform. The new typed configuration surface is purely additive — the legacy `dict`-based `FilterConfig` coexists alongside it, so unmigrated filters keep working through the runtime fallback. Behavioral changes that *do* require filter-side updates are scoped to the items called out under `### Breaking Changes` below.
 
