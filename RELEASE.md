@@ -2,7 +2,7 @@
 
 OpenFilter Library release notes
 
-## v1.0.0 - 2026-05-18
+## v1.0.0 - 2026-05-17
 
 **A new foundation for production Vision AI.** OpenFilter 1.0 transitions the runtime from an evolving framework into a stable, production-grade platform. Filters built against earlier versions keep running unchanged — every addition in this release is additive, with the legacy `dict`-based `FilterConfig` coexisting alongside the new typed surface.
 
@@ -38,7 +38,7 @@ Two runtime improvements teams have been asking for, landed underneath the compa
 
 Surfaces committed under 1.0 — breaking changes will require a 2.0 bump:
 
-- `openfilter.filter_runtime.FilterConfigBase` and its `Managed` / `Resolve` field shorthands
+- `openfilter.filter_runtime.FilterConfigBase` and its `Managed` / `Resolve` field shorthands, including the `ResolveHint` literal that parameterizes them
 - `openfilter.filter_runtime.FilterOutputSchema` and the shape catalog in `openfilter.filter_runtime.shapes`
 - The `openfilter emit-schema` CLI
 

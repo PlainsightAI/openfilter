@@ -120,12 +120,6 @@ all = [
   "boto3>=1.42.31",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-    "pytest-benchmark>=5.1.0",
-]
-
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
