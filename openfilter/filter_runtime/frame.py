@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from numpy import ndarray
 
+from openfilter.observability.tracing import maybe_start_span
+
 __all__ = ['ShapeAndFormat', 'Frame']
 
 ShapeAndFormat = tuple[tuple[int, int, int] | tuple[int, int], str]
@@ -183,7 +185,11 @@ class Frame:
 
     @staticmethod
     def decode(blob: bytes | bytearray, format: str | None):
-        if (image := cv2.imdecode(np.frombuffer(blob, np.uint8), cv2.IMREAD_COLOR if format != 'GRAY' else 0)) is None:
+        # frame.decode_jpg span fires only when wrapped by an outer mq.recv hop span;
+        # otherwise the helper is a single is_recording() check (no Span allocated).
+        with maybe_start_span("frame.decode_jpg", {"frame.format": format or "BGR"}):
+            image = cv2.imdecode(np.frombuffer(blob, np.uint8), cv2.IMREAD_COLOR if format != 'GRAY' else 0)
+        if image is None:
             raise ValueError('the provided image blob is invalid or in an unsupported format')
 
         return image
@@ -284,7 +290,9 @@ class Frame:
 
         if (jpg := self.__jpg) is False:
             image    = self.__image
-            res, buf = cv2.imencode('.jpg', image)
+            # frame.encode_jpg span fires only when wrapped by an outer mq.send hop span.
+            with maybe_start_span("frame.encode_jpg", {"frame.format": (self.__shapef[1] if self.__shapef else "") or ""}):
+                res, buf = cv2.imencode('.jpg', image)
 
             if not res:
                 raise RuntimeError('jpg encoding failed')

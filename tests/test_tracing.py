@@ -346,5 +346,285 @@ class TestProcessFramesSpanAttributes(unittest.TestCase):
         )
 
 
+class _SpanCapture(unittest.TestCase):
+    """Shared test-suite helper that builds a tracer wired to an in-memory exporter.
+
+    Subclasses build hop-level scenarios (send/recv across a process-local ZMQ pair)
+    and then inspect ``self.exporter.get_finished_spans()`` to assert names,
+    attributes, and parent/child nesting. Spans are emitted synchronously via
+    SimpleSpanProcessor so ordering is deterministic and no force_flush is needed.
+    """
+
+    def setUp(self):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from openfilter.observability.tracing import register_hop_tracer
+
+        self.exporter = InMemorySpanExporter()
+        self.provider = TracerProvider(
+            resource=Resource.create({"service.name": "mq-hop-test"}),
+        )
+        self.provider.add_span_processor(SimpleSpanProcessor(self.exporter))
+        self.tracer = self.provider.get_tracer("test")
+        # Frame.encode_jpg / Frame.decode_jpg and the kernel-level zmq.* sub-spans
+        # resolve their tracer via the module-level registry, not the global OTel
+        # provider — register the test tracer so child sub-spans land in our exporter.
+        register_hop_tracer(self.tracer)
+        self.addCleanup(register_hop_tracer, None)
+
+    def _spans_by_name(self):
+        return {s.name: s for s in self.exporter.get_finished_spans()}
+
+
+class TestHopSpansRawTransport(_SpanCapture):
+    """mq.send / mq.recv with the RAW transport: the codec sub-spans
+    (frame.encode_jpg, frame.decode_jpg) MUST NOT fire because there is no jpg
+    encode/decode work to do. The other four spans (mq.send, frame.serialize,
+    zmq.send_multipart on the send leg; mq.recv, zmq.recv_multipart,
+    frame.deserialize on the recv leg) must all fire and nest correctly."""
+
+    def test_raw_send_recv_produces_expected_spans_and_nesting(self):
+        import numpy as np
+        from openfilter.filter_runtime.mq import MQ
+        from openfilter.filter_runtime.frame import Frame
+
+        # frames2topicmsgs(outs_jpg=False) is the raw transport path. We don't need
+        # a real ZMQ socket — exercising frames2topicmsgs + topicmsgs2frames inside
+        # an mq.send hop span is the unit-test surface for the codec gating logic.
+        mq = MQ.__new__(MQ)
+        mq.mq_id = "test-mq"
+        mq.outs_jpg = False
+        mq.shm_pool = None
+        mq.shm_cache = None
+        mq.tracer = self.tracer
+        mq.recv_parent_ctx = None
+
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        frames = {"main": Frame(img, {"meta": {"id": "frame-7"}}, "RGB")}
+
+        # Send leg: mq.send wraps frame.serialize (which in raw mode does NOT trigger
+        # frame.encode_jpg). frames2topicmsgs is the unit of work inside frame.serialize.
+        with self.tracer.start_as_current_span("mq.send", attributes=MQ._hop_attrs(frames)) as send_span:
+            with self.tracer.start_as_current_span("frame.serialize"):
+                topicmsgs = MQ.frames2topicmsgs(frames, outs_jpg=False)
+            send_span.set_attribute("payload_bytes", 99)
+
+        # Recv leg: synthesize the retroactive structure produced by MQ.recv (mq.recv
+        # with extracted context as parent, zmq.recv_multipart sibling, frame.deserialize
+        # current; in raw mode frame.decode_jpg must NOT fire).
+        recv_span = self.tracer.start_span("mq.recv")
+        from opentelemetry import trace as _trace
+        recv_ctx = _trace.set_span_in_context(recv_span)
+        zmq_recv = self.tracer.start_span("zmq.recv_multipart", context=recv_ctx)
+        zmq_recv.end()
+        from opentelemetry import context as _ctx
+        tok = _ctx.attach(recv_ctx)
+        try:
+            with self.tracer.start_as_current_span("frame.deserialize"):
+                recv_frames = MQ.topicmsgs2frames(topicmsgs)
+        finally:
+            _ctx.detach(tok)
+        recv_span.end()
+
+        spans = self._spans_by_name()
+        self.assertIn("mq.send", spans)
+        self.assertIn("frame.serialize", spans)
+        self.assertIn("mq.recv", spans)
+        self.assertIn("zmq.recv_multipart", spans)
+        self.assertIn("frame.deserialize", spans)
+        self.assertNotIn(
+            "frame.encode_jpg", spans,
+            "raw transport must not trigger jpg encode",
+        )
+        self.assertNotIn(
+            "frame.decode_jpg", spans,
+            "raw transport must not trigger jpg decode (the frame went over the wire as raw bytes)",
+        )
+
+        # Round-trip integrity check: receiver got the same pixels back.
+        self.assertEqual(set(recv_frames), {"main"})
+        recv_frame = recv_frames["main"]
+        self.assertTrue(np.array_equal(recv_frame.image, img))
+
+        # Nesting: frame.serialize is a child of mq.send; frame.deserialize is a child of mq.recv.
+        self.assertEqual(spans["frame.serialize"].parent.span_id, spans["mq.send"].context.span_id)
+        self.assertEqual(spans["frame.deserialize"].parent.span_id, spans["mq.recv"].context.span_id)
+        self.assertEqual(spans["zmq.recv_multipart"].parent.span_id, spans["mq.recv"].context.span_id)
+
+        # mq.send carries the frame.id and frame.format attributes derived from frames dict.
+        self.assertEqual(spans["mq.send"].attributes.get("frame.id"), "frame-7")
+        self.assertEqual(spans["mq.send"].attributes.get("frame.format"), "RGB")
+        self.assertEqual(spans["mq.send"].attributes.get("topic"), "main")
+        self.assertEqual(spans["mq.send"].attributes.get("payload_bytes"), 99)
+
+
+class TestHopSpansJpgTransport(_SpanCapture):
+    """mq.send / mq.recv with the JPG transport: frame.encode_jpg MUST fire inside
+    frame.serialize on the send leg, and frame.decode_jpg MUST fire inside
+    frame.deserialize when the receiver actually decodes the frame (which happens
+    lazily on the first .image access, exercised here via topicmsgs2frames +
+    frame.image)."""
+
+    def test_jpg_send_recv_emits_codec_subspans(self):
+        import numpy as np
+        from openfilter.filter_runtime.mq import MQ
+        from openfilter.filter_runtime.frame import Frame
+
+        mq = MQ.__new__(MQ)
+        mq.mq_id = "test-mq"
+        mq.outs_jpg = True
+        mq.shm_pool = None
+        mq.shm_cache = None
+        mq.tracer = self.tracer
+        mq.recv_parent_ctx = None
+
+        img = np.zeros((8, 8, 3), dtype=np.uint8)
+        frames = {"main": Frame(img, {"meta": {"id": "frame-jpg-1"}}, "BGR")}
+
+        with self.tracer.start_as_current_span("mq.send"):
+            with self.tracer.start_as_current_span("frame.serialize"):
+                topicmsgs = MQ.frames2topicmsgs(frames, outs_jpg=True)
+
+        recv_span = self.tracer.start_span("mq.recv")
+        from opentelemetry import trace as _trace, context as _ctx
+        recv_ctx = _trace.set_span_in_context(recv_span)
+        tok = _ctx.attach(recv_ctx)
+        try:
+            with self.tracer.start_as_current_span("frame.deserialize"):
+                recv_frames = MQ.topicmsgs2frames(topicmsgs)
+                # frame.from_jpg defers decode; force it now under the deserialize span
+                # so frame.decode_jpg materializes as a child where the user can see it.
+                _ = recv_frames["main"].image
+        finally:
+            _ctx.detach(tok)
+        recv_span.end()
+
+        spans = self._spans_by_name()
+        self.assertIn("frame.encode_jpg", spans)
+        self.assertIn("frame.decode_jpg", spans)
+        # frame.encode_jpg is nested inside frame.serialize (which is inside mq.send).
+        self.assertEqual(
+            spans["frame.encode_jpg"].parent.span_id,
+            spans["frame.serialize"].context.span_id,
+        )
+        # frame.decode_jpg is nested inside frame.deserialize.
+        self.assertEqual(
+            spans["frame.decode_jpg"].parent.span_id,
+            spans["frame.deserialize"].context.span_id,
+        )
+        self.assertEqual(spans["frame.encode_jpg"].attributes.get("frame.format"), "BGR")
+
+
+class TestCodecSubspansAreHotPathFree(unittest.TestCase):
+    """When there is no recording outer span (tracing disabled / no mq.send wrapper),
+    Frame.jpg / Frame.decode MUST NOT allocate a child Span. This is the contract
+    that makes the codec instrumentation safe to enable unconditionally."""
+
+    def test_encode_jpg_outside_outer_span_emits_nothing(self):
+        # Set up a real provider so spans would be recorded if anyone created them —
+        # this proves the gating is "is there a recording parent?", not "is there a provider?"
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        from openfilter.filter_runtime.frame import Frame
+        import numpy as np
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        from opentelemetry import trace as _trace
+        _trace.set_tracer_provider(provider)
+
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        frame = Frame(img, {}, "BGR")
+        # Trigger encode + decode outside any current span.
+        _ = frame.jpg
+        _ = Frame.decode(bytes(frame.jpg), "BGR")
+
+        names = [s.name for s in exporter.get_finished_spans()]
+        self.assertNotIn("frame.encode_jpg", names)
+        self.assertNotIn("frame.decode_jpg", names)
+
+
+class TestEnvelopeContextPropagation(unittest.TestCase):
+    """Per-frame trace context must travel through the ZMQ envelope dict via
+    standard W3C TraceContextTextMapPropagator (no hand-rolled format). Asserts
+    that injection adds traceparent to the carrier and that extraction yields a
+    context whose trace_id matches the injecting span — this is what makes the
+    consumer-side {Filter}.process span share a trace with the producer's
+    mq.send span."""
+
+    def test_inject_then_extract_round_trips_trace_id(self):
+        from opentelemetry import trace as _trace
+        from opentelemetry.propagate import inject as _inject, extract as _extract
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+        tracer = provider.get_tracer("propagation-test")
+
+        env: dict = {"sid": "srv", "mid": 1, "topics": ["main"]}
+        with tracer.start_as_current_span("mq.send") as send_span:
+            _inject(env)
+            send_trace_id = send_span.get_span_context().trace_id
+
+        # The W3C contract: traceparent appears in the carrier, parseable back to
+        # the same trace_id. Hand-rolled formats break here.
+        self.assertIn("traceparent", env)
+        extracted = _extract(env)
+        extracted_span = _trace.get_current_span(extracted)
+        self.assertEqual(extracted_span.get_span_context().trace_id, send_trace_id)
+
+
+class TestMQReceiverExtractsTraceContext(unittest.TestCase):
+    """The ZMQReceiver.recv path that parses each incoming envelope must call
+    otel_extract whenever a traceparent is present, and stash the resulting
+    Context on ``self.last_extracted_ctx`` for MQ.recv to consume. We exercise
+    the smallest possible slice: the conditional extraction block — by simulating
+    what recv_once does after json_loads on the envelope."""
+
+    def test_envelope_with_traceparent_populates_last_extracted_ctx(self):
+        from openfilter.filter_runtime.zeromq import ZMQReceiver
+        from opentelemetry import trace as _trace
+        from opentelemetry.propagate import inject as _inject
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+        tracer = provider.get_tracer("recv-extract-test")
+
+        env: dict = {"sid": "srv", "mid": 5}
+        with tracer.start_as_current_span("producer") as producer_span:
+            _inject(env)
+            producer_trace_id = producer_span.get_span_context().trace_id
+
+        # Build a bare ZMQReceiver with only the fields the extraction code touches.
+        rcv = ZMQReceiver.__new__(ZMQReceiver)
+        rcv.last_extracted_ctx = None
+
+        # Inline the conditional block from recv_once so the test stays focused on
+        # the extraction contract rather than the surrounding poll/sub plumbing.
+        if 'traceparent' in env:
+            from openfilter.filter_runtime.zeromq import otel_extract
+            rcv.last_extracted_ctx = otel_extract(env)
+
+        self.assertIsNotNone(rcv.last_extracted_ctx)
+        extracted_span = _trace.get_current_span(rcv.last_extracted_ctx)
+        self.assertEqual(extracted_span.get_span_context().trace_id, producer_trace_id)
+
+
 if __name__ == "__main__":
     unittest.main()

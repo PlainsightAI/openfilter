@@ -2,6 +2,12 @@
 
 OpenFilter Library release notes
 
+## Unreleased
+
+### Added
+
+- **OpenTelemetry MQ hop spans + per-frame trace propagation ([PLAT-866](https://plainsight-ai.atlassian.net/browse/PLAT-866))**: Every filter-to-filter hop now produces `mq.send` / `mq.recv` outer hop spans (attributes: `topic`, `payload_bytes`, `frame.id`, `frame.format`, `mq.id`), with nested `frame.serialize` / `frame.deserialize` CPU sub-spans and `zmq.send_multipart` / `zmq.recv_multipart` kernel-syscall sub-spans. `frame.encode_jpg` / `frame.decode_jpg` codec sub-spans fire on the jpg transport path only. Per-frame W3C trace context (`traceparent` / `tracestate`) now travels inside the ZMQ envelope via the standard `opentelemetry.propagate.inject` / `extract` (`TraceContextTextMapPropagator`); the consumer-side `{FilterClass}.process` span (PLAT-848) parents on the per-frame context extracted from the envelope, so filter A's frame-17 spans and filter B's frame-17 spans share a single trace ID and nest correctly. The `TRACEPARENT` env-var fallback (PLAT-848 behavior) is retained for source filters that never call `mq.recv` (e.g. `VideoIn`). When tracing is disabled (the default, `TELEMETRY_EXPORTER_TYPE=silent`), the hot path short-circuits on a single `is_recording()` check and no `Span` objects are allocated. No new environment variables.
+
 ## v0.2.1 - 2026-05-16
 
 This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) and the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)) under a single tag. `v0.2.0` was never tagged — its contents ship here under `v0.2.1`. Also folded in: the DT-145 cascade infrastructure (#85 / #93) and the FILTER-461 test-fragility fix (#94), all merged after the original `v0.2.0` changelog window.
