@@ -4,7 +4,7 @@ OpenFilter Library release notes
 
 ## v1.0.0 - 2026-05-17
 
-**A new foundation for production Vision AI.** OpenFilter 1.0 transitions the runtime from an evolving framework into a stable, production-grade platform. Filters built against earlier versions keep running unchanged — every addition in this release is additive, with the legacy `dict`-based `FilterConfig` coexisting alongside the new typed surface.
+**A new foundation for production Vision AI.** OpenFilter 1.0 transitions the runtime from an evolving framework into a stable, production-grade platform. The new typed configuration surface is purely additive — the legacy `dict`-based `FilterConfig` coexists alongside it, so unmigrated filters keep working through the runtime fallback. Behavioral changes that *do* require filter-side updates are scoped to the items called out under `### Breaking Changes` below.
 
 ### Declarative Configuration Foundations
 
@@ -33,6 +33,7 @@ Two runtime improvements teams have been asking for, landed underneath the compa
 ### Breaking Changes
 
 - **OTLP gRPC `insecure` flag now inferred from endpoint scheme** (#90): the exporter factory and tracing builder use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Deployments configuring bare-host endpoints against plaintext collectors must prefix `http://` to maintain prior behavior. Explicit `insecure=` in `exporter_config` / kwargs always wins.
+- **Received `Frame.image` arrays are read-only** (v0.1.28, re-surfaced for the SemVer-stable cut): `topicmsgs2frames` sets `image.flags.writeable = False` on both the zero-copy ZMQ and SHM transport paths — this prevents corruption of shared ring slots and re-enables the `Frame.copy()` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status. Filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy()` — or construct a new frame via `Frame(new_image, frame, frame.format)`. **Symptom if not migrated:** `ValueError: assignment destination is read-only` raised from the mutating call.
 
 ### Stability commitments
 
@@ -44,14 +45,14 @@ Surfaces committed under 1.0 — breaking changes will require a 2.0 bump:
 
 The legacy `dict`-based `FilterConfig` continues to coexist with `FilterConfigBase` — unmigrated filters keep working unchanged.
 
+### Removed
+
+- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable** (#90): was previously a no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a truthy string, so `insecure=True` regardless of operator intent.
+
 ### Fixed
 
 - **Silent `$id` inheritance on `FilterOutputSchema` subclasses** ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452), #88): subclasses no longer silently inherit a parent's `$id`. `__init_subclass__` refuses ambiguous construction at class-definition time.
 - **`test_topo_balance_step` shutdown race on Python 3.10** ([FILTER-461](https://plainsight-ai.atlassian.net/browse/FILTER-461), #94): the `TestFilterOld` topology tests poll for runner termination instead of asserting on a single `step()` call after the shutdown sentinel. Test-only change; no runtime impact.
-
-### Removed
-
-- **`OTLP_GRPC_ENDPOINT_SECURITY` environment variable** (#90): was previously a no-op — `os.getenv(name, True)` returned the literal `True` only when unset; any *set* value came back as a truthy string, so `insecure=True` regardless of operator intent.
 
 ### Infrastructure
 
