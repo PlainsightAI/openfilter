@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 
 _HOP_TRACER_NAME = "openfilter.filter_runtime.mq"
+# Module-level tracer reference consulted by ``maybe_start_span``. Read on the
+# hot path of every emitted hop sub-span; written only at ``MQ.__init__`` time.
+#
+# Concurrency model: writes are serialized in practice because every Filter
+# process today constructs a single ``MQ`` (which calls ``register_hop_tracer``
+# from the main thread before any worker thread starts emitting spans). Reads
+# rely on the CPython GIL making the attribute fetch atomic. We deliberately
+# do NOT lock around reads — adding lock overhead on every ``maybe_start_span``
+# call would defeat the point of the helper's short-circuit behavior. If a
+# future design ever runs multiple Filters in one process with different
+# tracers, this is the place that needs revisiting: a lock would not fix the
+# underlying "last writer wins" semantics, only paper over them.
 _HOP_TRACER: Optional[trace.Tracer] = None
 
 
