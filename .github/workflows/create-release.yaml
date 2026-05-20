@@ -41,6 +41,7 @@ jobs:
     outputs:
       is_release_created: ${{ steps.release_meta.outputs.is_release_created }}
       version: ${{ steps.release_meta.outputs.version }}
+      is_production_release: ${{ steps.release_meta.outputs.is_production_release }}
     runs-on: ubuntu-latest
     needs: run-unit-tests
     if: github.event_name == 'workflow_dispatch'
@@ -120,6 +121,7 @@ jobs:
             echo "is_release_created=false" >> $GITHUB_OUTPUT
           fi
           echo "version=${{ env.CHANGELOG_VERSION }}" >> $GITHUB_OUTPUT
+          echo "is_production_release=${{ steps.changelog.outputs.isProductionRelease }}" >> $GITHUB_OUTPUT
 
 
   prepare-pypi-publish:
@@ -383,12 +385,16 @@ jobs:
   # built-in image — rather than a hand-picked subset — is safe and keeps
   # this list in lockstep with what is actually published.
   #
-  # NOTE: cascade-pipeline-bumps.yaml ships in gh-actions-public via
-  # PLAT-1052 (PR #19); this job's `@main` ref only resolves once that PR
-  # is merged. Do not merge this branch before it.
+  # Gated on is_production_release: a dev/prerelease dispatch (e.g.
+  # v0.2.0.dev0, v1.0.1-rc1) publishes non-prod image coordinates and
+  # must not rewrite production pipeline-manifest consumer pins. This
+  # mirrors the is_production_release gate in filter-release.yaml's
+  # cascade-gate job in gh-actions-public.
   cascade-pipeline-bumps:
-    needs: [prepare-pypi-publish, publish-docker-images]
-    if: needs.prepare-pypi-publish.outputs.already_exists == 'false'
+    needs: [create-release, prepare-pypi-publish, publish-docker-images]
+    if: >-
+      needs.prepare-pypi-publish.outputs.already_exists == 'false'
+      && needs.create-release.outputs.is_production_release == 'true'
     strategy:
       fail-fast: false
       matrix:
