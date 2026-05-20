@@ -177,9 +177,11 @@ class TestBatchAccumulation(unittest.TestCase):
         self.assertEqual(len(f._frame_buffer), 2)
         self.assertFalse(f._batch_flush_event.is_set())
 
-        time.sleep(0.1)
-
-        self.assertTrue(f._batch_flush_event.is_set())
+        # The 50ms watcher timeout should set the flush event. Wait on the
+        # event itself rather than sleeping a fixed window — Event.wait()
+        # returns the instant it fires and times out generously, so a loaded
+        # CI runner can't flake it.
+        self.assertTrue(f._batch_flush_event.wait(timeout=2.0))
 
     def test_flush_returns_partial_batch(self):
         f = self._make_filter(batch_size=5, timeout_ms=50.0)
@@ -187,7 +189,9 @@ class TestBatchAccumulation(unittest.TestCase):
         f.process_frames({"main": Frame({"val": 1})})
         f.process_frames({"main": Frame({"val": 2})})
 
-        time.sleep(0.1)
+        # Wait for the 50ms watcher to set the flush event before draining,
+        # rather than sleeping a fixed window.
+        self.assertTrue(f._batch_flush_event.wait(timeout=2.0))
 
         result = f._process_batch_flush()
         self.assertIsNotNone(result)
@@ -414,33 +418,36 @@ class TestTimerReset(unittest.TestCase):
                 continue
         Removing those lines causes a premature flush at the original deadline.
         """
-        # batch_size=5 so the batch never completes via accumulation in this test
-        f = self._make_filter(batch_size=5, timeout_ms=100.0)
+        # batch_size=5 so the batch never completes via accumulation in this
+        # test. The 200ms watcher timeout is deliberately generous so the
+        # negative assertion below sits ~160ms clear of the reset deadline —
+        # well above scheduler jitter on a loaded CI runner.
+        f = self._make_filter(batch_size=5, timeout_ms=200.0)
 
-        # Frame 1 at t≈0ms: starts the 100ms watcher timer
+        # Frame 1 at t≈0ms: starts the 200ms watcher timer
         f.process_frames({"main": Frame({"val": 1})})
 
-        # Sleep ~60ms, well inside the original 100ms window
-        time.sleep(0.06)
+        # Sleep ~120ms, well inside the original 200ms window
+        time.sleep(0.12)
 
-        # Frame 2 at t≈60ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
-        # The watcher only observes that signal when its initial ~100ms sleep
+        # Frame 2 at t≈120ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
+        # The watcher only observes that signal when its initial ~200ms sleep
         # completes, then restarts for another full timeout, so the effective
-        # flush deadline is ~original deadline + 100ms (~200ms), not ~160ms.
+        # flush deadline is ~original deadline + 200ms (~400ms), not ~320ms.
         f.process_frames({"main": Frame({"val": 2})})
 
-        # At t≈100ms (original deadline): flush must NOT have fired yet.
-        # The watcher's first sleep expires here; seeing _batch_wakeup set it restarts
-        # for another full timeout rather than flushing immediately.
-        time.sleep(0.04)
+        # At t≈240ms — past the original 200ms deadline, ~160ms before the
+        # reset deadline (~400ms): flush must NOT have fired yet. If the timer
+        # reset were broken the flush would have fired at the ~200ms deadline.
+        time.sleep(0.12)
         self.assertFalse(
             f._batch_flush_event.is_set(),
             "flush fired at the original deadline; timer reset is not working",
         )
 
-        # Watcher restarts at t≈100ms; expected flush at t≈200ms.  Wait up to
-        # 500ms so the test tolerates scheduler jitter on loaded CI runners.
-        fired = f._batch_flush_event.wait(timeout=0.5)
+        # Watcher restarts at t≈200ms; expected flush at t≈400ms.  Wait up to
+        # 1s so the test tolerates scheduler jitter on loaded CI runners.
+        fired = f._batch_flush_event.wait(timeout=1.0)
         self.assertTrue(fired, "flush never fired after the reset deadline")
 
         f._stop_batch_watcher()
@@ -1025,6 +1032,41 @@ class TestManualBatchTrigger(unittest.TestCase):
         # Ring should still hold the 5 frames (capped at 6 maxlen).
         self.assertEqual(len(f._frame_buffer), 5)
 
+    def test_manual_mode_not_drained_by_source_timeout(self):
+        """In manual mode loop_once's source-timeout path must NOT drain the
+        buffer — only flush_batch() drains. (Auto mode flushes partials there.)
+        Regression guard for the timeout-flush path bypassing batch_trigger.
+        """
+        f = self._make_filter(CountingBatchFilter, batch_size=5, trigger="manual")
+        f.mq.send = MagicMock(return_value=True)
+        # Short source timeout so loop_once's recv-timeout path is reached fast.
+        f.sources_timeout = 30.0
+        f.outputs_timeout = 5000.0
+        f.exit_after_t = None
+
+        # Accumulate two frames — batch never fills (batch_size=5).
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 1})})
+        f.loop_once()
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 2})})
+        f.loop_once()
+        self.assertEqual(len(f._frame_buffer), 2)
+        self.assertEqual(len(f.received_batches), 0)
+
+        # recv times out (slow source). In auto mode this flushes the partial
+        # batch; in manual mode the buffer must be left intact.
+        f.mq.recv = MagicMock(return_value=None)
+        f.loop_once()
+        self.assertEqual(len(f.received_batches), 0)
+        self.assertEqual(len(f._frame_buffer), 2)
+        self.assertFalse(f.mq.send.called)
+
+        # flush_batch() still drains: the next loop_once picks up the event.
+        f.flush_batch()
+        f.mq.recv = MagicMock(return_value=None)
+        f.loop_once()
+        self.assertEqual(len(f.received_batches), 1)
+        self.assertEqual(len(f.received_batches[0]), 2)
+
 
 class TestBatchWorkersPool(unittest.TestCase):
     """batch_workers > 1: process_batch runs on a ThreadPoolExecutor; per-slot
@@ -1161,17 +1203,25 @@ class TestBatchWorkersPool(unittest.TestCase):
 
             t = threading.Thread(target=submit_third)
             t.start()
-            blocked.wait(timeout=1.0)
-            time.sleep(0.1)
+            self.assertTrue(
+                blocked.wait(timeout=2.0), "submit_third thread never started"
+            )
+            # The third submission is now blocked on the semaphore (pool 2/2
+            # busy). `released` provably cannot be set until gate.set() below
+            # frees a worker, so assert thread liveness rather than sleeping a
+            # fixed window: the thread stays alive and `released` stays unset.
+            self.assertTrue(t.is_alive())
             self.assertFalse(
                 released.is_set(),
                 "third submit should be blocked while pool is full",
             )
             # Let workers finish — semaphore frees, third submission proceeds.
             gate.set()
-            released.wait(timeout=5.0)
-            self.assertTrue(released.is_set())
+            self.assertTrue(
+                released.wait(timeout=5.0), "third submit never unblocked"
+            )
             t.join(timeout=5.0)
+            self.assertFalse(t.is_alive())
             # Drain to release pool workers cleanly.
             r1[0]()
             r2[0]()
@@ -1204,11 +1254,69 @@ class TestBatchWorkersPool(unittest.TestCase):
         f.fini()
         elapsed = time.time() - t0
         self.assertLess(elapsed, 5.0)
-        # All futures should have completed (no warning would fire).
+        # All in-flight futures should have drained. add_done_callback fires
+        # asynchronously, so poll with a deadline rather than asserting once
+        # after a fixed sleep — and don't hold _batch_inflight_lock across the
+        # wait, since the done-callback needs that lock to discard the future.
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            with f._batch_inflight_lock:
+                if not f._batch_inflight:
+                    break
+            time.sleep(0.01)
         with f._batch_inflight_lock:
-            # add_done_callback fires async — give it a tick to drain.
-            time.sleep(0.05)
             self.assertEqual(len(f._batch_inflight), 0)
+
+    def test_pool_worker_exception_drops_batch_and_continues(self):
+        """A process_batch() exception in pool mode is non-fatal: the worker
+        logs it, the batch is dropped (every slot resolves to None), and the
+        filter stays usable. This DIVERGES from the synchronous path, which
+        re-raises — the divergence is the locked-in contract (see
+        Filter._batch_pool_worker).
+        """
+
+        class FlakyFilter(Filter):
+            def setup(self, config):
+                self.calls = 0
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("simulated batch failure")
+                return [{"main": Frame({"ok": True})}] * len(batch)
+
+        f = self._make_filter(FlakyFilter, batch_size=2, workers=2)
+        try:
+            # First batch raises in the pool worker. Submitting and resolving
+            # the slots must NOT raise — the failed batch is dropped (every
+            # slot resolves to None) and the failure is logged exactly once.
+            with self.assertLogs(
+                "openfilter.filter_runtime.filter", level="ERROR"
+            ) as cm:
+                bad = f._execute_batch([
+                    {"main": Frame({"val": 1})},
+                    {"main": Frame({"val": 2})},
+                ])
+                self.assertEqual(len(bad), 2)
+                for slot in bad:
+                    self.assertIsNone(slot())
+            dropped = [ln for ln in cm.output if "dropping the batch" in ln]
+            self.assertEqual(
+                len(dropped), 1, "batch failure should be logged exactly once"
+            )
+
+            # The filter is still usable: a subsequent batch succeeds.
+            good = f._execute_batch([
+                {"main": Frame({"val": 3})},
+                {"main": Frame({"val": 4})},
+            ])
+            for slot in good:
+                self.assertIsInstance(slot(), dict)
+        finally:
+            f.fini()
 
 
 if __name__ == "__main__":

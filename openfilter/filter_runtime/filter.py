@@ -575,6 +575,10 @@ class Filter:
             flush-trigger order even when workers complete out of order. Submission BLOCKS when all workers are
             busy (natural upstream backpressure rather than silent drops). Useful for network-bound batches
             (remote VLM/retrieval calls) where call latency > flush interval.
+            A process_batch() exception in pool mode (batch_workers > 1) is logged and the batch is dropped —
+            the filter keeps running. This is intentionally non-fatal, and DIVERGES from the synchronous
+            batch_workers == 1 path, which re-raises and exits the run loop. Call self.exit() inside
+            process_batch() if a batch failure must stop the filter regardless of mode.
 
         batch_shutdown_timeout_s:
             Maximum seconds to wait for in-flight batch workers to drain during fini(). Default 60. Batches still
@@ -1676,8 +1680,16 @@ class Filter:
         with self._batch_inflight_lock:
             self._batch_inflight.add(future)
 
+        # Bind the semaphore by value. fini() nulls self._batch_submit_sem
+        # right after shutdown(wait=False), so a not_done future completing in
+        # the background afterwards would hit None.release() via self. The
+        # semaphore object itself stays valid; releasing it post-shutdown is
+        # harmless (nothing acquires it again). _batch_inflight_lock is never
+        # nulled, so referencing it through self stays safe.
+        submit_sem = self._batch_submit_sem
+
         def _on_done(f: concurrent.futures.Future) -> None:
-            self._batch_submit_sem.release()
+            submit_sem.release()
             with self._batch_inflight_lock:
                 self._batch_inflight.discard(f)
 
@@ -1694,9 +1706,28 @@ class Filter:
         """Pool-thread entry point. Runs process_batch() and returns the raw
         result list bracketed by start/end timestamps. Per-slot normalization
         + EMA + metadata enqueue all happen on resolution, not here, so
-        results emerge with timing tied to when downstream actually pulls."""
+        results emerge with timing tied to when downstream actually pulls.
+
+        A process_batch() exception is caught here and treated as a dropped
+        batch (every slot resolves to None), logged once. This is deliberately
+        NON-fatal and DIVERGES from the synchronous path (batch_workers == 1),
+        where _execute_batch re-raises and the run loop exits: pool mode exists
+        for network-bound batches (remote VLM / retrieval calls) where a
+        transient failure should not kill a long-running filter. A filter that
+        needs a batch failure to be fatal should detect it inside
+        process_batch() and call self.exit() — exit() sets stop_evt, which ends
+        the run loop regardless of this catch.
+        """
         t_in = time.time()
-        results = self.process_batch(batch)
+        try:
+            results = self.process_batch(batch)
+        except Exception:
+            logger.exception(
+                "process_batch() raised in pool worker on a batch of %d "
+                "frame(s); dropping the batch and continuing",
+                len(batch),
+            )
+            results = None
         t_out = time.time()
         if results is None:
             results = [None] * len(batch)
@@ -1720,12 +1751,18 @@ class Filter:
             try:
                 t_in, t_out, results = future.result()
             except Exception:
+                # Defensive: _batch_pool_worker catches process_batch()
+                # failures itself (logging once, dropping the batch), so this
+                # only fires on an unexpected pool-infrastructure failure
+                # (e.g. a cancelled future). Drop the slot rather than crash
+                # the loop — consistent with the pool path's non-fatal
+                # contract documented on _batch_pool_worker.
                 logger.exception(
-                    "Pool batch worker raised; slot %d/%d will not emit",
+                    "Pool future failed unexpectedly; slot %d/%d dropped",
                     slot_idx,
                     batch_len,
                 )
-                raise
+                return None
             if slot_idx >= len(results):
                 return None
             slot = results[slot_idx]
@@ -1739,9 +1776,16 @@ class Filter:
                     return None
             frames = self._normalize_frame_result(slot)
             process_time_ms = (t_out - t_in) * 1000
-            self._filter_time_in = t_in
-            self._filter_time_out = t_out
-            self._update_process_time_ema(process_time_ms)
+            # All slots of a pool batch share one process_batch() wall-clock
+            # (the future's t_in/t_out). Fold it into the EMA exactly once —
+            # on slot 0 — so a batch of N slots does not inflate the EMA
+            # N-fold. Mirrors the once-per-batch update in the synchronous
+            # _execute_batch path. _inject_timings still runs per slot: every
+            # frame needs its own timing metadata stamped.
+            if slot_idx == 0:
+                self._filter_time_in = t_in
+                self._filter_time_out = t_out
+                self._update_process_time_ema(process_time_ms)
             self._inject_timings(frames, t_in, t_out, process_time_ms)
             try:
                 self._metadata_queue.put_nowait((frames, self.emitter))
@@ -1797,21 +1841,29 @@ class Filter:
         # Timeout in batch mode — flush any partial batch and return early.
         # Only runs when frames is empty (timeout case), not when real frames are received.
         if batch_mode and not frames:
-            with self._batch_lock:
-                if self._frame_buffer:
-                    window_snapshot = list(self._frame_buffer)
-                    self._frames_since_last_dispatch = 0
-                    if not self._sliding_window:
-                        self._frame_buffer.clear()
-                    self._batch_flush_event.clear()
-                    self._cancel_batch_timer()
-                else:
-                    window_snapshot = None
-            if window_snapshot is not None:
-                batch = self.select_batch(window_snapshot)
-                flushed_results = self._execute_batch(batch)
-                for r in flushed_results:
-                    self._send_frames(r, outputs_timeout)
+            # Skip the timeout-driven drain in manual mode: batch_trigger="manual"
+            # contracts that ONLY flush_batch() drains the buffer, so a slow or
+            # idle source must not dispatch a partial batch here. A pending
+            # flush_batch() request is still honored — the recv-loop above picks
+            # up _batch_flush_event via _process_batch_flush before reaching this
+            # point — so manual flushes are not lost, only timeout flushes are
+            # suppressed.
+            if self._batch_trigger != "manual":
+                with self._batch_lock:
+                    if self._frame_buffer:
+                        window_snapshot = list(self._frame_buffer)
+                        self._frames_since_last_dispatch = 0
+                        if not self._sliding_window:
+                            self._frame_buffer.clear()
+                        self._batch_flush_event.clear()
+                        self._cancel_batch_timer()
+                    else:
+                        window_snapshot = None
+                if window_snapshot is not None:
+                    batch = self.select_batch(window_snapshot)
+                    flushed_results = self._execute_batch(batch)
+                    for r in flushed_results:
+                        self._send_frames(r, outputs_timeout)
             # In batch mode, timeout means "flush partial" — already done above.
             # No need to call process_frames({}) which would just return None.
             if (
@@ -2376,6 +2428,11 @@ class Filter:
             The default implementation calls process() per frame and evaluates any
             Callable returns eagerly to preserve pre-existing behavior; override
             process_batch() to opt into deferred-callable semantics.
+
+            Exception handling depends on batch_workers. With batch_workers == 1 (synchronous) a
+            process_batch() exception re-raises and exits the run loop. With batch_workers > 1 (pool) it
+            is logged once and the batch is dropped (every slot resolves to None) so the filter keeps
+            running. Call self.exit() from within process_batch() to stop the filter regardless of mode.
         """
         results = []
         for frames in batch:
@@ -2448,6 +2505,15 @@ class Filter:
     def _stop_batch_watcher(self) -> None:
         self._batch_stop.set()
         self._batch_wakeup.set()  # unblock the wait
+        # Join so shutdown sequencing is explicit: fini() proceeds straight to
+        # pool drain + mq.destroy() after this, and joining here closes the
+        # window where a late _batch_flush_event.set() from the watcher could
+        # race MQ teardown. daemon=True already rules out a leak; the join just
+        # makes the ordering deterministic. Bounded so a wedged watcher cannot
+        # block shutdown indefinitely.
+        watcher = self._batch_watcher
+        if watcher is not None:
+            watcher.join(timeout=1.0)
 
     def _reset_batch_timer(self) -> None:
         """Reset the accumulation timeout by waking the watcher."""
