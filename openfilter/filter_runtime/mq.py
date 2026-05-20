@@ -363,10 +363,7 @@ class MQ:
                     start_time=zmq_t_start,
                     attributes={"payload_bytes": zmq_bytes},
                 )
-                try:
-                    zmq_span.end(end_time=zmq_t_end)
-                except Exception:  # pragma: no cover - end() shouldn't raise
-                    pass
+                zmq_span.end(end_time=zmq_t_end)
 
             # frame.deserialize wraps topicmsgs2frames; frame.decode_jpg fires as a child
             # only when the jpg transport is in use (via maybe_start_span inside Frame.decode).
