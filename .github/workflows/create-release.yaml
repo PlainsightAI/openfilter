@@ -368,3 +368,41 @@ jobs:
           tags: ${{ steps.prepare-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Second-level pipeline-manifest cascade for the built-in filter images.
+  # Standalone filter-* repos fire cascade-pipeline-bumps through
+  # filter-release.yaml; the built-in filters (video-in/out, image-in/out,
+  # mqtt-out, recorder, rest, webvis) have no standalone repo — they are
+  # built by the publish-docker-images matrix above — so the cascade has
+  # to be fired here, once per published image, or their pins in
+  # pipeline-manifest consumers (e.g. openfilter-pipelines-controller
+  # Pipeline CRs) are never bumped. PLAT-1052.
+  #
+  # The matrix mirrors publish-docker-images. The reusable workflow no-ops
+  # cleanly for a consumer with no matching pins, so cascading every
+  # built-in image — rather than a hand-picked subset — is safe and keeps
+  # this list in lockstep with what is actually published.
+  #
+  # NOTE: cascade-pipeline-bumps.yaml ships in gh-actions-public via
+  # PLAT-1052 (PR #19); this job's `@main` ref only resolves once that PR
+  # is merged. Do not merge this branch before it.
+  cascade-pipeline-bumps:
+    needs: [prepare-pypi-publish, publish-docker-images]
+    if: needs.prepare-pypi-publish.outputs.already_exists == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - plainsightai/openfilter-video-in
+          - plainsightai/openfilter-video-out
+          - plainsightai/openfilter-image-in
+          - plainsightai/openfilter-image-out
+          - plainsightai/openfilter-mqtt-out
+          - plainsightai/openfilter-recorder
+          - plainsightai/openfilter-rest
+          - plainsightai/openfilter-webvis
+    uses: PlainsightAI/gh-actions-public/.github/workflows/cascade-pipeline-bumps.yaml@main
+    with:
+      docker_image: ${{ matrix.image }}
+      version: ${{ needs.prepare-pypi-publish.outputs.package_version }}
+    secrets: inherit
