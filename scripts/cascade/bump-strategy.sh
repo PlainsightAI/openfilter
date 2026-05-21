@@ -235,22 +235,32 @@ PY
 done
 
 # 3. RELEASE.md — append `- Bump openfilter to ${OF_VERSION}` under the
-#    topmost `## ` block's `### Changed` subsection, creating either as
-#    needed. Idempotency check is line-anchored so 0.1.9 doesn't match 0.1.99.
+#    Unreleased section's `### Changed` subsection, creating either as
+#    needed. If no Unreleased section exists, inject a fresh `## [Unreleased]`
+#    block immediately before the first released `## v...` header — never
+#    write into a tagged release block. Idempotency check is line-anchored
+#    so 0.1.9 doesn't match 0.1.99.
 python3 <<'PY'
 import os
+import re
 import sys
 
 of_version = os.environ["OF_VERSION"]
 path = "RELEASE.md"
 bullet = f"- Bump openfilter to {of_version}"
 
+# Recognize `## Unreleased`, `## [Unreleased]`, and `## (unreleased)` as the
+# same slot (case-insensitive). Keep a Changelog uses `[Unreleased]` and that
+# is what changelog-parser-action accepts; the other shapes are legacy and
+# treated as equivalent so a re-run doesn't insert a duplicate section.
+unreleased_re = re.compile(r"^##\s+[\[\(]?\s*unreleased\s*[\]\)]?\s*$", re.IGNORECASE)
+
 if not os.path.exists(path):
     with open(path, "w", encoding="utf-8") as f:
         f.write(
             "# Changelog\n"
             "\n"
-            "## (unreleased)\n"
+            "## [Unreleased]\n"
             "\n"
             "### Changed\n"
             "\n"
@@ -268,31 +278,57 @@ if any(line.rstrip() == bullet for line in text.splitlines()):
 
 lines = text.splitlines(keepends=True)
 
-release_header_idx = next(
-    (i for i, line in enumerate(lines) if line.startswith("## ")),
+# Anchor explicitly on the Unreleased section, not "first ## " — the latter
+# landed bumps under whichever release sat on top, including already-tagged
+# ones (DT-145 follow-up: filter-sweet-green-subject-data-aggregator #39
+# wrote into `## v0.1.27`).
+unreleased_idx = next(
+    (i for i, line in enumerate(lines) if unreleased_re.match(line.rstrip())),
     None,
 )
 
-if release_header_idx is None:
-    suffix = "" if text.endswith("\n") else "\n"
-    suffix += (
-        "\n"
-        "## (unreleased)\n"
-        "\n"
-        "### Changed\n"
-        "\n"
-        f"{bullet}\n"
+if unreleased_idx is None:
+    # No Unreleased section. Inject one before the first released `## v...`
+    # header so the bullet never lands in a tagged block. If there's no `## `
+    # at all, fall back to the legacy "append at end" behavior.
+    first_release_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith("## ")),
+        None,
     )
+    if first_release_idx is None:
+        suffix = "" if text.endswith("\n") else "\n"
+        suffix += (
+            "\n"
+            "## [Unreleased]\n"
+            "\n"
+            "### Changed\n"
+            "\n"
+            f"{bullet}\n"
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text + suffix)
+        print(f"{path}: appended new [Unreleased] block with bump entry")
+        sys.exit(0)
+
+    new_block = [
+        "## [Unreleased]\n",
+        "\n",
+        "### Changed\n",
+        "\n",
+        f"{bullet}\n",
+        "\n",
+    ]
+    new_lines = lines[:first_release_idx] + new_block + lines[first_release_idx:]
     with open(path, "w", encoding="utf-8") as f:
-        f.write(text + suffix)
-    print(f"{path}: appended new release block with bump entry")
+        f.writelines(new_lines)
+    print(f"{path}: inserted new [Unreleased] block before first released section")
     sys.exit(0)
 
 next_release_idx = next(
-    (j for j in range(release_header_idx + 1, len(lines)) if lines[j].startswith("## ")),
+    (j for j in range(unreleased_idx + 1, len(lines)) if lines[j].startswith("## ")),
     len(lines),
 )
-block = lines[release_header_idx:next_release_idx]
+block = lines[unreleased_idx:next_release_idx]
 
 changed_idx = next(
     (k for k, line in enumerate(block) if line.rstrip() == "### Changed"),
@@ -322,7 +358,7 @@ else:
     ]
     print(f"{path}: created ### Changed section with bump entry")
 
-new_lines = lines[:release_header_idx] + block + lines[next_release_idx:]
+new_lines = lines[:unreleased_idx] + block + lines[next_release_idx:]
 with open(path, "w", encoding="utf-8") as f:
     f.writelines(new_lines)
 PY

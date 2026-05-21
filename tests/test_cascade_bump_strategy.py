@@ -171,6 +171,144 @@ def test_release_md_idempotency_does_not_match_substring_versions(tmp_path: Path
     assert "- Bump openfilter to 0.1.99\n" in rewritten
 
 
+# ─────────────────── [Unreleased] anchoring (DT-145 follow-up) ───────────────────
+# bump-strategy.sh previously anchored RELEASE.md inserts on "first `## `"
+# header. When a consumer's file had no `[Unreleased]` section, that landed
+# the bump bullet inside an already-tagged release block. Concrete case:
+# filter-sweet-green-subject-data-aggregator PR #39 wrote a bump under
+# `## v0.1.27 - 2026-04-24`. These tests pin the new anchoring contract:
+# always target `[Unreleased]` (any case / bracket shape), and create one if
+# absent — never touch a released block.
+
+
+def test_release_md_creates_unreleased_block_when_only_released_versions_exist(
+    tmp_path: Path,
+) -> None:
+    """Regression for SGSDA PR #39: a file whose topmost `## ` is an already-
+    released version must get a fresh `## [Unreleased]` block inserted above
+    it, not have the bump bullet written into the released block."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Sweet Green Subject Data Aggregator filter release notes\n"
+        "\n"
+        "## v0.1.27 - 2026-04-24\n"
+        "\n"
+        "### Fixed\n"
+        "- Restore RELEASE.md heading format\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    unreleased_idx = rewritten.index("## [Unreleased]")
+    released_idx = rewritten.index("## v0.1.27")
+    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+
+    # New [Unreleased] block sits before the released v0.1.27 section, and
+    # the bump bullet lives inside that new block.
+    assert unreleased_idx < bump_idx < released_idx
+
+    # Released block was not modified — no new ### Changed appeared inside it,
+    # and its existing ### Fixed content is intact.
+    released_block = rewritten[released_idx:]
+    assert "### Changed" not in released_block
+    assert "Restore RELEASE.md heading format" in released_block
+
+
+def test_release_md_uses_existing_bracketed_unreleased_section(tmp_path: Path) -> None:
+    """`## [Unreleased]` (Keep a Changelog convention) must be recognized as
+    the anchor — bump lands inside it, not in a sibling released block."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "## v1.0.0 - 2026-01-01\n"
+        "\n"
+        "### Added\n"
+        "- something\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    unreleased_idx = rewritten.index("## [Unreleased]")
+    released_idx = rewritten.index("## v1.0.0")
+    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    assert unreleased_idx < bump_idx < released_idx
+
+
+def test_release_md_recognizes_unreleased_without_brackets(tmp_path: Path) -> None:
+    """openfilter's own RELEASE.md uses `## Unreleased` (no brackets). That
+    must be recognized as the same slot so re-runs don't append a duplicate
+    `## [Unreleased]` block alongside the existing one."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "## Unreleased\n"
+        "\n"
+        "### Added\n"
+        "- something\n"
+        "\n"
+        "## v1.0.0 - 2026-01-01\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    # Existing `## Unreleased` is reused — no new `## [Unreleased]` appended.
+    assert "## [Unreleased]" not in rewritten
+    assert "## Unreleased" in rewritten
+
+    unreleased_idx = rewritten.index("## Unreleased")
+    released_idx = rewritten.index("## v1.0.0")
+    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    assert unreleased_idx < bump_idx < released_idx
+
+
+def test_release_md_preamble_bullets_do_not_anchor_insert(tmp_path: Path) -> None:
+    """Regression for the FaceGuard pattern: orphan `- Bump openfilter to X`
+    bullets in the preamble (above any `## ` header) must not pull subsequent
+    bumps into the preamble. The new bullet goes under `## [Unreleased]`."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "FaceGuard release notes\n"
+        "- Bump openfilter to 1.0.0\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    unreleased_idx = rewritten.index("## [Unreleased]")
+    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    assert bump_idx > unreleased_idx, (
+        f"bump landed before [Unreleased]; preamble layout broke anchoring:\n{rewritten}"
+    )
+
+    # Pre-existing orphan bullet is preserved verbatim — this fix doesn't
+    # rewrite history, it just prevents new bumps from joining it.
+    assert "- Bump openfilter to 1.0.0\n" in rewritten
+
+
+def test_release_md_idempotent_when_creating_unreleased_block(tmp_path: Path) -> None:
+    """Re-running bump-strategy after it created an `## [Unreleased]` block
+    must be a no-op — no duplicate Unreleased headers, no duplicate bullets."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "## v0.1.27 - 2026-04-24\n"
+        "\n"
+        "### Fixed\n"
+        "- Some fix\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    first = (tmp_path / "RELEASE.md").read_text()
+    _run(tmp_path, of_version="1.1.0")
+    second = (tmp_path / "RELEASE.md").read_text()
+    assert first == second
+    assert second.count("## [Unreleased]") == 1
+    assert second.count("- Bump openfilter to 1.1.0") == 1
+
+
 def test_pyproject_preserves_comments_and_layout(tmp_path: Path) -> None:
     """tomlkit-based pyproject rewriter round-trips comments + layout.
 
