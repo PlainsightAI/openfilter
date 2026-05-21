@@ -238,7 +238,14 @@ def test_release_md_uses_existing_bracketed_unreleased_section(tmp_path: Path) -
 def test_release_md_recognizes_unreleased_without_brackets(tmp_path: Path) -> None:
     """openfilter's own RELEASE.md uses `## Unreleased` (no brackets). That
     must be recognized as the same slot so re-runs don't append a duplicate
-    `## [Unreleased]` block alongside the existing one."""
+    `## [Unreleased]` block alongside the existing one.
+
+    Note: the existing non-bracketed shape is preserved verbatim — we
+    deliberately do not normalize to `## [Unreleased]` here. Legacy files
+    keep their shape; the validator side
+    (PlainsightAI/changelog-parser-action#40) is the place to enforce the
+    bracketed form going forward.
+    """
     (tmp_path / "RELEASE.md").write_text(
         "# Changelog\n"
         "\n"
