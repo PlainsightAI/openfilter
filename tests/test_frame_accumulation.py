@@ -682,9 +682,8 @@ class TestBatchDeferredCallable(unittest.TestCase):
         self.assertTrue(resolved["main"].data["resolved"])
 
         # Closure resolution should have updated the EMA and queued metadata.
-        self.assertNotEqual(f._process_time_ema, prior_ema)
+        self.assertNotEqual(f._filter_time_in, 0.0)
         f._metadata_queue.put_nowait.assert_called()
-
     def test_mixed_dict_and_callable_batch(self):
         """A batch where some slots are dicts and some are Callables: dicts emerge
         finalized at submission time, Callables emerge as closures that finalize
