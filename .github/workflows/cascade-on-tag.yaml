@@ -153,7 +153,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install bump-strategy deps
-        run: pip install --quiet packaging tomlkit
+        run: pip install --quiet packaging tomlkit mistletoe
 
       # `${{ matrix.consumer }}` flows through env: rather than being
       # interpolated into the shell — defense against expression injection

@@ -46,6 +46,10 @@ pytestmark = [
         not _module_available("tomlkit"),
         reason="`tomlkit` required for bump-strategy.sh's pyproject rewriter",
     ),
+    pytest.mark.skipif(
+        not _module_available("mistletoe"),
+        reason="`mistletoe` required for bump-strategy.sh's RELEASE.md rewriter",
+    ),
 ]
 
 

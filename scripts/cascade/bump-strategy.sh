@@ -3,7 +3,7 @@
 # pyproject.toml ([project.dependencies] + [project.optional-dependencies.*]),
 # requirements*.txt, and a `### Changed` bullet in RELEASE.md. Run from the
 # clone root. Idempotent. Required env: OF_VERSION (bare semver). Required
-# tooling: python3 with tomlkit + packaging.
+# tooling: python3 with tomlkit + packaging + mistletoe.
 # DT-145: https://plainsight-ai.atlassian.net/browse/DT-145
 set -euo pipefail
 
@@ -242,18 +242,42 @@ done
 #    so 0.1.9 doesn't match 0.1.99.
 python3 <<'PY'
 import os
-import re
 import sys
+
+import mistletoe
+from mistletoe.block_token import Heading
 
 of_version = os.environ["OF_VERSION"]
 path = "RELEASE.md"
 bullet = f"- Bump openfilter to {of_version}"
 
-# Recognize `## Unreleased`, `## [Unreleased]`, and `## (unreleased)` as the
-# same slot (case-insensitive). Keep a Changelog uses `[Unreleased]` and that
-# is what changelog-parser-action accepts; the other shapes are legacy and
-# treated as equivalent so a re-run doesn't insert a duplicate section.
-unreleased_re = re.compile(r"^##\s+[\[\(]?\s*unreleased\s*[\]\)]?\s*$", re.IGNORECASE)
+
+def heading_text(node: Heading) -> str:
+    """Flatten a heading's inline children to plain text. RawText (and the
+    common inline tokens we'd see in a changelog header — InlineCode,
+    EscapeSequence) all expose `.content`; anything else is recursed into."""
+    out: list[str] = []
+    for child in node.children:
+        content = getattr(child, "content", None)
+        if isinstance(content, str):
+            out.append(content)
+        elif hasattr(child, "children"):
+            out.append(heading_text(child))
+    return "".join(out).strip()
+
+
+def is_unreleased(text: str) -> bool:
+    """Match `Unreleased`, `[Unreleased]`, `(unreleased)`, with surrounding
+    whitespace. Case-insensitive — covers Keep a Changelog convention and the
+    legacy shapes already in the codebase (so a re-run doesn't duplicate)."""
+    return text.lower().strip("[]() \t") == "unreleased"
+
+
+def h2_line_idx(node: Heading) -> int:
+    """mistletoe's `line_number` is 1-indexed and points at the heading's
+    source line; convert to a 0-indexed offset into the `lines` array."""
+    return node.line_number - 1
+
 
 if not os.path.exists(path):
     with open(path, "w", encoding="utf-8") as f:
@@ -278,24 +302,30 @@ if any(line.rstrip() == bullet for line in text.splitlines()):
 
 lines = text.splitlines(keepends=True)
 
-# Anchor explicitly on the Unreleased section, not "first ## " — the latter
+# Parse via mistletoe (CommonMark AST) to locate sections — robust against
+# whitespace/escape/inline quirks that regex matching glossed over. Mutation
+# is still done by splicing the source `lines` array so original formatting
+# (blank lines, preamble, indentation) round-trips verbatim; re-serializing
+# through the AST would not preserve those.
+doc = mistletoe.Document(text)
+h2_headings = [
+    n for n in doc.children if isinstance(n, Heading) and n.level == 2
+]
+
+# Anchor explicitly on the Unreleased section, not "first H2" — the latter
 # landed bumps under whichever release sat on top, including already-tagged
 # ones (DT-145 follow-up: filter-sweet-green-subject-data-aggregator #39
 # wrote into `## v0.1.27`).
-unreleased_idx = next(
-    (i for i, line in enumerate(lines) if unreleased_re.match(line.rstrip())),
+unreleased_node = next(
+    (h for h in h2_headings if is_unreleased(heading_text(h))),
     None,
 )
 
-if unreleased_idx is None:
-    # No Unreleased section. Inject one before the first released `## v...`
-    # header so the bullet never lands in a tagged block. If there's no `## `
-    # at all, fall back to the legacy "append at end" behavior.
-    first_release_idx = next(
-        (i for i, line in enumerate(lines) if line.startswith("## ")),
-        None,
-    )
-    if first_release_idx is None:
+if unreleased_node is None:
+    # No Unreleased section. Inject one before the first H2 so the bullet
+    # never lands in a tagged block. If there's no H2 at all, fall back to
+    # the legacy "append at end" behavior.
+    if not h2_headings:
         suffix = "" if text.endswith("\n") else "\n"
         suffix += (
             "\n"
@@ -310,6 +340,7 @@ if unreleased_idx is None:
         print(f"{path}: appended new [Unreleased] block with bump entry")
         sys.exit(0)
 
+    first_release_idx = h2_line_idx(h2_headings[0])
     new_block = [
         "## [Unreleased]\n",
         "\n",
@@ -324,18 +355,33 @@ if unreleased_idx is None:
     print(f"{path}: inserted new [Unreleased] block before first released section")
     sys.exit(0)
 
-next_release_idx = next(
-    (j for j in range(unreleased_idx + 1, len(lines)) if lines[j].startswith("## ")),
-    len(lines),
+# Existing Unreleased section — bound it by the next H2 (or EOF) and either
+# append to the existing `### Changed` subsection or create one.
+unreleased_idx = h2_line_idx(unreleased_node)
+later_h2 = next(
+    (h for h in h2_headings if h2_line_idx(h) > unreleased_idx),
+    None,
 )
+next_release_idx = h2_line_idx(later_h2) if later_h2 is not None else len(lines)
 block = lines[unreleased_idx:next_release_idx]
 
-changed_idx = next(
-    (k for k, line in enumerate(block) if line.rstrip() == "### Changed"),
+# Locate `### Changed` via the same AST walk — keeps heading-text matching
+# consistent with the H2 path (handles surrounding whitespace etc.).
+changed_h3 = next(
+    (
+        n for n in doc.children
+        if isinstance(n, Heading)
+        and n.level == 3
+        and unreleased_idx < h2_line_idx(n) < next_release_idx
+        and heading_text(n).lower() == "changed"
+    ),
     None,
 )
 
-if changed_idx is not None:
+if changed_h3 is not None:
+    changed_idx = h2_line_idx(changed_h3) - unreleased_idx
+    # Insert just before the next H3 (or end-of-block), trimming trailing
+    # blanks so successive runs don't pile blank lines.
     insertion_idx = next(
         (m for m in range(changed_idx + 1, len(block)) if block[m].startswith("### ")),
         len(block),
