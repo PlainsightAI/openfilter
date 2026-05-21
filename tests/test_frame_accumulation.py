@@ -177,9 +177,11 @@ class TestBatchAccumulation(unittest.TestCase):
         self.assertEqual(len(f._frame_buffer), 2)
         self.assertFalse(f._batch_flush_event.is_set())
 
-        time.sleep(0.1)
-
-        self.assertTrue(f._batch_flush_event.is_set())
+        # The 50ms watcher timeout should set the flush event. Wait on the
+        # event itself rather than sleeping a fixed window — Event.wait()
+        # returns the instant it fires and times out generously, so a loaded
+        # CI runner can't flake it.
+        self.assertTrue(f._batch_flush_event.wait(timeout=2.0))
 
     def test_flush_returns_partial_batch(self):
         f = self._make_filter(batch_size=5, timeout_ms=50.0)
@@ -187,7 +189,9 @@ class TestBatchAccumulation(unittest.TestCase):
         f.process_frames({"main": Frame({"val": 1})})
         f.process_frames({"main": Frame({"val": 2})})
 
-        time.sleep(0.1)
+        # Wait for the 50ms watcher to set the flush event before draining,
+        # rather than sleeping a fixed window.
+        self.assertTrue(f._batch_flush_event.wait(timeout=2.0))
 
         result = f._process_batch_flush()
         self.assertIsNotNone(result)
@@ -414,33 +418,36 @@ class TestTimerReset(unittest.TestCase):
                 continue
         Removing those lines causes a premature flush at the original deadline.
         """
-        # batch_size=5 so the batch never completes via accumulation in this test
-        f = self._make_filter(batch_size=5, timeout_ms=100.0)
+        # batch_size=5 so the batch never completes via accumulation in this
+        # test. The 200ms watcher timeout is deliberately generous so the
+        # negative assertion below sits ~160ms clear of the reset deadline —
+        # well above scheduler jitter on a loaded CI runner.
+        f = self._make_filter(batch_size=5, timeout_ms=200.0)
 
-        # Frame 1 at t≈0ms: starts the 100ms watcher timer
+        # Frame 1 at t≈0ms: starts the 200ms watcher timer
         f.process_frames({"main": Frame({"val": 1})})
 
-        # Sleep ~60ms, well inside the original 100ms window
-        time.sleep(0.06)
+        # Sleep ~120ms, well inside the original 200ms window
+        time.sleep(0.12)
 
-        # Frame 2 at t≈60ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
-        # The watcher only observes that signal when its initial ~100ms sleep
+        # Frame 2 at t≈120ms: _reset_batch_timer() sets _batch_wakeup mid-sleep.
+        # The watcher only observes that signal when its initial ~200ms sleep
         # completes, then restarts for another full timeout, so the effective
-        # flush deadline is ~original deadline + 100ms (~200ms), not ~160ms.
+        # flush deadline is ~original deadline + 200ms (~400ms), not ~320ms.
         f.process_frames({"main": Frame({"val": 2})})
 
-        # At t≈100ms (original deadline): flush must NOT have fired yet.
-        # The watcher's first sleep expires here; seeing _batch_wakeup set it restarts
-        # for another full timeout rather than flushing immediately.
-        time.sleep(0.04)
+        # At t≈240ms — past the original 200ms deadline, ~160ms before the
+        # reset deadline (~400ms): flush must NOT have fired yet. If the timer
+        # reset were broken the flush would have fired at the ~200ms deadline.
+        time.sleep(0.12)
         self.assertFalse(
             f._batch_flush_event.is_set(),
             "flush fired at the original deadline; timer reset is not working",
         )
 
-        # Watcher restarts at t≈100ms; expected flush at t≈200ms.  Wait up to
-        # 500ms so the test tolerates scheduler jitter on loaded CI runners.
-        fired = f._batch_flush_event.wait(timeout=0.5)
+        # Watcher restarts at t≈200ms; expected flush at t≈400ms.  Wait up to
+        # 1s so the test tolerates scheduler jitter on loaded CI runners.
+        fired = f._batch_flush_event.wait(timeout=1.0)
         self.assertTrue(fired, "flush never fired after the reset deadline")
 
         f._stop_batch_watcher()
@@ -584,6 +591,731 @@ class TestLoopOncePendingResultsDrain(unittest.TestCase):
 
         f._stop_batch_watcher()
         f._batch_watcher.join(timeout=1.0)
+
+
+class TestBatchDeferredCallable(unittest.TestCase):
+    """process_batch() may return Callable slots that the runtime invokes later via
+    mq.send's existing Callable polling. Mirrors the deferred-result path that
+    process() already supports.
+    """
+
+    def _make_filter(self, filter_cls, batch_size=3, timeout_ms=1000.0):
+        config = FilterConfig(
+            id="test-deferred",
+            batch_size=batch_size,
+            accumulate_timeout_ms=timeout_ms,
+        )
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_all_callable_slots_returned_to_send_path(self):
+        """A batch where every slot is a Callable: process_frames returns the last
+        Callable, earlier Callables land in _batch_pending_results. Each is still
+        callable() at the point loop_once would hand it to mq.send."""
+
+        class DeferredFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Capture each frame by value so each closure resolves to the right input.
+                return [(lambda fs=fs: fs) for fs in batch]
+
+        f = self._make_filter(DeferredFilter, batch_size=3)
+
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        last = f.process_frames({"main": Frame({"val": 3})})
+
+        self.assertTrue(callable(last))
+        self.assertEqual(len(f._batch_pending_results), 2)
+        for pending in f._batch_pending_results:
+            self.assertTrue(callable(pending))
+
+    def test_callable_slot_resolves_to_dict_on_invocation(self):
+        """Invoking a returned closure resolves it: dict comes out, EMA updates,
+        metadata is queued, _inject_timings stamps the frame.
+
+        Calls _execute_batch directly to keep the assertion focused on the
+        closure's resolution semantics (process_frames only goes through the
+        batched path at batch_size > 1).
+        """
+
+        class DeferredFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                return [lambda: {"main": Frame({"resolved": True})}]
+
+        f = self._make_filter(DeferredFilter, batch_size=2)
+        prior_ema = f._process_time_ema
+        results = f._execute_batch([{"main": Frame({"val": 1})}])
+        self.assertEqual(len(results), 1)
+        closure = results[0]
+        self.assertTrue(callable(closure))
+
+        # EMA should NOT have been touched by the synchronous _execute_batch when
+        # any slot is a Callable — matches _process_frames_single's behavior.
+        self.assertEqual(f._process_time_ema, prior_ema)
+
+        resolved = closure()
+        self.assertIsInstance(resolved, dict)
+        self.assertIn("main", resolved)
+        self.assertTrue(resolved["main"].data["resolved"])
+
+        # Closure resolution should have updated the EMA and queued metadata.
+        self.assertNotEqual(f._filter_time_in, 0.0)
+        f._metadata_queue.put_nowait.assert_called()
+    def test_mixed_dict_and_callable_batch(self):
+        """A batch where some slots are dicts and some are Callables: dicts emerge
+        finalized at submission time, Callables emerge as closures that finalize
+        on invocation. The list order is preserved.
+        """
+
+        class MixedFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Slot 0 immediate, slot 1 deferred, slot 2 immediate.
+                return [
+                    {"main": Frame({"slot": 0})},
+                    lambda: {"main": Frame({"slot": 1, "deferred": True})},
+                    {"main": Frame({"slot": 2})},
+                ]
+
+        f = self._make_filter(MixedFilter, batch_size=3)
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        last = f.process_frames({"main": Frame({"val": 3})})
+
+        # Order: slot 0 dict, slot 1 closure, slot 2 dict — last is slot 2 (dict).
+        self.assertIsInstance(last, dict)
+        self.assertEqual(last["main"].data["slot"], 2)
+
+        self.assertEqual(len(f._batch_pending_results), 2)
+        first, middle = f._batch_pending_results
+        self.assertIsInstance(first, dict)
+        self.assertEqual(first["main"].data["slot"], 0)
+        self.assertTrue(callable(middle))
+        resolved_middle = middle()
+        self.assertEqual(resolved_middle["main"].data["slot"], 1)
+        self.assertTrue(resolved_middle["main"].data["deferred"])
+
+    def test_callable_slot_resolving_to_none(self):
+        """A Callable that returns None on resolution behaves as a sink for that
+        slot. mq.send already handles a None return from a Callable.
+        """
+
+        class DeferredSinkFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                return [lambda: None]
+
+        f = self._make_filter(DeferredSinkFilter, batch_size=2)
+        results = f._execute_batch([{"main": Frame({"val": 1})}])
+        self.assertEqual(len(results), 1)
+        closure = results[0]
+        self.assertTrue(callable(closure))
+        self.assertIsNone(closure())
+
+    def test_ema_not_updated_when_any_slot_callable(self):
+        """If ANY slot is a Callable, the synchronous EMA update in _execute_batch
+        is skipped — each Callable does its own EMA update on resolution. Mirrors
+        _process_frames_single's behavior.
+        """
+
+        class PartialDeferFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                # Two dicts and one Callable: the presence of a Callable should
+                # suppress the batch-level EMA update.
+                return [
+                    {"main": Frame({"slot": 0})},
+                    {"main": Frame({"slot": 1})},
+                    lambda: {"main": Frame({"slot": 2})},
+                ]
+
+        f = self._make_filter(PartialDeferFilter, batch_size=3)
+        prior_ema = f._process_time_ema
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        f.process_frames({"main": Frame({"val": 3})})
+
+        self.assertEqual(f._process_time_ema, prior_ema)
+
+
+class TestAccumulateWindow(unittest.TestCase):
+    """Sliding-window mode: keep accumulate_window frames in a deque, dispatch
+    every batch_size new frames, route through Filter.select_batch().
+    """
+
+    def _make_filter(self, filter_cls, batch_size, window=None, timeout_ms=1000.0):
+        kwargs = {
+            "id": "test-window",
+            "batch_size": batch_size,
+            "accumulate_timeout_ms": timeout_ms,
+        }
+        if window is not None:
+            kwargs["accumulate_window"] = window
+        config = FilterConfig(**kwargs)
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_window_default_is_one_shot_list(self):
+        """Unset accumulate_window: buffer stays a list, sliding mode off."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        self.assertFalse(f._sliding_window)
+        self.assertEqual(f._accumulate_window, 2)
+        # list, not deque — so the original drain-on-dispatch contract holds.
+        self.assertIsInstance(f._frame_buffer, list)
+
+    def test_window_set_uses_bounded_deque(self):
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=8)
+        self.assertTrue(f._sliding_window)
+        self.assertEqual(f._accumulate_window, 8)
+        from collections import deque as _deque
+        self.assertIsInstance(f._frame_buffer, _deque)
+        self.assertEqual(f._frame_buffer.maxlen, 8)
+
+    def test_invalid_window_smaller_than_batch_size(self):
+        config = FilterConfig(id="bad", batch_size=4, accumulate_window=2)
+        with self.assertRaises(ValueError) as ctx:
+            Filter.normalize_config(config)
+        self.assertIn("accumulate_window", str(ctx.exception))
+
+    def test_default_select_batch_returns_last_batch_size(self):
+        """select_batch's default keeps tail semantics — preserves current
+        contract when accumulate_window is unset."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        window = [
+            {"main": Frame({"val": i})} for i in range(5)
+        ]
+        picked = f.select_batch(window)
+        self.assertEqual(len(picked), 2)
+        self.assertEqual(picked[0]["main"].data["val"], 3)
+        self.assertEqual(picked[1]["main"].data["val"], 4)
+
+    def test_sliding_window_does_not_clear_on_dispatch(self):
+        """With accumulate_window set, the ring persists across dispatches —
+        a frame appended for dispatch K is still present for dispatch K+1."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=4)
+        # Feed batch_size frames → dispatch fires.
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Ring should still hold both frames.
+        self.assertEqual(len(f._frame_buffer), 2)
+        # Feeding two more triggers the next dispatch; ring grows to 4.
+        f.process_frames({"main": Frame({"val": 3})})
+        f.process_frames({"main": Frame({"val": 4})})
+        self.assertEqual(len(f.received_batches), 2)
+        self.assertEqual(len(f._frame_buffer), 4)
+
+    def test_sliding_window_evicts_oldest_at_maxlen(self):
+        """When window is full and new frame arrives, deque drops the oldest."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, window=4)
+        for i in range(6):
+            f.process_frames({"main": Frame({"val": i})})
+        # Ring capped at 4; last four values present.
+        vals = [f._frame_buffer[i]["main"].data["val"] for i in range(len(f._frame_buffer))]
+        self.assertEqual(vals, [2, 3, 4, 5])
+
+    def test_custom_select_batch_routed_through_dispatch(self):
+        """Overriding select_batch lets a filter pick non-tail frames."""
+
+        class StridedFilter(CountingBatchFilter):
+            def select_batch(self, window):
+                # Every other frame, capped at batch_size.
+                return list(window)[::2][: self._batch_size]
+
+        f = self._make_filter(StridedFilter, batch_size=2, window=4)
+        for i in range(4):
+            f.process_frames({"main": Frame({"val": i})})
+        # 4 frames in ring: indices [0, 2] picked.
+        self.assertEqual(len(f.received_batches), 2)
+        # Look at the LAST batch dispatched: should be strided picks from the
+        # then-current ring.
+        last_batch = f.received_batches[-1]
+        picked_vals = [b["main"].data["val"] for b in last_batch]
+        # After 4 frames in a window of 4: ring = [0,1,2,3], stride picks [0,2].
+        self.assertEqual(picked_vals, [0, 2])
+
+    def test_window_frames_since_dispatch_counter_resets(self):
+        """The trigger counter (not the ring) is what advances toward batch_size."""
+        f = self._make_filter(CountingBatchFilter, batch_size=3, window=8)
+        # First two frames: counter at 2, no dispatch yet.
+        f.process_frames({"main": Frame({"val": 0})})
+        f.process_frames({"main": Frame({"val": 1})})
+        self.assertEqual(f._frames_since_last_dispatch, 2)
+        self.assertEqual(len(f.received_batches), 0)
+        # Third frame: counter hits 3 → dispatch, counter resets.
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(f._frames_since_last_dispatch, 0)
+        self.assertEqual(len(f.received_batches), 1)
+        # Next batch_size frames again → second dispatch.
+        f.process_frames({"main": Frame({"val": 3})})
+        f.process_frames({"main": Frame({"val": 4})})
+        f.process_frames({"main": Frame({"val": 5})})
+        self.assertEqual(f._frames_since_last_dispatch, 0)
+        self.assertEqual(len(f.received_batches), 2)
+
+
+class TestManualBatchTrigger(unittest.TestCase):
+    """batch_trigger='manual' disables auto count/timeout triggers; only
+    Filter.flush_batch() drains.
+    """
+
+    def _make_filter(
+        self,
+        filter_cls,
+        batch_size,
+        trigger="auto",
+        window=None,
+        timeout_ms=1000.0,
+    ):
+        kwargs = {
+            "id": "test-manual",
+            "batch_size": batch_size,
+            "accumulate_timeout_ms": timeout_ms,
+            "batch_trigger": trigger,
+        }
+        if window is not None:
+            kwargs["accumulate_window"] = window
+        config = FilterConfig(**kwargs)
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_invalid_batch_trigger(self):
+        config = FilterConfig(id="bad", batch_size=2, batch_trigger="sometimes")
+        with self.assertRaises(ValueError) as ctx:
+            Filter.normalize_config(config)
+        self.assertIn("batch_trigger", str(ctx.exception))
+
+    def test_default_trigger_is_auto(self):
+        f = self._make_filter(CountingBatchFilter, batch_size=2)
+        self.assertEqual(f._batch_trigger, "auto")
+
+    def test_manual_mode_suppresses_count_trigger(self):
+        """In manual mode, accumulating batch_size frames does NOT dispatch."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="manual")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        f.process_frames({"main": Frame({"val": 3})})
+        self.assertEqual(len(f.received_batches), 0)
+        # Frames pile up in the buffer.
+        self.assertEqual(len(f._frame_buffer), 3)
+
+    def test_manual_mode_does_not_start_watcher(self):
+        """Manual mode skips the timeout watcher entirely."""
+        f = self._make_filter(
+            CountingBatchFilter, batch_size=5, trigger="manual", timeout_ms=50.0
+        )
+        f.process_frames({"main": Frame({"val": 1})})
+        # No watcher should have been started — _reset_batch_timer isn't called.
+        self.assertIsNone(f._batch_watcher)
+
+    def test_flush_batch_triggers_dispatch_on_next_frame(self):
+        """flush_batch() sets the event; the next frame append picks it up and
+        dispatches."""
+        f = self._make_filter(CountingBatchFilter, batch_size=5, trigger="manual")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 0)
+        f.flush_batch()
+        f.process_frames({"main": Frame({"val": 3})})
+        self.assertEqual(len(f.received_batches), 1)
+        # All three frames should be in the dispatched batch (manual mode without
+        # accumulate_window keeps the simple list buffer that drains on dispatch).
+        dispatched = f.received_batches[0]
+        self.assertEqual(len(dispatched), 3)
+
+    def test_flush_batch_noop_in_non_batch_mode(self):
+        """At batch_size == 1, flush_batch is a documented no-op."""
+        f = self._make_filter(FallbackBatchFilter, batch_size=1)
+        # Should not raise, should not flip the event (event doesn't gate
+        # anything in batch_size=1 path, but verify the contract).
+        f.flush_batch()
+        self.assertFalse(f._batch_flush_event.is_set())
+
+    def test_manual_mode_safety_cap_force_flushes(self):
+        """If a manual-mode filter never calls flush_batch(), the runtime
+        force-flushes at batch_size * 4 to bound memory."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="manual")
+        # batch_size=2 → safety cap at 8 frames.
+        for i in range(8):
+            f.process_frames({"main": Frame({"val": i})})
+        # 8th frame should have tripped the safety cap and force-dispatched.
+        self.assertEqual(len(f.received_batches), 1)
+        self.assertEqual(len(f.received_batches[0]), 8)
+
+    def test_auto_mode_count_trigger_still_fires(self):
+        """batch_trigger='auto' (default) — count trigger behaves as before."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, trigger="auto")
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+
+    def test_manual_mode_with_sliding_window(self):
+        """Manual mode composes with accumulate_window: flush_batch() picks
+        from the ring via select_batch()."""
+        f = self._make_filter(
+            CountingBatchFilter, batch_size=2, trigger="manual", window=6
+        )
+        for i in range(4):
+            f.process_frames({"main": Frame({"val": i})})
+        self.assertEqual(len(f.received_batches), 0)
+        # Ring should hold all 4 frames.
+        self.assertEqual(len(f._frame_buffer), 4)
+        f.flush_batch()
+        f.process_frames({"main": Frame({"val": 4})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Sliding mode preserves ring; default select_batch returns last batch_size.
+        dispatched = f.received_batches[0]
+        self.assertEqual(len(dispatched), 2)
+        vals = [b["main"].data["val"] for b in dispatched]
+        self.assertEqual(vals, [3, 4])
+        # Ring should still hold the 5 frames (capped at 6 maxlen).
+        self.assertEqual(len(f._frame_buffer), 5)
+
+    def test_manual_mode_not_drained_by_source_timeout(self):
+        """In manual mode loop_once's source-timeout path must NOT drain the
+        buffer — only flush_batch() drains. (Auto mode flushes partials there.)
+        Regression guard for the timeout-flush path bypassing batch_trigger.
+        """
+        f = self._make_filter(CountingBatchFilter, batch_size=5, trigger="manual")
+        f.mq.send = MagicMock(return_value=True)
+        # Short source timeout so loop_once's recv-timeout path is reached fast.
+        f.sources_timeout = 30.0
+        f.outputs_timeout = 5000.0
+        f.exit_after_t = None
+
+        # Accumulate two frames — batch never fills (batch_size=5).
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 1})})
+        f.loop_once()
+        f.mq.recv = MagicMock(return_value={"main": Frame({"val": 2})})
+        f.loop_once()
+        self.assertEqual(len(f._frame_buffer), 2)
+        self.assertEqual(len(f.received_batches), 0)
+
+        # recv times out (slow source). In auto mode this flushes the partial
+        # batch; in manual mode the buffer must be left intact.
+        f.mq.recv = MagicMock(return_value=None)
+        f.loop_once()
+        self.assertEqual(len(f.received_batches), 0)
+        self.assertEqual(len(f._frame_buffer), 2)
+        self.assertFalse(f.mq.send.called)
+
+        # flush_batch() still drains: the next loop_once picks up the event.
+        f.flush_batch()
+        f.mq.recv = MagicMock(return_value=None)
+        f.loop_once()
+        self.assertEqual(len(f.received_batches), 1)
+        self.assertEqual(len(f.received_batches[0]), 2)
+
+
+class TestBatchWorkersPool(unittest.TestCase):
+    """batch_workers > 1: process_batch runs on a ThreadPoolExecutor; per-slot
+    Callables wait on the future. Backpressure via submission semaphore.
+    """
+
+    def _make_filter(
+        self,
+        filter_cls,
+        batch_size,
+        workers,
+        shutdown_timeout=5.0,
+    ):
+        config = FilterConfig(
+            id="test-pool",
+            batch_size=batch_size,
+            accumulate_timeout_ms=1000.0,
+            batch_workers=workers,
+            batch_shutdown_timeout_s=shutdown_timeout,
+        )
+        stop_evt = threading.Event()
+        f = filter_cls(config, stop_evt)
+        f.mq = MagicMock()
+        f.mq.metrics = {}
+        f.mq.sender = None
+        f.logger = MagicMock()
+        f.logger.enabled = False
+        f._is_last_filter = False
+        f._metadata_queue = MagicMock()
+        f._metadata_queue.put_nowait = MagicMock()
+        f.emitter = None
+        f.setup(config)
+        return f
+
+    def test_invalid_batch_workers_zero(self):
+        config = FilterConfig(id="bad", batch_size=2, batch_workers=0)
+        with self.assertRaises(ValueError):
+            Filter.normalize_config(config)
+
+    def test_batch_workers_one_is_inline_path(self):
+        """batch_workers=1 keeps the synchronous path — no pool ever created."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, workers=1)
+        f.process_frames({"main": Frame({"val": 1})})
+        f.process_frames({"main": Frame({"val": 2})})
+        self.assertEqual(len(f.received_batches), 1)
+        # Pool was never instantiated.
+        self.assertIsNone(f._batch_pool)
+
+    def test_pool_returns_callables(self):
+        """In pool mode, _execute_batch returns Callables (not dicts)."""
+        f = self._make_filter(CountingBatchFilter, batch_size=2, workers=2)
+        try:
+            results = f._execute_batch([
+                {"main": Frame({"val": 1})},
+                {"main": Frame({"val": 2})},
+            ])
+            self.assertEqual(len(results), 2)
+            for r in results:
+                self.assertTrue(callable(r))
+            # Resolve one to verify it returns a real dict.
+            resolved = results[0]()
+            self.assertIsInstance(resolved, dict)
+        finally:
+            f.fini()
+
+    def test_pool_batches_overlap_in_wall_clock(self):
+        """Two batches submitted back-to-back actually run in parallel."""
+
+        barrier = threading.Barrier(2, timeout=5.0)
+
+        class OverlapFilter(Filter):
+            def setup(self, config):
+                self.started_at = []
+                self.ended_at = []
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                self.started_at.append(time.time())
+                # Wait for both workers to enter before either returns —
+                # only possible if they ran concurrently.
+                barrier.wait()
+                self.ended_at.append(time.time())
+                return [{"main": Frame({"slot": 0})}] * len(batch)
+
+        f = self._make_filter(OverlapFilter, batch_size=1, workers=2)
+        try:
+            r1 = f._execute_batch([{"main": Frame({"a": 1})}])
+            r2 = f._execute_batch([{"main": Frame({"a": 2})}])
+            # Resolve both — this drives the futures to completion.
+            r1[0]()
+            r2[0]()
+            self.assertEqual(len(f.started_at), 2)
+            # Both batches must have entered the barrier at the same time
+            # (sequential execution would deadlock at barrier.wait()).
+            self.assertLess(abs(f.started_at[1] - f.started_at[0]), 1.0)
+        finally:
+            f.fini()
+
+    def test_pool_backpressure_blocks_submission_when_full(self):
+        """When the pool is full (all batch_workers slots in use),
+        _execute_batch_pool blocks on the semaphore until a worker frees."""
+
+        gate = threading.Event()
+
+        class GatedFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                gate.wait(timeout=5.0)
+                return [{"main": Frame({"done": True})}] * len(batch)
+
+        # workers=2 so we can saturate with two submissions before the third
+        # backpressures. workers=1 would take the synchronous path entirely.
+        f = self._make_filter(GatedFilter, batch_size=1, workers=2)
+        try:
+            r1 = f._execute_batch([{"main": Frame({"a": 1})}])
+            r2 = f._execute_batch([{"main": Frame({"a": 2})}])
+            # Pool fully busy at 2/2. Third submit should block.
+            blocked = threading.Event()
+            released = threading.Event()
+            r3_holder = []
+
+            def submit_third():
+                blocked.set()
+                r3 = f._execute_batch([{"main": Frame({"a": 3})}])
+                r3_holder.append(r3)
+                released.set()
+
+            t = threading.Thread(target=submit_third)
+            t.start()
+            self.assertTrue(
+                blocked.wait(timeout=2.0), "submit_third thread never started"
+            )
+            # The third submission is now blocked on the semaphore (pool 2/2
+            # busy). `released` provably cannot be set until gate.set() below
+            # frees a worker, so assert thread liveness rather than sleeping a
+            # fixed window: the thread stays alive and `released` stays unset.
+            self.assertTrue(t.is_alive())
+            self.assertFalse(
+                released.is_set(),
+                "third submit should be blocked while pool is full",
+            )
+            # Let workers finish — semaphore frees, third submission proceeds.
+            gate.set()
+            self.assertTrue(
+                released.wait(timeout=5.0), "third submit never unblocked"
+            )
+            t.join(timeout=5.0)
+            self.assertFalse(t.is_alive())
+            # Drain to release pool workers cleanly.
+            r1[0]()
+            r2[0]()
+            r3_holder[0][0]()
+        finally:
+            f.fini()
+
+    def test_pool_drains_on_fini(self):
+        """fini() waits for in-flight batches up to batch_shutdown_timeout_s."""
+
+        class SlowFilter(Filter):
+            def setup(self, config):
+                pass
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                time.sleep(0.2)
+                return [{"main": Frame({"done": True})}] * len(batch)
+
+        f = self._make_filter(
+            SlowFilter, batch_size=1, workers=2, shutdown_timeout=5.0
+        )
+        # Submit but don't poll the callables — they're in flight.
+        f._execute_batch([{"main": Frame({"a": 1})}])
+        f._execute_batch([{"main": Frame({"a": 2})}])
+        # Fini should wait for both to finish (< 5s timeout).
+        t0 = time.time()
+        f.fini()
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 5.0)
+        # All in-flight futures should have drained. add_done_callback fires
+        # asynchronously, so poll with a deadline rather than asserting once
+        # after a fixed sleep — and don't hold _batch_inflight_lock across the
+        # wait, since the done-callback needs that lock to discard the future.
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            with f._batch_inflight_lock:
+                if not f._batch_inflight:
+                    break
+            time.sleep(0.01)
+        with f._batch_inflight_lock:
+            self.assertEqual(len(f._batch_inflight), 0)
+
+    def test_pool_worker_exception_drops_batch_and_continues(self):
+        """A process_batch() exception in pool mode is non-fatal: the worker
+        logs it, the batch is dropped (every slot resolves to None), and the
+        filter stays usable. This DIVERGES from the synchronous path, which
+        re-raises — the divergence is the locked-in contract (see
+        Filter._batch_pool_worker).
+        """
+
+        class FlakyFilter(Filter):
+            def setup(self, config):
+                self.calls = 0
+
+            def process(self, frames):
+                return frames
+
+            def process_batch(self, batch):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("simulated batch failure")
+                return [{"main": Frame({"ok": True})}] * len(batch)
+
+        f = self._make_filter(FlakyFilter, batch_size=2, workers=2)
+        try:
+            # First batch raises in the pool worker. Submitting and resolving
+            # the slots must NOT raise — the failed batch is dropped (every
+            # slot resolves to None) and the failure is logged exactly once.
+            with self.assertLogs(
+                "openfilter.filter_runtime.filter", level="ERROR"
+            ) as cm:
+                bad = f._execute_batch([
+                    {"main": Frame({"val": 1})},
+                    {"main": Frame({"val": 2})},
+                ])
+                self.assertEqual(len(bad), 2)
+                for slot in bad:
+                    self.assertIsNone(slot())
+            dropped = [ln for ln in cm.output if "dropping the batch" in ln]
+            self.assertEqual(
+                len(dropped), 1, "batch failure should be logged exactly once"
+            )
+
+            # The filter is still usable: a subsequent batch succeeds.
+            good = f._execute_batch([
+                {"main": Frame({"val": 3})},
+                {"main": Frame({"val": 4})},
+            ])
+            for slot in good:
+                self.assertIsInstance(slot(), dict)
+        finally:
+            f.fini()
 
 
 if __name__ == "__main__":
