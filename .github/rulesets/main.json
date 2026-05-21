@@ -37,7 +37,8 @@
           { "context": "security-scan / grype (3.11)" },
           { "context": "security-scan / grype (3.12)" },
           { "context": "security-scan / grype (3.13)" },
-          { "context": "cascade-pr-checks" }
+          { "context": "cascade-pr-checks" },
+          { "context": "check-release-log" }
         ]
       }
     }

@@ -11,6 +11,24 @@ env:
   DO_NOT_TRACK: true
 
 jobs:
+  # PR backstop: any change under openfilter/** — the importable package, the
+  # only thing that ships in the wheel — must come with a RELEASE.md entry.
+  # `source-paths: openfilter/**` scopes the gate to shipped code, so
+  # test-only, docs, CI, and release-tooling PRs are no-ops; dependabot PRs
+  # are skipped by the action. check-release-log also validates VERSION <->
+  # changelog consistency and that VERSION is not behind the base branch.
+  check-release-log:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run release log check
+        uses: PlainsightAI/gh-actions-public/check-release-log@main
+        with:
+          source-paths: "openfilter/**"
+
   run-unit-tests:
     if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
