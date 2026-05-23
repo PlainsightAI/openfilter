@@ -239,16 +239,22 @@ def test_release_md_uses_existing_bracketed_unreleased_section(tmp_path: Path) -
     assert unreleased_idx < bump_idx < released_idx
 
 
-def test_release_md_recognizes_unreleased_without_brackets(tmp_path: Path) -> None:
-    """openfilter's own RELEASE.md uses `## Unreleased` (no brackets). That
-    must be recognized as the same slot so re-runs don't append a duplicate
-    `## [Unreleased]` block alongside the existing one.
+def test_release_md_normalizes_legacy_unreleased_header_to_brackets(
+    tmp_path: Path,
+) -> None:
+    """openfilter's own RELEASE.md uses `## Unreleased` (no brackets), and
+    some downstream consumers historically used `## (unreleased)`. The
+    rewriter recognizes both as the Unreleased slot AND normalizes the
+    header line to `## [Unreleased]` on first touch.
 
-    Note: the existing non-bracketed shape is preserved verbatim — we
-    deliberately do not normalize to `## [Unreleased]` here. Legacy files
-    keep their shape; the validator side
-    (PlainsightAI/changelog-parser-action#40) is the place to enforce the
-    bracketed form going forward.
+    Reason: the validator side (PlainsightAI/changelog-parser-action) only
+    accepts the bracketed form (regex `/^\\[\\s*unreleased\\s*\\]$/i`).
+    Without rewriter-side normalization, a bump PR against a consumer with
+    `## Unreleased` would land the bullet correctly but then fail
+    `check-release-log` on parser strictness. Normalizing here lets
+    consumer files migrate incrementally — every bump touches the header
+    once and brings it into the canonical shape — while keeping the
+    validator strictly aligned with Keep a Changelog.
     """
     (tmp_path / "RELEASE.md").write_text(
         "# Changelog\n"
@@ -263,14 +269,37 @@ def test_release_md_recognizes_unreleased_without_brackets(tmp_path: Path) -> No
     _run(tmp_path, of_version="1.1.0")
     rewritten = (tmp_path / "RELEASE.md").read_text()
 
-    # Existing `## Unreleased` is reused — no new `## [Unreleased]` appended.
-    assert "## [Unreleased]" not in rewritten
-    assert "## Unreleased" in rewritten
+    # Header normalized to bracketed form; bare `## Unreleased\n` is gone.
+    assert "## [Unreleased]\n" in rewritten
+    assert "## Unreleased\n" not in rewritten
 
-    unreleased_idx = rewritten.index("## Unreleased")
+    unreleased_idx = rewritten.index("## [Unreleased]")
     released_idx = rewritten.index("## v1.0.0")
     bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
     assert unreleased_idx < bump_idx < released_idx
+
+
+def test_release_md_normalizes_parenthesized_unreleased_header(
+    tmp_path: Path,
+) -> None:
+    """`## (unreleased)` — the shape the pre-fix script wrote when creating
+    a new section — also normalizes to `## [Unreleased]` on first touch.
+    Covers the parenthesized legacy variant alongside the bare-word one."""
+    (tmp_path / "RELEASE.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "## (unreleased)\n"
+        "\n"
+        "### Changed\n"
+        "- prior bump\n"
+        "\n"
+        "## v0.1.0 - 2026-01-01\n"
+    )
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    assert "## [Unreleased]\n" in rewritten
+    assert "## (unreleased)" not in rewritten
 
 
 def test_release_md_preamble_bullets_do_not_anchor_insert(tmp_path: Path) -> None:

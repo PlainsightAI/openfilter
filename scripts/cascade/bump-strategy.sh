@@ -358,6 +358,20 @@ if unreleased_node is None:
 # Existing Unreleased section — bound it by the next H2 (or EOF) and either
 # append to the existing `### Changed` subsection or create one.
 unreleased_idx = h2_line_idx(unreleased_node)
+
+# Normalize legacy `## Unreleased` and `## (unreleased)` shapes to the
+# bracketed `## [Unreleased]` form on first touch. The cascade can otherwise
+# leave a consumer in a state the validator (changelog-parser-action) won't
+# parse: that side only accepts `[Unreleased]` (`/^\[\s*unreleased\s*\]$/i`),
+# so bare `Unreleased` would land the bullet correctly here but fail
+# `check-release-log` on the bump PR. Doing the normalization in the
+# rewriter (vs. broadening the parser) keeps the validator strictly aligned
+# with Keep a Changelog convention and lets consumer files migrate
+# incrementally — every bump touches the header once and brings it into the
+# canonical shape.
+if heading_text(unreleased_node).lower() != "[unreleased]":
+    lines[unreleased_idx] = "## [Unreleased]\n"
+
 later_h2 = next(
     (h for h in h2_headings if h2_line_idx(h) > unreleased_idx),
     None,
