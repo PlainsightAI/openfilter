@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import time
 from queue import Queue
 from threading import Thread
 
@@ -62,10 +63,54 @@ class Webvis(Filter):
 
         configure_http_security(app, auth_token=auth_token, cors_origins=cors_origins)
 
+        async def stream_data(topic: str | None = None):
+            configured_topics = getattr(self, 'configured_topics', set())
+            is_multi_topic_config = len(configured_topics) > 1
+
+            # If topic is 'main' but not in streams, treat it as default fallback (None)
+            is_default = (topic is None or (topic == 'main' and 'main' not in self.streams))
+
+            # Decide on connection whether this stream is in flat mode (locked for this connection's lifetime)
+            if is_default:
+                # Flat mode if not statically multi-topic, and at most one active topic in current data
+                is_flat = (not is_multi_topic_config) and (len(self.current_data) <= 1)
+            else:
+                is_flat = True
+
+            def gen(flat: bool):
+                while True:
+                    current_data_snapshot = dict(self.current_data)
+                    if flat:
+                        if is_default:
+                            # Use the single active topic if present, otherwise default to 'main'
+                            active_topic = list(current_data_snapshot.keys())[0] if current_data_snapshot else 'main'
+                        else:
+                            active_topic = topic
+                        data = current_data_snapshot.get(active_topic, {})
+                    else:
+                        data = current_data_snapshot
+                    
+                    if self.enable_json:
+                        yield f"data: {json.dumps(data)}\n\n"
+                    else:
+                        yield f"data: {data}\n\n"
+                    time.sleep(self.sleep_interval)
+
+            return StreamingResponse(gen(is_flat), media_type='text/event-stream')
+
+        @app.get('/data')
+        async def get_data_default():
+            return await stream_data(topic=None)
+
+        @app.get('/{topic:str}/data')
+        async def get_data(topic: str):
+            return await stream_data(topic=topic)
+
         @app.get('/')
         @app.get('/{topic:str}')
         def topic(topic: str | None = None):
-            topic = (list(self.streams) + ['main'])[0] if topic is None else topic
+            if topic is None or (topic == 'main' and 'main' not in self.streams):
+                topic = (list(self.streams) + ['main'])[0]
             queue = self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))
 
             def gen():
@@ -73,20 +118,6 @@ class Webvis(Filter):
                     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + queue.get().bgr.jpg + b'\r\n')
 
             return StreamingResponse(gen(), media_type='multipart/x-mixed-replace; boundary=frame')
-        
-        @app.get('/{topic:str}/data')
-        async def get_data():
-            from fastapi.responses import StreamingResponse
-            import time
-            def gen():
-                while True:
-                    if self.enable_json:
-                        yield f"data: {json.dumps(self.current_data)}\n\n"
-                    else:
-                        yield f"data: {self.current_data}\n\n"
-                    time.sleep(self.sleep_interval)
-
-            return StreamingResponse(gen(), media_type='text/event-stream')
 
         return app
 
@@ -159,8 +190,21 @@ class Webvis(Filter):
 
     def setup(self, config):
         self.streams = {}  # {'topic': Queue, ...}
+        self.current_data = {}  # {'topic': dict, ...}
         self.enable_json = config.enable_json
         self.sleep_interval = config.sleep_interval
+
+        # Parse configured topics to know if we are in a static multi-topic configuration
+        self.configured_topics = set()
+        if config.sources:
+            for source in config.sources:
+                try:
+                    parsed = self.parse_topics(source)
+                    if parsed and parsed[1]:
+                        for _, target in parsed[1]:
+                            self.configured_topics.add(target)
+                except Exception:
+                    pass
 
         Thread(target=self.serve, args=(config.host, config.port, config.auth_token, config.cors_origins), daemon=True).start()
 
@@ -169,7 +213,7 @@ class Webvis(Filter):
             if frame.has_image:
                 if (queue := self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))).empty():
                     queue.put(frame)
-                    self.current_data = frame.data
+                    self.current_data[topic] = frame.data
                 else:
                     logger.debug('Skipping frames')
 
