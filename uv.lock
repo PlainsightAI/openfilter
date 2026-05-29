@@ -1089,6 +1089,12 @@ webvis = [
     { name = "uvicorn" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-benchmark" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'all'", specifier = "~=16.1.0" },
@@ -1141,6 +1147,12 @@ requires-dist = [
     { name = "wheel", marker = "extra == 'dev'", specifier = "~=0.46.2" },
 ]
 provides-extras = ["dev", "mqtt-out", "recorder", "image-in", "image-out", "rest", "util", "video", "video-in", "video-out", "webvis", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-benchmark", specifier = ">=5.1.0" },
+]
 
 [[package]]
 name = "openlineage-python"
