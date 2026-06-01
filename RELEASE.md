@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.1.1 - 2026-06-01
+
 ### Fixed
 
 - **Multi-topic Subject Data Streaming support for Webvis**: Webvis now maintains isolated frame subject metadata per-topic, exposing them individually at `/{topic}/data` while providing a combined overview of all topic data at `/data` or `/main/data` for multi-topic pipelines. Backwards compatibility for single-topic pipelines is fully preserved. Added cheap concurrency snapshots of current data and reordered FastAPI routes to ensure that `/data` requests are not incorrectly matched by the `/topic` wildcard image endpoint.
