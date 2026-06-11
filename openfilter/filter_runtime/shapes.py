@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from .output import FilterOutputSchema
 
@@ -272,6 +272,22 @@ class Pose(FilterOutputSchema):
     skeleton: Literal["coco-17"] | None = Field(
         default=None,
         description="Keypoint-order convention; consumers infer edges from this.",
+    )
+
+    # Standard JSON Schema (draft 2020-12) mirror of `_validate_skeleton_arity`
+    # so stock validators (Ajv, santhosh-tekuri) enforce the coco-17 arity from
+    # `emit_schema()` alone — no openfilter custom-keyword vocabulary needed
+    # (FILTER-454 slice A). `__init_subclass__` merges `$id` into this dict.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {
+                "properties": {"skeleton": {"const": "coco-17"}},
+                "required": ["skeleton"],
+            },
+            "then": {
+                "properties": {"keypoints": {"minItems": 17, "maxItems": 17}},
+            },
+        }
     )
 
     @model_validator(mode="after")

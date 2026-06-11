@@ -360,6 +360,30 @@ def test_pose_coco17_rejects_wrong_arity() -> None:
         )
 
 
+def test_pose_emits_coco17_arity_if_then() -> None:
+    """Slice A (FILTER-454): the coco-17 keypoint-arity invariant — Pydantic-only
+    via `_validate_skeleton_arity` — is mirrored into standard JSON Schema
+    `if`/`then` so stock validators (Ajv, santhosh-tekuri) enforce it from
+    `emit_schema()` alone, without the openfilter custom-keyword vocabulary."""
+    schema = Pose.emit_schema()
+    assert schema["if"] == {
+        "properties": {"skeleton": {"const": "coco-17"}},
+        "required": ["skeleton"],
+    }
+    assert schema["then"] == {
+        "properties": {"keypoints": {"minItems": 17, "maxItems": 17}},
+    }
+    # $id still merges in alongside the if/then (json_schema_extra co-exists).
+    assert schema["$id"] == f"{SHAPE_ID_BASE}/pose/v1"
+
+
+def test_pose_arity_if_then_travels_into_defs() -> None:
+    """The constraint rides with the Pose `$defs` entry wherever Pose is
+    `$ref`'d, so consumers validating a PoseSet get it too."""
+    pose_def = PoseSet.emit_schema()["$defs"]["Pose"]
+    assert "if" in pose_def and "then" in pose_def
+
+
 def test_classification_result_supports_multilabel() -> None:
     single = ClassificationResult(classes=["dog"], confidences=[0.9])
     assert single.multilabel is False
