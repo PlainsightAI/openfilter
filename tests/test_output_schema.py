@@ -380,8 +380,10 @@ def test_pose_emits_coco17_arity_if_then() -> None:
 def test_pose_arity_if_then_travels_into_defs() -> None:
     """The constraint rides with the Pose `$defs` entry wherever Pose is
     `$ref`'d, so consumers validating a PoseSet get it too."""
+    schema = Pose.emit_schema()
     pose_def = PoseSet.emit_schema()["$defs"]["Pose"]
-    assert "if" in pose_def and "then" in pose_def
+    assert pose_def["if"] == schema["if"]
+    assert pose_def["then"] == schema["then"]
 
 
 def test_classification_result_supports_multilabel() -> None:
