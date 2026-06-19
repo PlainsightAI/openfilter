@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from .output import FilterOutputSchema
 
@@ -47,11 +47,14 @@ __all__ = [
     "OCRSpan",
     "OCRSpanSet",
     "ClassificationResult",
+    "SKELETON_ARITY",
     "SHAPE_ID_BASE",
 ]
 
 
 SHAPE_ID_BASE = "https://schemas.plainsight.ai/shapes"
+
+SKELETON_ARITY = {"coco-17": 17}
 
 
 def _shape_id(slug: str) -> str:
@@ -274,13 +277,36 @@ class Pose(FilterOutputSchema):
         description="Keypoint-order convention; consumers infer edges from this.",
     )
 
+    # Standard JSON Schema (draft 2020-12) mirror of `_validate_skeleton_arity`
+    # so stock validators (Ajv, santhosh-tekuri) enforce the coco-17 arity from
+    # `emit_schema()` alone — no openfilter custom-keyword vocabulary needed
+    # (FILTER-454 slice A). `__init_subclass__` merges `$id` into this dict.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {
+                "properties": {"skeleton": {"const": next(iter(SKELETON_ARITY))}},
+                "required": ["skeleton"],
+            },
+            "then": {
+                "properties": {
+                    "keypoints": {
+                        "minItems": next(iter(SKELETON_ARITY.values())),
+                        "maxItems": next(iter(SKELETON_ARITY.values())),
+                    }
+                },
+            },
+        }
+    )
+
     @model_validator(mode="after")
     def _validate_skeleton_arity(self) -> "Pose":
-        if self.skeleton == "coco-17" and len(self.keypoints) != 17:
-            raise ValueError(
-                f"Pose.skeleton='coco-17' requires 17 keypoints, "
-                f"got {len(self.keypoints)}"
-            )
+        if self.skeleton in SKELETON_ARITY:
+            expected = SKELETON_ARITY[self.skeleton]
+            if len(self.keypoints) != expected:
+                raise ValueError(
+                    f"Pose.skeleton={self.skeleton!r} requires {expected} keypoints, "
+                    f"got {len(self.keypoints)}"
+                )
         return self
 
 
