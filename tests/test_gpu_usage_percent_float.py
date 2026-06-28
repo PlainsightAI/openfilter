@@ -27,9 +27,9 @@ def test_gpu_usage_percent_is_float():
     assert metrics.gpu_usage_percent == 55.0
 
 
-def test_gpu_usage_percent_is_float_when_gpu0_absent():
-    """The default path (no gpu0 present) still yields a float, not an int."""
-    metrics = _run_one_iteration([GPUMetrics(index=1, gpu_util=42, mem_used_mb=1024)])
+def test_gpu_usage_percent_is_float_when_gpu_idle():
+    """An idle GPU reports integer gpu_util==0; without the float() cast this path would emit an int 0 and be rejected by the DOUBLE-locked Cloud Monitoring descriptor, so this test fails on the un-cast code."""
+    metrics = _run_one_iteration([GPUMetrics(index=0, gpu_util=0, mem_used_mb=1024)])
 
     assert type(metrics.gpu_usage_percent) is float
     assert metrics.gpu_usage_percent == 0.0
