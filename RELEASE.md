@@ -4,6 +4,12 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.1.2 - 2026-06-28
+
+### Fixed
+
+- **GPU usage percent emitted as float for Cloud Monitoring ([FILTER-585](https://plainsight-ai.atlassian.net/browse/FILTER-585))**: `Metrics.gpu_thread_func` now casts `gpu_usage_percent` to `float` before export. NVML reports `gpu_util` as an integer, but the Cloud Monitoring descriptor `openfilter_gpu_usage_percent` is type-locked to DOUBLE, so each export batch had one point rejected with `value type for metric must be DOUBLE, but is INT64`. The cast is targeted to this single summary field; the per-device `gpuN` series and the legitimately INT64 descriptors (`gpu_accessible`, `camera_connected`) are unchanged.
+
 ## v1.1.1 - 2026-06-01
 
 ### Fixed
