@@ -134,7 +134,7 @@ class Metrics:
 
                 self.gpu = gpu
                 self.gpu_accessible = 1
-                self.gpu_usage_percent = gpu.get('gpu0', 0.0)
+                self.gpu_usage_percent = float(gpu.get('gpu0', 0.0))  # NVML gpu_util is int; Cloud Monitoring's DOUBLE descriptor rejects it otherwise
 
         except Exception as exc:
             logger.error(exc)
