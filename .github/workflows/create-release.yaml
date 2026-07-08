@@ -24,7 +24,7 @@ jobs:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -47,7 +47,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run changelog parser
         id: changelog
@@ -134,7 +134,7 @@ jobs:
       already_exists: ${{ steps.check_pypi.outputs.already_exists }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Write Git SHA to VERSION_SHA
         run: echo "${{ github.sha }}" > VERSION_SHA
@@ -224,7 +224,7 @@ jobs:
       url: https://pypi.org/project/${{ needs.prepare-pypi-publish.outputs.package_name }}/
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -340,7 +340,7 @@ jobs:
             image: plainsightai/openfilter-webvis
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -360,7 +360,7 @@ jobs:
           echo "tags=${IMAGE}:${VERSION},${IMAGE}:latest" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: "."
           file: ${{ matrix.filter.dockerfile }}

@@ -59,7 +59,7 @@ jobs:
       count: ${{ steps.discover.outputs.count || steps.empty_outputs.outputs.count }}
     steps:
       - name: Checkout openfilter
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python (for check_constraint.py)
         uses: actions/setup-python@v6
@@ -145,7 +145,7 @@ jobs:
       AUTO_MERGE: ${{ github.event_name == 'workflow_dispatch' && inputs.auto_merge_override && 'false' || 'true' }}
     steps:
       - name: Checkout openfilter
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python (for bump-strategy.sh)
         uses: actions/setup-python@v6
@@ -186,7 +186,7 @@ jobs:
     permissions: {}
     steps:
       - name: Slack on failure
-        uses: slackapi/slack-github-action@v2.1.1
+        uses: slackapi/slack-github-action@v3.0.3
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
