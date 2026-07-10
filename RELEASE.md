@@ -14,7 +14,7 @@ OpenFilter Library release notes
 
 ### Fixed
 
-- **GPU usage percent emitted as float for Cloud Monitoring ([FILTER-585](https://plainsight-ai.atlassian.net/browse/FILTER-585))**: `Metrics.gpu_thread_func` now casts `gpu_usage_percent` to `float` before export. NVML reports `gpu_util` as an integer, but the Cloud Monitoring descriptor `openfilter_gpu_usage_percent` is type-locked to DOUBLE, so each export batch had one point rejected with `value type for metric must be DOUBLE, but is INT64`. The cast is targeted to this single summary field; the per-device `gpuN` series and the legitimately INT64 descriptors (`gpu_accessible`, `camera_connected`) are unchanged.
+- **GPU usage percent emitted as float for Cloud Monitoring**: `Metrics.gpu_thread_func` now casts `gpu_usage_percent` to `float` before export. NVML reports `gpu_util` as an integer, but the Cloud Monitoring descriptor `openfilter_gpu_usage_percent` is type-locked to DOUBLE, so each export batch had one point rejected with `value type for metric must be DOUBLE, but is INT64`. The cast is targeted to this single summary field; the per-device `gpuN` series and the legitimately INT64 descriptors (`gpu_accessible`, `camera_connected`) are unchanged.
 
 ## v1.1.1 - 2026-06-01
 
@@ -26,9 +26,9 @@ OpenFilter Library release notes
 
 ### Added
 
-- **OpenTelemetry MQ hop spans + per-frame trace propagation ([PLAT-866](https://plainsight-ai.atlassian.net/browse/PLAT-866), #99)**: Every filter-to-filter hop now produces `mq.send` / `mq.recv` outer hop spans (attributes: `topic`, `payload_bytes`, `frame.id`, `frame.format`, `mq.id`), with nested `frame.serialize` / `frame.deserialize` CPU sub-spans and `zmq.send_multipart` / `zmq.recv_multipart` kernel-syscall sub-spans. `frame.encode_jpg` / `frame.decode_jpg` codec sub-spans fire on the jpg transport path only. Per-frame W3C trace context (`traceparent` / `tracestate`) now travels inside the ZMQ envelope via the standard `opentelemetry.propagate.inject` / `extract` (`TraceContextTextMapPropagator`); the consumer-side `{FilterClass}.process` span (PLAT-848) parents on the per-frame context extracted from the envelope, so filter A's frame-17 spans and filter B's frame-17 spans share a single trace ID and nest correctly. The `TRACEPARENT` env-var fallback (PLAT-848 behavior) is retained for source filters that never call `mq.recv` (e.g. `VideoIn`). When tracing is disabled (the default, `TELEMETRY_EXPORTER_TYPE=silent`), the hot path short-circuits cleanly: codec / kernel sub-spans bail on a single `is_recording()` check before any tracer lookup or `Span` allocation, and the per-recv `time_ns()` brackets + per-part byte tally in `ZMQReceiver.recv_once` / `ZMQSender.send_maybe` are gated on the module-level hop tracer being set (so they don't run either). No new environment variables.
-- **Emit JSON Schema if/then for Pose coco-17 arity ([FILTER-454](https://plainsight-ai.atlassian.net/browse/FILTER-454))**: The `Pose` output shape now emits standard JSON Schema (draft 2020-12) `if`/`then` constraints for the coco-17 keypoint-arity invariant. When `skeleton == "coco-17"`, `keypoints` must contain exactly 17 entries. This closes the validation asymmetry between Pydantic producers and raw JSON consumers.
-- **Windowed async batch dispatch for `process_batch()`** ([FILTER-457](https://plainsight-ai.atlassian.net/browse/FILTER-457), [FILTER-458](https://plainsight-ai.atlassian.net/browse/FILTER-458), [FILTER-459](https://plainsight-ai.atlassian.net/browse/FILTER-459), [FILTER-460](https://plainsight-ai.atlassian.net/browse/FILTER-460), #95): four composable, opt-in additions to the runtime batch path. `process_batch()` result slots may now be deferred `Callable`s that `mq.send` resolves lazily, so a filter can hand batch work to a worker thread instead of blocking the loop thread on the batch's wall-clock duration. A new `accumulate_window` config decouples the runtime ring buffer from `batch_size`, with a public `Filter.select_batch()` hook to pick which frames are dispatched. `Filter.flush_batch()` plus `batch_trigger: "auto" | "manual"` give filters explicit control over when a batch drains. A `batch_workers` pool runs `process_batch()` on a `ThreadPoolExecutor` with semaphore backpressure, so the loop accumulates the next batch while previous batches are still in flight. All four preserve existing behavior when unset (`batch_workers=1`, `batch_trigger="auto"`, `accumulate_window` unset).
+- **OpenTelemetry MQ hop spans + per-frame trace propagation (#99)**: Every filter-to-filter hop now produces `mq.send` / `mq.recv` outer hop spans (attributes: `topic`, `payload_bytes`, `frame.id`, `frame.format`, `mq.id`), with nested `frame.serialize` / `frame.deserialize` CPU sub-spans and `zmq.send_multipart` / `zmq.recv_multipart` kernel-syscall sub-spans. `frame.encode_jpg` / `frame.decode_jpg` codec sub-spans fire on the jpg transport path only. Per-frame W3C trace context (`traceparent` / `tracestate`) now travels inside the ZMQ envelope via the standard `opentelemetry.propagate.inject` / `extract` (`TraceContextTextMapPropagator`); the consumer-side `{FilterClass}.process` span parents on the per-frame context extracted from the envelope, so filter A's frame-17 spans and filter B's frame-17 spans share a single trace ID and nest correctly. The `TRACEPARENT` env-var fallback is retained for source filters that never call `mq.recv` (e.g. `VideoIn`). When tracing is disabled (the default, `TELEMETRY_EXPORTER_TYPE=silent`), the hot path short-circuits cleanly: codec / kernel sub-spans bail on a single `is_recording` check before any tracer lookup or `Span` allocation, and the per-recv `time_ns` brackets + per-part byte tally in `ZMQReceiver.recv_once` / `ZMQSender.send_maybe` are gated on the module-level hop tracer being set (so they don't run either). No new environment variables.
+- **Emit JSON Schema if/then for Pose coco-17 arity**: The `Pose` output shape now emits standard JSON Schema (draft 2020-12) `if`/`then` constraints for the coco-17 keypoint-arity invariant. When `skeleton == "coco-17"`, `keypoints` must contain exactly 17 entries. This closes the validation asymmetry between Pydantic producers and raw JSON consumers.
+- **Windowed async batch dispatch for `process_batch`** (#95): four composable, opt-in additions to the runtime batch path. `process_batch` result slots may now be deferred `Callable`s that `mq.send` resolves lazily, so a filter can hand batch work to a worker thread instead of blocking the loop thread on the batch's wall-clock duration. A new `accumulate_window` config decouples the runtime ring buffer from `batch_size`, with a public `Filter.select_batch` hook to pick which frames are dispatched. `Filter.flush_batch` plus `batch_trigger: "auto" | "manual"` give filters explicit control over when a batch drains. A `batch_workers` pool runs `process_batch` on a `ThreadPoolExecutor` with semaphore backpressure, so the loop accumulates the next batch while previous batches are still in flight. All four preserve existing behavior when unset (`batch_workers=1`, `batch_trigger="auto"`, `accumulate_window` unset).
 
 ## v1.0.0 - 2026-05-18
 
@@ -38,9 +38,9 @@ OpenFilter Library release notes
 
 Each filter can now publish a build-time JSON Schema artifact alongside the runtime validation OpenFilter has always done — consumers can validate, document, and render configuration UIs against a filter without ever running it.
 
-- **Typed `FilterConfigBase` with `emit_schema()`** ([FILTER-441](https://plainsight-ai.atlassian.net/browse/FILTER-441), #86): filters can declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. `Managed` / `Resolve` helpers mark fields as orchestrator-controlled or platform-resolved.
-- **`FilterOutputSchema` + `frame.data` shape catalog** ([FILTER-444](https://plainsight-ai.atlassian.net/browse/FILTER-444), #88): declarative `frame.data` shape declaration. The catalog at `openfilter.filter_runtime.shapes` ships canonical types — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference shapes via `$ref` instead of negotiating dialects out-of-band.
-- **`openfilter emit-schema` CLI** ([FILTER-442](https://plainsight-ai.atlassian.net/browse/FILTER-442), #87): emits a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts `module:Class` to disambiguate.
+- **Typed `FilterConfigBase` with `emit_schema`** (#86): filters can declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. `Managed` / `Resolve` helpers mark fields as orchestrator-controlled or platform-resolved.
+- **`FilterOutputSchema` + `frame.data` shape catalog** (#88): declarative `frame.data` shape declaration. The catalog at `openfilter.filter_runtime.shapes` ships canonical types — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference shapes via `$ref` instead of negotiating dialects out-of-band.
+- **`openfilter emit-schema` CLI** (#87): emits a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts `module:Class` to disambiguate.
 
 Reference migrations ship in `filter-template` and `filter-sam3-detector`; every other filter in the library keeps working unchanged through the runtime fallback.
 
@@ -49,11 +49,11 @@ Reference migrations ship in `filter-template` and `filter-sam3-detector`; every
 Two runtime improvements teams have been asking for, landed underneath the compatibility surface:
 
 - **Zero-copy shared-memory transport** between co-located filters (#82) — eliminates inter-stage serialization on the same host.
-- **Batched inference** via `process_batch()` and `batch_size > 1` (#61, v0.1.29) — meaningful throughput gains for SAM3, YOLO, and transformer-OCR filters that benefit from batched forward passes.
+- **Batched inference** via `process_batch` and `batch_size > 1` (#61, v0.1.29) — meaningful throughput gains for SAM3, YOLO, and transformer-OCR filters that benefit from batched forward passes.
 
 ### Production-Grade Engineering
 
-- **First-class observability**: per-filter OpenTelemetry distributed tracing (#79), OpenLineage events (v0.1.5), per-frame timing metrics, and a turn-key Grafana stack (v0.1.21–22). Wall-clock latency dashboards separate `process()` time from ZMQ and queue overhead.
+- **First-class observability**: per-filter OpenTelemetry distributed tracing (#79), OpenLineage events (v0.1.5), per-frame timing metrics, and a turn-key Grafana stack (v0.1.21–22). Wall-clock latency dashboards separate `process` time from ZMQ and queue overhead.
 - **Supply-chain hygiene**: SLSA provenance and SBOM attestations on every Docker image; token auth and CORS for HTTP-exposed filters (v0.1.30).
 - **GPU and deployment ergonomics**: framework-agnostic GPU detection via `ctypes` (v0.1.28); GKE-compatible `LD_LIBRARY_PATH` injection (v0.1.26), so CUDA-dependent images deploy without per-cluster fixups.
 - **Filter library refresh**: new `ImageIn` / `ImageOut` filters for still-image pipelines (#21, #29); `VideoIn` moved off `vidgear` to `cv2` / PyAV (#66, #67) for stability against odd-codec sources.
@@ -61,7 +61,7 @@ Two runtime improvements teams have been asking for, landed underneath the compa
 ### Breaking Changes
 
 - **OTLP gRPC `insecure` flag now inferred from endpoint scheme** (#90): the exporter factory and tracing builder use `urllib.parse.urlparse` on the configured endpoint — `http://` infers plaintext, `https://` infers TLS, and bare `host:port` infers TLS (secure default, matches the OTel SDK). Deployments configuring bare-host endpoints against plaintext collectors must prefix `http://` to maintain prior behavior. Explicit `insecure=` in `exporter_config` / kwargs always wins.
-- **Received `Frame.image` arrays are read-only** (v0.1.28, re-surfaced for the SemVer-stable cut): `topicmsgs2frames` sets `image.flags.writeable = False` on both the zero-copy ZMQ and SHM transport paths — this prevents corruption of shared ring slots and re-enables the `Frame.copy()` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status. Filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy()` — or construct a new frame via `Frame(new_image, frame, frame.format)`. **Symptom if not migrated:** `ValueError: assignment destination is read-only` raised from the mutating call.
+- **Received `Frame.image` arrays are read-only** (v0.1.28, re-surfaced for the SemVer-stable cut): `topicmsgs2frames` sets `image.flags.writeable = False` on both the zero-copy ZMQ and SHM transport paths — this prevents corruption of shared ring slots and re-enables the `Frame.copy` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status. Filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy` — or construct a new frame via `Frame(new_image, frame, frame.format)`. **Symptom if not migrated:** `ValueError: assignment destination is read-only` raised from the mutating call.
 
 ### Stability commitments
 
@@ -79,24 +79,24 @@ The legacy `dict`-based `FilterConfig` continues to coexist with `FilterConfigBa
 
 ### Fixed
 
-- **Silent `$id` inheritance on `FilterOutputSchema` subclasses** ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452), #88): subclasses no longer silently inherit a parent's `$id`. `__init_subclass__` refuses ambiguous construction at class-definition time.
-- **`test_topo_balance_step` shutdown race on Python 3.10** ([FILTER-461](https://plainsight-ai.atlassian.net/browse/FILTER-461), #94): the `TestFilterOld` topology tests poll for runner termination instead of asserting on a single `step()` call after the shutdown sentinel. Test-only change; no runtime impact.
+- **Silent `$id` inheritance on `FilterOutputSchema` subclasses** (#88): subclasses no longer silently inherit a parent's `$id`. `__init_subclass__` refuses ambiguous construction at class-definition time.
+- **`test_topo_balance_step` shutdown race on Python 3.10** (#94): the `TestFilterOld` topology tests poll for runner termination instead of asserting on a single `step` call after the shutdown sentinel. Test-only change; no runtime impact.
 
 ### Infrastructure
 
-- **`gh release create` uses `secrets.GH_BOT_USER_PAT`** ([FILTER-462](https://plainsight-ai.atlassian.net/browse/FILTER-462), #97) so the release-tag push triggers `cascade-on-tag.yaml` automatically. Workflow `permissions:` tightened to `contents: read`.
-- **Tag-triggered bump-PR cascade** ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145), #85): `cascade-on-tag.yaml` workflow + `scripts/cascade/*` replace the previous `cloudbuild-cascade.yaml` mechanism. Fires on release-semver tag push, discovers eligible `filter-*` consumers, opens mechanical bump PRs through `gh-actions-public/open-mechanical-pr`.
+- **`gh release create` uses `secrets.GH_BOT_USER_PAT`** (#97) so the release-tag push triggers `cascade-on-tag.yaml` automatically. Workflow `permissions:` tightened to `contents: read`.
+- **Tag-triggered bump-PR cascade** (#85): `cascade-on-tag.yaml` workflow + `scripts/cascade/*` replace the previous `cloudbuild-cascade.yaml` mechanism. Fires on release-semver tag push, discovers eligible `filter-*` consumers, opens mechanical bump PRs through `gh-actions-public/open-mechanical-pr`.
 - **Cascade widens consumer pyproject upper bounds when target excludes them** (#93): 1.0+ targets widen to next-major (`<2.0.0`).
 
 ## v0.2.1 - 2026-05-16
 
-This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / FILTER-442 / FILTER-444 / FILTER-452) and the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)) under a single tag. `v0.2.0` was never tagged — its contents ship here under `v0.2.1`. Also folded in: the DT-145 cascade infrastructure (#85 / #93) and the FILTER-461 test-fragility fix (#94), all merged after the original `v0.2.0` changelog window.
+This release rolls up the `v0.2.0` declarative-configuration work and the `v0.2.1` OTLP TLS inference change ([#90](https://github.com/PlainsightAI/openfilter/pull/90)) under a single tag. `v0.2.0` was never tagged — its contents ship here under `v0.2.1`. Also folded in: the cascade infrastructure (#85 / #93) and the test-fragility fix (#94), all merged after the original `v0.2.0` changelog window.
 
 ### Added
 
-- **Typed `FilterConfigBase` with `emit_schema()` ([FILTER-441](https://plainsight-ai.atlassian.net/browse/FILTER-441))**: New `openfilter.filter_runtime.FilterConfigBase` lets filters declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. Includes `Managed` / `Resolve` helpers for marking fields as orchestrator-controlled or platform-resolved, plus `MANAGED_KEY` / `RESOLVE_KEY` / `PREFLIGHT_KEY` extensions stamped onto the emitted schema. Fully opt-in — existing `dict`-based `FilterConfig` continues to work unchanged. (#86)
-- **`openfilter emit-schema` CLI ([FILTER-442](https://plainsight-ai.atlassian.net/browse/FILTER-442))**: New CLI subcommand writes a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts an explicit `module:Class` qualifier. Default `--kind config` emits a `FilterConfigBase` schema; `--kind output` emits a `FilterOutputSchema` (FILTER-444). `--include-managed` surfaces orchestrator-controlled fields for platform inspection; default is operator-facing surface only. (#87)
-- **`FilterOutputSchema` + `frame.data` shape catalog ([FILTER-444](https://plainsight-ai.atlassian.net/browse/FILTER-444))**: New `openfilter.filter_runtime.FilterOutputSchema` lets filters declare what they place on `frame.data` as a build-time JSON Schema. The catalog at `openfilter.filter_runtime.shapes` ships canonical shapes — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference catalog shapes via `$ref` instead of negotiating dialects out-of-band. Coordinate conventions (pixel-space for bbox/polygon/mask; normalized `[0, 1]` for keypoints) are documented per shape with the production filter that motivated each choice. Catalog shapes carry runtime-only invariants enforced by pydantic validators: `BoundingBox` xyxy ordering (zero-area allowed, inverted rejected), `ClassificationResult` parallel-array length equality, and `Pose` 17-keypoint arity when `skeleton="coco-17"`. The whole FILTER-444 surface is re-exported from `openfilter.filter_runtime` so `from openfilter.filter_runtime import FilterOutputSchema, Detection` works the same way the FILTER-441 import idiom does. (#88)
+- **Typed `FilterConfigBase` with `emit_schema`**: New `openfilter.filter_runtime.FilterConfigBase` lets filters declare their config surface as a pydantic model and emit it as JSON Schema (draft 2020-12) for build-time consumption. Includes `Managed` / `Resolve` helpers for marking fields as orchestrator-controlled or platform-resolved, plus `MANAGED_KEY` / `RESOLVE_KEY` / `PREFLIGHT_KEY` extensions stamped onto the emitted schema. Fully opt-in — existing `dict`-based `FilterConfig` continues to work unchanged. (#86)
+- **`openfilter emit-schema` CLI**: New CLI subcommand writes a filter's JSON Schema to stdout or `-o <path>`. Auto-detects the canonical class in a module or accepts an explicit `module:Class` qualifier. Default `--kind config` emits a `FilterConfigBase` schema; `--kind output` emits a `FilterOutputSchema`. `--include-managed` surfaces orchestrator-controlled fields for platform inspection; default is operator-facing surface only. (#87)
+- **`FilterOutputSchema` + `frame.data` shape catalog**: New `openfilter.filter_runtime.FilterOutputSchema` lets filters declare what they place on `frame.data` as a build-time JSON Schema. The catalog at `openfilter.filter_runtime.shapes` ships canonical shapes — `BoundingBox`, `Polygon`, `Mask`, `Keypoint`, `Detection`, `DetectionSet`, `Track`, `TrackSet`, `Pose`, `PoseSet`, `KeypointSet`, `OCRSpan`, `OCRSpanSet`, `ClassificationResult` — with stable `$id`s under `https://schemas.plainsight.ai/shapes/<kebab>/v1`. Filters reference catalog shapes via `$ref` instead of negotiating dialects out-of-band. Coordinate conventions (pixel-space for bbox/polygon/mask; normalized `[0, 1]` for keypoints) are documented per shape with the production filter that motivated each choice. Catalog shapes carry runtime-only invariants enforced by pydantic validators: `BoundingBox` xyxy ordering (zero-area allowed, inverted rejected), `ClassificationResult` parallel-array length equality, and `Pose` 17-keypoint arity when `skeleton="coco-17"`. The whole output-schema surface is re-exported from `openfilter.filter_runtime` so `from openfilter.filter_runtime import FilterOutputSchema, Detection` works the same way the config-schema import idiom does. (#88)
 
 ### Changed
 
@@ -104,8 +104,8 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Fixed
 
-- **Silent `$id` inheritance on `FilterOutputSchema` subclasses ([FILTER-452](https://plainsight-ai.atlassian.net/browse/FILTER-452))**: A subclass of any `$id`-bearing `FilterOutputSchema` (catalog shape or filter-author output) that did not explicitly override `__schema_id__` silently inherited the parent's `$id` on the wire, causing two distinct classes to claim the same JSON Schema identity for `$ref` resolution. `__init_subclass__` now refuses to construct such subclasses at class-definition time; authors must override `__schema_id__` with their own URI or set it to `None` as an explicit opt-out. (#88)
-- **`test_topo_balance_step` shutdown race on Python 3.10 ([FILTER-461](https://plainsight-ai.atlassian.net/browse/FILTER-461))**: After PR #82's zero-copy IPC tightened pipeline timing, four `TestFilterOld` topology tests' shutdown assertions started failing on 3.10 — a single `runner.step()` immediately after `qout.put(None)` was racing the filters' drain-and-report path. New `wait_for_runner_exit` helper polls `step()` up to 5 s for the exit-codes list. Test-only change, no runtime impact. (#94)
+- **Silent `$id` inheritance on `FilterOutputSchema` subclasses**: A subclass of any `$id`-bearing `FilterOutputSchema` (catalog shape or filter-author output) that did not explicitly override `__schema_id__` silently inherited the parent's `$id` on the wire, causing two distinct classes to claim the same JSON Schema identity for `$ref` resolution. `__init_subclass__` now refuses to construct such subclasses at class-definition time; authors must override `__schema_id__` with their own URI or set it to `None` as an explicit opt-out. (#88)
+- **`test_topo_balance_step` shutdown race on Python 3.10**: After PR #82's zero-copy IPC tightened pipeline timing, four `TestFilterOld` topology tests' shutdown assertions started failing on 3.10 — a single `runner.step` immediately after `qout.put(None)` was racing the filters' drain-and-report path. New `wait_for_runner_exit` helper polls `step` up to 5 s for the exit-codes list. Test-only change, no runtime impact. (#94)
 
 ### Removed
 
@@ -113,7 +113,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Infrastructure
 
-- **Tag-triggered bump-PR cascade ([DT-145](https://plainsight-ai.atlassian.net/browse/DT-145))**: New `cascade-on-tag.yaml` workflow and `scripts/cascade/{discover.sh,bump-and-pr.sh,bump-strategy.sh,check_constraint.py}` replace the previous `cloudbuild-cascade.yaml` mechanism (`scripts/build-filters.sh` removed in the same change). Fires on release-semver tag push, discovers eligible `filter-*` consumers via the GitHub Contents API + PEP 621 specifier intersection, opens mechanical bump PRs through `PlainsightAI/gh-actions-public/open-mechanical-pr`. Auto-merge enabled by default on bot PRs; `workflow_dispatch` inputs (`dry_run`, `single_filter`, `filter_subset`, `auto_merge_override`) support staged rollouts. (#85)
+- **Tag-triggered bump-PR cascade**: New `cascade-on-tag.yaml` workflow and `scripts/cascade/{discover.sh,bump-and-pr.sh,bump-strategy.sh,check_constraint.py}` replace the previous `cloudbuild-cascade.yaml` mechanism (`scripts/build-filters.sh` removed in the same change). Fires on release-semver tag push, discovers eligible `filter-*` consumers via the GitHub Contents API + PEP 621 specifier intersection, opens mechanical bump PRs through `PlainsightAI/gh-actions-public/open-mechanical-pr`. Auto-merge enabled by default on bot PRs; `workflow_dispatch` inputs (`dry_run`, `single_filter`, `filter_subset`, `auto_merge_override`) support staged rollouts. (#85)
 - **Cascade widens consumer pyproject upper bounds when target excludes them**: `bump-strategy.sh` now rewrites `<X` / `<=X` upper bounds in consumer pyproject pins when the target openfilter version would otherwise be excluded. Rule: 0.X targets widen to next-minor; 1.0+ targets widen to next-major. Without this, every consumer pinning `>=0.1.30,<0.2.0` (the org-canonical pattern) would skip the cascade for any minor/major openfilter bump — 30 of 55 `filter-*` repos in the current sweep. Lower-bound exclusions (`>=X`) and `!=X` exclusions still skip per the prior behavior. (#93)
 
 ## v0.1.30 - 2026-04-21
@@ -139,7 +139,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Added
 
-- **Frame accumulation support for batched processing**: Filters can now set `batch_size > 1` to accumulate frames and process them in batches via `process_batch()`. Includes timeout-based flushing, proper locking, and backward compatibility with single-frame `process()`.
+- **Frame accumulation support for batched processing**: Filters can now set `batch_size > 1` to accumulate frames and process them in batches via `process_batch`. Includes timeout-based flushing, proper locking, and backward compatibility with single-frame `process`.
 - **Single batch watcher thread**: Replaced per-timeout `threading.Timer` with a single long-lived daemon thread for batch flush monitoring, reducing thread churn in high-throughput filters.
 
 ## v0.1.28 - 2026-04-13
@@ -147,8 +147,8 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 ### Breaking Changes
 
 - **Received `Frame.image` arrays are now read-only**: `topicmsgs2frames` sets `image.flags.writeable = False` on both the zero-copy ZMQ path and the SHM path, so `frame.image` received from upstream can no longer be mutated in place.
-- **Motivation**: prevents corruption of live SHM ring slots (reused round-robin by the sender) and re-enables the `Frame.copy()` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status.
-- **Migration**: filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy()` — or construct a new frame via `Frame(new_image, frame, frame.format)`.
+- **Motivation**: prevents corruption of live SHM ring slots (reused round-robin by the sender) and re-enables the `Frame.copy` share-buffer fast path and `Frame.jpg` encode caching, both of which gate on read-only status.
+- **Migration**: filters that mutate `frame.image` in place (e.g. `cv2.rectangle(frame.image, ...)`, `frame.image[y, x] = ...`) must take a local copy first — `image = frame.image.copy` — or construct a new frame via `Frame(new_image, frame, frame.format)`.
 - **Symptom if not migrated**: `ValueError: assignment destination is read-only` raised from the mutating call.
 
 ### Added
@@ -182,7 +182,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Added
 
-- **CUDA/GPU validation at filter runtime startup**: Filters with `device=cuda` or `device=auto` now validate GPU availability before processing begins. Explicit CUDA requests fail immediately with a clear error if CUDA is unavailable or `torch.cuda.is_available()` raises an exception. Auto mode falls back to CPU gracefully. Includes device index validation for multi-GPU setups. (22 test scenarios)
+- **CUDA/GPU validation at filter runtime startup**: Filters with `device=cuda` or `device=auto` now validate GPU availability before processing begins. Explicit CUDA requests fail immediately with a clear error if CUDA is unavailable or `torch.cuda.is_available` raises an exception. Auto mode falls back to CPU gracefully. Includes device index validation for multi-GPU setups. (22 test scenarios)
 
 ## v0.1.23 - 2026-03-18
 
@@ -215,15 +215,15 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
   - Per-Filter Departure Age (lat_out) for identifying per-filter contribution
   - ZMQ + Queue Transit Overhead (transport cost isolated from process time)
 - **Cumulative Counters dashboard row**: 3 stat panels (Frames Processed, Megapixels Processed, System Uptime)
-- **Latency stat boxes** in Throughput row: End-to-End Latency, Max Frame Age, Avg Frame Age, Total process() Time with color thresholds
+- **Latency stat boxes** in Throughput row: End-to-End Latency, Max Frame Age, Avg Frame Age, Total process Time with color thresholds
 - **Monitoring documentation** (`docs/monitoring.md`): comprehensive panel-by-panel guide with timing concept explanations and mermaid diagrams
 
 ### Changed
 
 - **Dashboard queries**: replaced hardcoded per-filter-class metric targets with auto-discovery queries (`{__name__=~".+_fps"}`, etc.) — dashboard now works with any filter class without modification
 - **Pipeline FPS stat**: now shows source frame rate only (`filter_id=video_in`) instead of sum across all filters
-- **GPU Accessible stat**: changed from `min()` to `max()` so any available GPU is detected
-- **End-to-End Timing right panel**: renamed to "Total Processing Time (sum of process(), EMA)" to clarify it measures CPU/GPU work only
+- **GPU Accessible stat**: changed from `min` to `max` so any available GPU is detected
+- **End-to-End Timing right panel**: renamed to "Total Processing Time (sum of process, EMA)" to clarify it measures CPU/GPU work only
 - **Firing Alerts**: expanded to full-width panel
 - Renamed `docs/monitoring-demo.md` to `docs/monitoring.md` with Docusaurus frontmatter
 
@@ -233,7 +233,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 - Documentation in `video-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
 - Documentation in `image-in-filter.md`: standardized env var examples and API reference to use `FILTER_*` prefix
 - Documentation in `image-out-filter.md`: standardized env var examples to use `FILTER_*` prefix
-- `VIDEO_OUT_PARAMS` / `FILTER_PARAMS`: removed `.lower()` that corrupted case-sensitive JSON string values
+- `VIDEO_OUT_PARAMS` / `FILTER_PARAMS`: removed `.lower` that corrupted case-sensitive JSON string values
 - Inline docstring references updated to show both `FILTER_*` and legacy env var names
 - Fixed `VIDEO_MAXFPS` typo in VideoIn docstring (should be `VIDEO_IN_MAXFPS`)
 
@@ -259,7 +259,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 
 ### Fixed
 
-- Sink filters (returning `None` from `process()`) now correctly record timing metrics. Previously, the timing update code ran after the `None` check, so sink filters never got timing recorded.
+- Sink filters (returning `None` from `process`) now correctly record timing metrics. Previously, the timing update code ran after the `None` check, so sink filters never got timing recorded.
 - Updated existing test assertions to account for timing metadata injection in frame data
 
 ## v0.1.20 - 2026-01-28
@@ -423,7 +423,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
 - Lineage `Start` events now emit filter context with the regular info.
 - renamed `model_version` to `resource_bundle_version` for clarity as it the version for the full bundle rather than any one model.
 - modified FilterContext to emit `openfilter_version` as well.
-- added getters for FilterContext: `FilterContext.get_filter_version()`, `FilterContext.get_resource_bundle_version`, `FilterContext.get_openfilter_version()`, `FilterContext.get_version_sha()` and `FilterContext.get_model_info()`.
+- added getters for FilterContext: `FilterContext.get_filter_version`, `FilterContext.get_resource_bundle_version`, `FilterContext.get_openfilter_version`, `FilterContext.get_version_sha` and `FilterContext.get_model_info`.
 - modified `git_sha` to `version_sha`
 
 ## v0.1.9 - 2025-07-30
@@ -441,7 +441,7 @@ This release rolls up the `v0.2.0` declarative-configuration work (FILTER-441 / 
   - `model_version` (from VERSION.MODEL)
   - `git_sha` (from GITHUB_SHA, set by CI/CD or manually)
   - `models` (from models.toml, with model name, version, and path)
-- The context is accessible via `FilterContext.get(key)`, `FilterContext.as_dict()`, and `FilterContext.log()` for logging/debugging purposes.
+- The context is accessible via `FilterContext.get(key)`, `FilterContext.as_dict`, and `FilterContext.log` for logging/debugging purposes.
 
 ## v0.1.7 - 2025-07-17
 
@@ -539,7 +539,7 @@ trusted
   - Config parsing and normalization
 
 - **Multi-filter Runner**
-  - `run_multi()` to coordinate multiple filters
+  - `run_multi` to coordinate multiple filters
   - Supports coordinated exit via `PROP_EXIT`, `OBEY_EXIT`, `STOP_EXIT`
 
 - **Telemetry and Metrics** (coming soon)
