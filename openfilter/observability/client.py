@@ -11,7 +11,6 @@ import time
 from typing import Optional, Any
 from datetime import datetime, timezone
 import os
-import re
 import logging
 
 from opentelemetry import metrics
@@ -289,18 +288,19 @@ class OpenTelemetryClient:
         'frame_total_time_ms', 'frame_avg_time_ms', 'frame_std_time_ms',
         'uptime_count',
     }
-    # Per-GPU series are emitted with dynamic names (gpu0, gpu1, ..., gpu0_mem, ...),
-    # so they can't live in the static set above; match them by pattern instead.
-    _GPU_GAUGE_PATTERN = re.compile(r'gpu[0-9]+(?:_mem)?')
 
     def _is_gauge_metric(self, name: str) -> bool:
         """Return True if ``name`` is a point-in-time gauge (vs a cumulative counter).
 
-        Covers the static gauge set plus dynamic per-GPU utilization/memory series
-        (``gpuN`` / ``gpuN_mem``). Without the pattern branch these dynamic keys would
-        fall through to counters and accumulate a running sum (e.g. GPU util > 100%).
+        Covers the static gauge set plus the dynamic per-GPU utilization/memory series,
+        which are emitted with runtime names (gpu0, gpu1, ..., gpu0_mem, ...) and so
+        can't live in the static set above. Without the per-GPU branch these keys fall
+        through to counters and accumulate a running sum (e.g. GPU util > 100%).
         """
-        return name in self._GAUGE_METRICS or bool(self._GPU_GAUGE_PATTERN.fullmatch(name))
+        if name in self._GAUGE_METRICS:
+            return True
+        core = name[:-4] if name.endswith('_mem') else name  # strip optional _mem suffix
+        return core.startswith('gpu') and core[3:].isdigit()
 
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
         """Update metrics for a specific filter.
