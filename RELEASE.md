@@ -8,7 +8,7 @@ OpenFilter Library release notes
 
 ### Fixed
 
-- **Per-GPU system metrics emitted as OTel counters instead of gauges ([FILTER-599](https://plainsight-ai.atlassian.net/browse/FILTER-599))**: `OpenTelemetryClient` classified gauge-vs-counter by membership in a static `_GAUGE_METRICS` set, but the per-GPU series (`gpuN`, `gpuN_mem`) are emitted with dynamic names, so they fell through to counters and accumulated a running sum, and the customer-facing "GPU Utilization" tile ramped past 100%. Added pattern-based classification (`gpu[0-9]+(_mem)?`) alongside the static set so per-GPU utilization and memory are emitted as gauges. Genuine counters and the `gpu_usage_percent` / `gpu_accessible` health gauges are unchanged; this also corrects the data type of `gpuN_mem` used by the planned VRAM tile.
+- **Per-GPU system metrics emitted as OTel counters instead of gauges**: `OpenTelemetryClient` classified gauge-vs-counter by membership in a static `_GAUGE_METRICS` set, but the per-GPU series (`gpuN`, `gpuN_mem`) are emitted with dynamic names, so they fell through to counters and accumulated a running sum, and the reported "GPU Utilization" metric ramped past 100%. Added name-based classification so per-GPU utilization and memory series (`gpuN` / `gpuN_mem`) are emitted as gauges alongside the static set. Genuine counters and the `gpu_usage_percent` / `gpu_accessible` health gauges are unchanged; this also corrects the data type of the `gpuN_mem` series.
 
 ## v1.1.2 - 2026-06-28
 
