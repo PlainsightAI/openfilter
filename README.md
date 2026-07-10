@@ -1,4 +1,4 @@
-# <img src="docs/openfilterlogo.png" width="38" align="center" alt="OpenFilter Logo" /> OpenFilter
+# <img src="https://raw.githubusercontent.com/PlainsightAI/openfilter/main/docs/openfilterlogo.png" width="38" align="center" alt="OpenFilter Logo" /> OpenFilter
 
 [![PyPI version](https://img.shields.io/pypi/v/openfilter.svg?style=flat-square)](https://pypi.org/project/openfilter/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/PlainsightAI/openfilter/blob/main/LICENSE)
