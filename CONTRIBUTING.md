@@ -336,7 +336,7 @@ Whether you're contributing a quick fix or a large feature, it's important to un
 
 ### 🛠️ Releasing
 
-- Releases are **cut from the `main` branch**, which always reflects the **latest development version** of OpenFilter.
+- Releases are **cut from the `main` branch** — the single branch every published version comes from, kept in a release-ready state at all times.
 - To create a release from `main`, the following must be true:
   - The `RELEASE.md` file contains an accurate and up-to-date changelog entry for the version.
   - The `VERSION` file matches the version declared in `RELEASE.md`.

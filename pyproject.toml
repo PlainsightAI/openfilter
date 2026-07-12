@@ -8,7 +8,7 @@ include = ["openfilter*"]
 
 [project]
 name = "openfilter"
-readme = "README.md"
+readme = "README.pypi.md"  # generated from README.md by scripts/make_pypi_readme.py
 requires-python = ">=3.10, <3.14"
 license = "Apache-2.0"
 

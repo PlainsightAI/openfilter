@@ -16,6 +16,14 @@ help:
 build-wheel:  ## Build python wheel
 	python -m build --wheel
 
+.PHONY: pypi-readme
+pypi-readme:  ## Regenerate README.pypi.md from README.md
+	python scripts/make_pypi_readme.py
+
+.PHONY: check-pypi-readme
+check-pypi-readme:  ## Fail if README.pypi.md is out of sync with README.md
+	python scripts/make_pypi_readme.py --check
+
 
 .PHONY: test
 test:  ## Run basic unit tests
