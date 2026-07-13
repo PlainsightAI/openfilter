@@ -597,5 +597,71 @@ class TestFilterIdInMetrics(unittest.TestCase):
         self.assertEqual(entry["filter_id"], "")
 
 
+# ===================================================================
+# Group 10: Per-GPU series classify as gauges, not counters (GPU util bug)
+# ===================================================================
+
+class TestGpuGaugeClassification(unittest.TestCase):
+    """Per-GPU util/mem series must be observable gauges, not cumulative counters.
+
+    Regression for the customer-facing GPU Utilization tile climbing past 100%:
+    dynamic keys (gpu0, gpu1, ..., gpu0_mem) are not in the static _GAUGE_METRICS
+    set, so before the pattern-based classifier they became add()-recorded counters
+    and accumulated a running sum.
+    """
+
+    def _make_client(self):
+        c = object.__new__(OpenTelemetryClient)
+        c.enabled = True
+        c.instance_id = "test-instance"
+        c.filter_id = None
+        c.setup_metrics = {}
+        c._lock = __import__("threading").Lock()
+        c._metrics = {}
+        c._values = {}
+        c.meter = Mock()
+        # Real observable gauges expose no add(); spec=[] mirrors that so update_metrics
+        # routes them through the value-store path, not the counter add() path.
+        c.meter.create_observable_gauge.return_value = Mock(spec=[])
+        c.meter.create_counter.return_value = Mock()
+        return c
+
+    def test_is_gauge_metric_matches_per_gpu_series(self):
+        """gpuN and gpuN_mem classify as gauges; genuine counters do not."""
+        c = self._make_client()
+        for name in ("gpu0", "gpu1", "gpu7", "gpu10", "gpu0_mem", "gpu3_mem", "gpu12_mem"):
+            self.assertTrue(c._is_gauge_metric(name), f"{name} should be a gauge")
+        for name in ("frame_count", "megapx_count", "FilterX_ts", "gpu", "gpux", "gpu0_foo", "foo_gpu0"):
+            self.assertFalse(c._is_gauge_metric(name), f"{name} should not be a gauge")
+
+    def test_per_gpu_metrics_create_gauges_not_counters(self):
+        """update_metrics with gpu0/gpu0_mem creates observable gauges, no counters."""
+        c = self._make_client()
+        c.update_metrics({"gpu0": 42.0, "gpu0_mem": 1.5}, "FilterX")
+        self.assertEqual(c.meter.create_observable_gauge.call_count, 2)
+        c.meter.create_counter.assert_not_called()
+
+    def test_per_gpu_gauge_does_not_accumulate(self):
+        """Repeated updates store the latest value, never add() a running sum."""
+        c = self._make_client()
+        c.update_metrics({"gpu0": 40.0}, "FilterX")
+        c.update_metrics({"gpu0": 55.0}, "FilterX")
+        # Gauge instrument must expose no add(); value tracked via _values for callback.
+        instrument = c._metrics["FilterX_gpu0"]
+        self.assertFalse(hasattr(instrument, "add"))
+        self.assertEqual(c._values["FilterX_gpu0"], 55.0)
+
+    def test_genuine_counter_still_a_counter(self):
+        """Non-gauge dynamic metrics still create counters recorded via add()."""
+        c = self._make_client()
+        # A real counter mock exposes .add
+        counter = Mock()
+        c.meter.create_counter.return_value = counter
+        c.update_metrics({"frame_count": 10.0}, "FilterX")
+        c.meter.create_counter.assert_called_once()
+        c.meter.create_observable_gauge.assert_not_called()
+        counter.add.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

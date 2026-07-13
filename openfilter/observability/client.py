@@ -289,6 +289,19 @@ class OpenTelemetryClient:
         'uptime_count',
     }
 
+    def _is_gauge_metric(self, name: str) -> bool:
+        """Return True if ``name`` is a point-in-time gauge (vs a cumulative counter).
+
+        Covers the static gauge set plus the dynamic per-GPU utilization/memory series,
+        which are emitted with runtime names (gpu0, gpu1, ..., gpu0_mem, ...) and so
+        can't live in the static set above. Without the per-GPU branch these keys fall
+        through to counters and accumulate a running sum (e.g. GPU util > 100%).
+        """
+        if name in self._GAUGE_METRICS:
+            return True
+        core = name[:-4] if name.endswith('_mem') else name  # strip optional _mem suffix
+        return core.startswith('gpu') and core[3:].isdigit()
+
     def update_metrics(self, metrics_dict: dict[str, float], filter_name: str):
         """Update metrics for a specific filter.
 
@@ -335,7 +348,7 @@ class OpenTelemetryClient:
                         # Store current value for observable gauges
                         self._values[metric_key] = value
 
-                        if name in self._GAUGE_METRICS:
+                        if self._is_gauge_metric(name):
                             # Use gauge for current values
                             def make_gauge_callback(key, attrs):
                                 attrs = dict(attrs)
