@@ -22,6 +22,7 @@ class WebvisConfig(FilterConfig):
     sleep_interval: float = 1.0
     auth_token: str | None = None
     cors_origins: str | None = None
+    access_log: bool = False
 
 
 class Webvis(Filter):
@@ -50,6 +51,10 @@ class Webvis(Filter):
             credentials disabled). Set specific origins to enable ``Access-Control-Allow-Credentials``.
             Example: ``'https://portal.plainsight.tech,https://localhost:5173'``.
             Also settable via ``FILTER_CORS_ORIGINS`` env var.
+
+        access_log:
+            Whether to enable uvicorn access logging globally for Webvis. Default ``False`` (disabled
+            to avoid excessive log spam from snapshot/polling endpoints). Also settable via ``FILTER_ACCESS_LOG`` env var.
     """
 
     FILTER_TYPE = 'Output'
@@ -135,10 +140,10 @@ class Webvis(Filter):
 
             return resolved_topic, data
 
-        @app.get('/api/snapshot-payload')
-        @app.get('/api/snapshot-payload/{topic:str}')
-        @app.get('/snapshot-payload')
         @app.get('/{topic:str}/snapshot-payload')
+        @app.get('/snapshot-payload')
+        @app.get('/api/snapshot-payload/{topic:str}')
+        @app.get('/api/snapshot-payload')
         def get_snapshot_payload(topic: str | None = None):
             """Serves JPEG frame snapshots along with associated frame metadata packed into response headers.
 
@@ -148,10 +153,6 @@ class Webvis(Filter):
             """
             import urllib.parse
 
-            # If FastAPI's route evaluation matches the wildcard and sets topic to 'api' or 'snapshot-payload', reset it
-            if topic in ('api', 'snapshot-payload'):
-                topic = None
-
             resolved_topic, data = get_metadata_for_topic(topic)
             with self._lock:
                 frame = self.latest_frames.get(resolved_topic)
@@ -160,7 +161,7 @@ class Webvis(Filter):
             headers = {
                 "Access-Control-Expose-Headers": "X-Metadata, X-Topic, X-Timestamp, X-Width, X-Height, X-Format",
                 "X-Topic": urllib.parse.quote(str(resolved_topic)),
-                "X-Metadata": urllib.parse.quote(json.dumps(data)),
+                "X-Metadata": urllib.parse.quote(json.dumps(data, default=str)),
                 "X-Timestamp": str(time.time()),
                 "X-Width": str(frame.width) if frame else "",
                 "X-Height": str(frame.height) if frame else "",
@@ -172,13 +173,11 @@ class Webvis(Filter):
                 
             return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg", headers=headers)
 
-        @app.get('/api/snapshot')
-        @app.get('/api/snapshot/{topic:str}')
-        @app.get('/snapshot')
         @app.get('/{topic:str}/snapshot')
+        @app.get('/snapshot')
+        @app.get('/api/snapshot/{topic:str}')
+        @app.get('/api/snapshot')
         def get_snapshot(topic: str | None = None):
-            if topic in ('api', 'snapshot'):
-                topic = None
             resolved_topic, _ = get_metadata_for_topic(topic)
             with self._lock:
                 frame = self.latest_frames.get(resolved_topic)
@@ -186,15 +185,15 @@ class Webvis(Filter):
                 return Response(status_code=404, content="No snapshot available")
             return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg")
 
-        @app.get('/api/latest-data')
-        @app.get('/api/latest-data/{topic:str}')
-        @app.get('/latest-data')
         @app.get('/{topic:str}/latest-data')
+        @app.get('/latest-data')
+        @app.get('/api/latest-data/{topic:str}')
+        @app.get('/api/latest-data')
         def get_latest_data(topic: str | None = None):
-            if topic in ('api', 'latest-data'):
-                topic = None
             _, data = get_metadata_for_topic(topic)
-            return JSONResponse(content=data)
+            # Use json.dumps with default=str to match SSE semantics and handle non-JSON-serializable metadata gracefully
+            serialized_data = json.dumps(data, default=str)
+            return Response(content=serialized_data, media_type="application/json")
 
         @app.get('/data')
         async def get_data_default():
@@ -222,7 +221,8 @@ class Webvis(Filter):
         return app
 
     def serve(self, host: str | None = None, port: int | None = None,
-              auth_token: str | None = None, cors_origins: str | None = None):
+              auth_token: str | None = None, cors_origins: str | None = None,
+              access_log: bool = False):
         import uvicorn
 
         uvicorn.Server(uvicorn.Config(
@@ -232,7 +232,7 @@ class Webvis(Filter):
             loop       = 'asyncio',
             log_config = None,
             log_level  = (os.getenv('LOG_LEVEL') or 'info').lower(),
-            access_log = False,
+            access_log = access_log,
         )).run()
 
     @classmethod
@@ -244,6 +244,7 @@ class Webvis(Filter):
             "sleep_interval": float,
             "auth_token": str,
             "cors_origins": str,
+            "access_log": bool,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -296,6 +297,7 @@ class Webvis(Filter):
         self.latest_frames = {}  # {'topic': Frame, ...}
         self.enable_json = config.enable_json
         self.sleep_interval = config.sleep_interval
+        self.access_log = config.access_log
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()
@@ -311,7 +313,11 @@ class Webvis(Filter):
 
         self.is_multi_topic_static = len(self.configured_topics) > 1 or (len(config.sources) > 1 if config.sources else False)
 
-        Thread(target=self.serve, args=(config.host, config.port, config.auth_token, config.cors_origins), daemon=True).start()
+        Thread(
+            target=self.serve,
+            args=(config.host, config.port, config.auth_token, config.cors_origins, config.access_log),
+            daemon=True
+        ).start()
 
     def process(self, frames):
         for topic, frame in frames.items():

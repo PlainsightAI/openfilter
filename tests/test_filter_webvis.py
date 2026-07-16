@@ -96,6 +96,17 @@ class TestWebvisConfig(unittest.TestCase):
             normalized = Webvis.normalize_config(config)
             self.assertEqual(normalized.cors_origins, 'https://a.com,https://b.com')
 
+    def test_access_log_default_false(self):
+        config = {'sources': 'tcp://localhost:5550'}
+        normalized = Webvis.normalize_config(config)
+        self.assertFalse(normalized.access_log)
+
+    def test_access_log_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_ACCESS_LOG': 'true'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertTrue(normalized.access_log)
+
 
 class TestWebvisCreateApp(unittest.TestCase):
     """Test the Webvis.create_app() method."""
@@ -581,6 +592,84 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         self.assertEqual(res.headers["X-Topic"], expected_encoded_topic)
         self.assertNotIn("\r", res.headers["X-Topic"])
         self.assertNotIn("\n", res.headers["X-Topic"])
+
+    def test_endpoints_with_non_json_serializable_metadata(self):
+        import numpy as np
+        import urllib.parse
+        import json
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis()
+        
+        # Create a dummy frame and populate latest_frames / current_data with non-JSON-serializable types
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(
+            image=image,
+            data={
+                "camera": "main",
+                "count": np.int64(5),
+                "box": np.array([1, 2, 3]),
+            },
+            format="BGR"
+        )
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # 1. GET /snapshot -> 200, returns jpeg
+        res = client.get('/snapshot')
+        self.assertEqual(res.status_code, 200)
+
+        # 2. GET /snapshot-payload -> 200, returns jpeg + headers, and does not raise 500 error
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        metadata_raw = urllib.parse.unquote(res.headers["X-Metadata"])
+        metadata = json.loads(metadata_raw)
+        self.assertEqual(metadata["count"], "5")
+        self.assertEqual(metadata["box"], "[1 2 3]")
+
+        # 3. GET /latest-data -> 200, returns JSON dict, does not raise 500 error
+        res = client.get('/latest-data')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["count"], "5")
+        self.assertEqual(res.json()["box"], "[1 2 3]")
+
+    def test_endpoints_with_reserved_word_topics(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis()
+        webvis.is_multi_topic_static = True
+        
+        image_api = np.zeros((100, 150, 3), dtype=np.uint8)
+        frame_api = Frame(image=image_api, data={"camera": "api_camera"}, format="BGR")
+
+        image_payload = np.zeros((200, 300, 3), dtype=np.uint8)
+        frame_payload = Frame(image=image_payload, data={"camera": "payload_camera"}, format="BGR")
+
+        webvis.latest_frames = {"api": frame_api, "snapshot-payload": frame_payload}
+        webvis.current_data = {"api": frame_api.data, "snapshot-payload": frame_payload.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # 1. GET /api/snapshot-payload/api -> returns 'api' topic's snapshot-payload
+        res = client.get('/api/snapshot-payload/api')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["X-Topic"], "api")
+        self.assertEqual(res.headers["X-Width"], "150")
+
+        # 2. GET /api/snapshot-payload/snapshot-payload -> returns 'snapshot-payload' topic's snapshot-payload
+        res = client.get('/api/snapshot-payload/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["X-Topic"], "snapshot-payload")
+        self.assertEqual(res.headers["X-Width"], "300")
 
 
 if __name__ == '__main__':
