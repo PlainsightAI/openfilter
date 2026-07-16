@@ -8,6 +8,10 @@ OpenFilter Library release notes
 
 - **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93` and `av` (PyAV) from `~=16.1.0` to `~=17.1.0`. Both vendor ffmpeg, and both linux x86_64 wheels now bundle ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). `av 17.1.0` is the first release that pairs ffmpeg 8.1 with Python 3.10 support (av 18 requires Python >= 3.11); av 16.1.0 and 17.0.0 still bundled the vulnerable ffmpeg 8.0. With both vendored copies remediated, the shared security-scan's default suppression of this CVE is removed in PlainsightAI/gh-actions-public#30.
 
+### Added
+
+- **Snapshot and latest-data REST endpoints for Webvis**: Added `/api/snapshot`, `/api/snapshot-payload`, and `/api/latest-data` endpoints (including topic-specific routes) to support HTTP-based polling. Features automatic flat vs. multi-topic schema resolution to match the SSE `/data` endpoint layout, and reentrant thread-safety locking (`RLock`) on shared data resources.
+
 ### Changed
 
 - Refreshed the dependency floors to current releases: `openlineage-python~=1.51.0`, `requests~=2.34.2`, the OpenTelemetry stack to `~=1.44.0` (`semantic-conventions~=0.65b0`, GCP exporters `~=1.12.0a0`), `pydantic~=2.13.4`, `fastapi~=0.139.2`, `uvicorn~=0.51.0`, `python-multipart~=0.0.32`, `google-cloud-storage~=3.13.0`, `google-cloud-monitoring~=2.31.0`, and the `dev` tooling (`setuptools~=83.0.0`, `pytest~=9.1.1`, `build~=1.5.0`, `docker~=7.2.0`, `wheel~=0.47.0`, `jq~=1.12.0`, `pytest-cov~=7.1.0`). `numpy` is deliberately held at `~=2.2.6` (numpy 2.5 requires Python >= 3.12) and `av` is capped at `~=17.1.0` rather than 18 (av 18 requires Python >= 3.11), preserving the Python 3.10/3.11 support OpenFilter still guarantees. No filter code changes were required; the full non-slow test suite passes against the new set.
