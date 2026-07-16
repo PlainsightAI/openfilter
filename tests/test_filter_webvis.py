@@ -420,5 +420,138 @@ class TestWebvisCreateApp(unittest.TestCase):
         asyncio.run(run_test())
 
 
+class TestWebvisNewEndpoints(unittest.TestCase):
+    """Test the newly added endpoints: snapshot, snapshot-payload, and latest-data."""
+
+    def _make_webvis(self):
+        webvis = object.__new__(Webvis)
+        webvis.streams = {}
+        webvis.enable_json = False
+        webvis.sleep_interval = 1.0
+        webvis.current_data = {}
+        webvis.latest_frames = {}
+        webvis.configured_topics = set()
+        webvis.is_multi_topic_static = False
+        return webvis
+
+    def test_endpoints_404_when_no_frame(self):
+        from fastapi.testclient import TestClient
+        webvis = self._make_webvis()
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET /snapshot -> 404
+        res = client.get('/snapshot')
+        self.assertEqual(res.status_code, 404)
+
+        # GET /snapshot-payload -> 404
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 404)
+        # X-Metadata should be present even in 404
+        self.assertIn("X-Metadata", res.headers)
+
+    def test_endpoints_with_single_topic_frame(self):
+        import numpy as np
+        import urllib.parse
+        import json
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis()
+        
+        # Create a dummy frame and populate latest_frames / current_data
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(image=image, data={"camera": "main", "detections": []}, format="BGR")
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # 1. GET /snapshot -> 200, returns jpeg
+        res = client.get('/snapshot')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["content-type"], "image/jpeg")
+        self.assertEqual(res.content, bytes(frame.bgr.jpg))
+
+        # 2. GET /snapshot-payload -> 200, returns jpeg + headers
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["content-type"], "image/jpeg")
+        self.assertEqual(res.headers["X-Topic"], "main")
+        self.assertEqual(res.headers["X-Width"], "160")
+        self.assertEqual(res.headers["X-Height"], "120")
+        self.assertEqual(res.headers["X-Format"], "BGR")
+        
+        metadata_raw = urllib.parse.unquote(res.headers["X-Metadata"])
+        metadata = json.loads(metadata_raw)
+        # Single topic -> should be flat
+        self.assertEqual(metadata, {"camera": "main", "detections": []})
+
+        # 3. GET /latest-data -> 200, returns flat JSON dict
+        res = client.get('/latest-data')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"camera": "main", "detections": []})
+
+    def test_endpoints_with_multi_topic_frames(self):
+        import numpy as np
+        import urllib.parse
+        import json
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis()
+        webvis.is_multi_topic_static = True
+
+        image_front = np.zeros((100, 150, 3), dtype=np.uint8)
+        frame_front = Frame(image=image_front, data={"camera": "front"}, format="BGR")
+
+        image_back = np.zeros((200, 300, 3), dtype=np.uint8)
+        frame_back = Frame(image=image_back, data={"camera": "back"}, format="BGR")
+
+        webvis.latest_frames = {"front": frame_front, "back": frame_back}
+        webvis.current_data = {"front": frame_front.data, "back": frame_back.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # 1. GET /latest-data (default) -> multi-topic combined dictionary
+        res = client.get('/latest-data')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {
+            "front": {"camera": "front"},
+            "back": {"camera": "back"}
+        })
+
+        # 2. GET /front/latest-data -> flat dictionary for front
+        res = client.get('/front/latest-data')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"camera": "front"})
+
+        # 3. GET /snapshot-payload (default) -> resolves to 'front' (the first key), returns front's snapshot and combined metadata
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["X-Topic"], "front")
+        self.assertEqual(res.headers["X-Width"], "150")
+        self.assertEqual(res.headers["X-Height"], "100")
+        
+        metadata = json.loads(urllib.parse.unquote(res.headers["X-Metadata"]))
+        self.assertEqual(metadata, {
+            "front": {"camera": "front"},
+            "back": {"camera": "back"}
+        })
+
+        # 4. GET /back/snapshot-payload -> returns back's snapshot and back's flat metadata
+        res = client.get('/back/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["X-Topic"], "back")
+        self.assertEqual(res.headers["X-Width"], "300")
+        self.assertEqual(res.headers["X-Height"], "200")
+        
+        metadata = json.loads(urllib.parse.unquote(res.headers["X-Metadata"]))
+        self.assertEqual(metadata, {"camera": "back"})
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -3,7 +3,7 @@ import os
 import json
 import time
 from queue import Queue
-from threading import Thread
+from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
@@ -55,9 +55,12 @@ class Webvis(Filter):
     FILTER_TYPE = 'Output'
 
     def create_app(self, auth_token: str | None = None, cors_origins: str | None = None) -> 'FastAPI':
-        from fastapi import FastAPI
-        from fastapi.responses import StreamingResponse
+        from fastapi import FastAPI, Response
+        from fastapi.responses import StreamingResponse, JSONResponse
         from openfilter.filter_runtime.filters.http_security import configure_http_security
+
+        if not hasattr(self, '_lock'):
+            self._lock = RLock()
 
         app = FastAPI(title='webvis')
 
@@ -66,19 +69,24 @@ class Webvis(Filter):
         async def stream_data(topic: str | None = None):
             is_multi_topic_config = getattr(self, 'is_multi_topic_static', False) or len(getattr(self, 'configured_topics', set())) > 1
 
+            with self._lock:
+                streams_keys = list(self.streams.keys())
+                current_data_len = len(self.current_data)
+
             # If topic is 'main' but not in streams, treat it as default fallback (None)
-            is_default = (topic is None or (topic == 'main' and 'main' not in self.streams))
+            is_default = (topic is None or (topic == 'main' and 'main' not in streams_keys))
 
             # Decide on connection whether this stream is in flat mode (locked for this connection's lifetime)
             if is_default:
                 # Flat mode if not statically multi-topic, and at most one active topic in current data
-                is_flat = (not is_multi_topic_config) and (len(self.current_data) <= 1)
+                is_flat = (not is_multi_topic_config) and (current_data_len <= 1)
             else:
                 is_flat = True
 
             def gen(flat: bool):
                 while True:
-                    current_data_snapshot = dict(self.current_data)
+                    with self._lock:
+                        current_data_snapshot = dict(self.current_data)
                     if flat:
                         if is_default:
                             # Use the single active topic if present, otherwise default to 'main'
@@ -97,6 +105,91 @@ class Webvis(Filter):
 
             return StreamingResponse(gen(is_flat), media_type='text/event-stream')
 
+        def get_metadata_for_topic(topic: str | None) -> tuple[str, dict]:
+            """Helper to resolve the active topic and return the metadata snapshot matching SSE data schema."""
+            with self._lock:
+                latest_frames_keys = list(self.latest_frames.keys())
+                streams_keys = list(self.streams.keys())
+                current_data_snapshot = dict(self.current_data)
+
+            is_multi_topic_config = getattr(self, 'is_multi_topic_static', False) or len(getattr(self, 'configured_topics', set())) > 1
+            is_default = (topic is None or (topic == 'main' and 'main' not in latest_frames_keys and 'main' not in streams_keys))
+
+            # Resolve topic
+            if is_default:
+                active_topics = latest_frames_keys or streams_keys or list(current_data_snapshot.keys())
+                resolved_topic = active_topics[0] if active_topics else 'main'
+            else:
+                resolved_topic = topic
+
+            # Decide on flat mode
+            if is_default:
+                is_flat = (not is_multi_topic_config) and (len(current_data_snapshot) <= 1)
+            else:
+                is_flat = True
+
+            if is_flat:
+                data = current_data_snapshot.get(resolved_topic, {})
+            else:
+                data = current_data_snapshot
+
+            return resolved_topic, data
+
+        @app.get('/api/snapshot-payload')
+        @app.get('/api/snapshot-payload/{topic:str}')
+        @app.get('/snapshot-payload')
+        @app.get('/{topic:str}/snapshot-payload')
+        def get_snapshot_payload(topic: str | None = None):
+            import urllib.parse
+
+            # If FastAPI's route evaluation matches the wildcard and sets topic to 'api' or 'snapshot-payload', reset it
+            if topic in ('api', 'snapshot-payload'):
+                topic = None
+
+            resolved_topic, data = get_metadata_for_topic(topic)
+            with self._lock:
+                frame = self.latest_frames.get(resolved_topic)
+            
+            # Pack metadata into custom HTTP headers (URL encoded for safety)
+            headers = {
+                "Access-Control-Expose-Headers": "X-Metadata, X-Topic, X-Timestamp, X-Width, X-Height, X-Format",
+                "X-Topic": str(resolved_topic),
+                "X-Metadata": urllib.parse.quote(json.dumps(data)),
+                "X-Timestamp": str(time.time()),
+                "X-Width": str(frame.width) if frame else "",
+                "X-Height": str(frame.height) if frame else "",
+                "X-Format": str(frame.format) if frame else ""
+            }
+
+            if frame is None:
+                return Response(status_code=404, content="No frame available", headers=headers)
+                
+            return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg", headers=headers)
+
+        @app.get('/api/snapshot')
+        @app.get('/api/snapshot/{topic:str}')
+        @app.get('/snapshot')
+        @app.get('/{topic:str}/snapshot')
+        def get_snapshot(topic: str | None = None):
+            if topic in ('api', 'snapshot'):
+                topic = None
+            resolved_topic, _ = get_metadata_for_topic(topic)
+            with self._lock:
+                frame = self.latest_frames.get(resolved_topic)
+            if frame is None:
+                return Response(status_code=404, content="No snapshot available")
+            return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg")
+
+        @app.get('/api/latest-data')
+        @app.get('/api/latest-data/{topic:str}')
+        @app.get('/latest-data')
+        @app.get('/{topic:str}/latest-data')
+        def get_latest_data(topic: str | None = None):
+            if topic in ('api', 'latest-data'):
+                topic = None
+            _, data = get_metadata_for_topic(topic)
+            return JSONResponse(content=data)
+
         @app.get('/data')
         async def get_data_default():
             return await stream_data(topic=None)
@@ -108,9 +201,11 @@ class Webvis(Filter):
         @app.get('/')
         @app.get('/{topic:str}')
         def topic(topic: str | None = None):
-            if topic is None or (topic == 'main' and 'main' not in self.streams):
-                topic = (list(self.streams) + ['main'])[0]
-            queue = self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))
+            with self._lock:
+                streams_keys = list(self.streams.keys())
+                if topic is None or (topic == 'main' and 'main' not in streams_keys):
+                    topic = (streams_keys + ['main'])[0]
+                queue = self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))
 
             def gen():
                 while True:
@@ -131,6 +226,7 @@ class Webvis(Filter):
             loop       = 'asyncio',
             log_config = None,
             log_level  = (os.getenv('LOG_LEVEL') or 'info').lower(),
+            access_log = False,
         )).run()
 
     @classmethod
@@ -188,8 +284,10 @@ class Webvis(Filter):
         return config
 
     def setup(self, config):
+        self._lock = RLock()
         self.streams = {}  # {'topic': Queue, ...}
         self.current_data = {}  # {'topic': dict, ...}
+        self.latest_frames = {}  # {'topic': Frame, ...}
         self.enable_json = config.enable_json
         self.sleep_interval = config.sleep_interval
 
@@ -212,9 +310,12 @@ class Webvis(Filter):
     def process(self, frames):
         for topic, frame in frames.items():
             if frame.has_image:
-                if (queue := self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))).empty():
-                    queue.put(frame)
+                with self._lock:
+                    self.latest_frames[topic] = frame
                     self.current_data[topic] = frame.data
+                    queue = self.streams.get(topic) or self.streams.setdefault(topic, Queue(QUEUE_LEN))
+                if queue.empty():
+                    queue.put(frame)
                 else:
                     logger.debug('Skipping frames')
 
