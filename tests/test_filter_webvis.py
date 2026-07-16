@@ -552,6 +552,36 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         metadata = json.loads(urllib.parse.unquote(res.headers["X-Metadata"]))
         self.assertEqual(metadata, {"camera": "back"})
 
+    def test_endpoints_with_special_characters_topic(self):
+        import numpy as np
+        import urllib.parse
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis()
+        
+        image = np.zeros((100, 150, 3), dtype=np.uint8)
+        # Topic containing space and carriage return/line feed characters
+        special_topic = "cam_front\r\nspace"
+        frame = Frame(image=image, data={"camera": "special"}, format="BGR")
+
+        webvis.latest_frames = {special_topic: frame}
+        webvis.current_data = {special_topic: frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET snapshot-payload using URL-encoded topic path
+        encoded_path = urllib.parse.quote(special_topic)
+        res = client.get(f'/{encoded_path}/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        # Verify X-Topic header is fully URL-encoded and safe
+        expected_encoded_topic = urllib.parse.quote(special_topic)
+        self.assertEqual(res.headers["X-Topic"], expected_encoded_topic)
+        self.assertNotIn("\r", res.headers["X-Topic"])
+        self.assertNotIn("\n", res.headers["X-Topic"])
+
 
 if __name__ == '__main__':
     unittest.main()

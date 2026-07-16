@@ -140,6 +140,12 @@ class Webvis(Filter):
         @app.get('/snapshot-payload')
         @app.get('/{topic:str}/snapshot-payload')
         def get_snapshot_payload(topic: str | None = None):
+            """Serves JPEG frame snapshots along with associated frame metadata packed into response headers.
+
+            NOTE: Response headers (X-Metadata) are subject to HTTP header size limits (typically 8-16KB depending 
+            on downstream proxies/servers). For large metadata structures (e.g. many detections), clients 
+            should poll /snapshot and /latest-data separately to avoid HTTP header truncation or refusal.
+            """
             import urllib.parse
 
             # If FastAPI's route evaluation matches the wildcard and sets topic to 'api' or 'snapshot-payload', reset it
@@ -153,7 +159,7 @@ class Webvis(Filter):
             # Pack metadata into custom HTTP headers (URL encoded for safety)
             headers = {
                 "Access-Control-Expose-Headers": "X-Metadata, X-Topic, X-Timestamp, X-Width, X-Height, X-Format",
-                "X-Topic": str(resolved_topic),
+                "X-Topic": urllib.parse.quote(str(resolved_topic)),
                 "X-Metadata": urllib.parse.quote(json.dumps(data)),
                 "X-Timestamp": str(time.time()),
                 "X-Width": str(frame.width) if frame else "",
