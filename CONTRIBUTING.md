@@ -99,9 +99,7 @@ If you're unsure whether a change is "big enough" to be worth a PR — it probab
 * Use clear branch naming. For example:
   * Bugfix: `1234-fix-filter-shutdown`
   * Feature: `4567-add-fancy-thing`
-* All contributions should be made against the `main` branch.
-* **Do not submit pull requests directly to `release`** — that branch is managed by core maintainers and reflects the latest stable version of OpenFilter.
-* When a release is ready, core maintainers will merge changes from `main` into `release`.
+* All contributions should be made against the `main` branch, which is the active development branch that releases are tagged from.
 * Include unit tests when appropriate. Run `make test-all` or `pytest` to verify.
 * Keep pull requests focused — unrelated changes should go in separate PRs.
 * Run linters and formatting before pushing (`black`, `ruff`, etc. where applicable).
@@ -336,7 +334,7 @@ Whether you're contributing a quick fix or a large feature, it's important to un
 
 ### 🛠️ Releasing
 
-- Releases are **cut from the `main` branch** — the single branch every published version comes from, kept in a release-ready state at all times.
+- Releases are normally **cut from the `main` branch**, which is kept in a release-ready state at all times. (Urgent hotfixes are the exception and are cut from the latest release tag; see [Hotfixes](#-hotfixes) below.)
 - To create a release from `main`, the following must be true:
   - The `RELEASE.md` file contains an accurate and up-to-date changelog entry for the version.
   - The `VERSION` file matches the version declared in `RELEASE.md`.
@@ -346,6 +344,25 @@ Whether you're contributing a quick fix or a large feature, it's important to un
 Once merged, the release automation tags the version, pushes a GitHub release, publishes documentation, and optionally builds artifacts (e.g., Docker images, Python wheels).
 
 The final step in the CI pipeline requires manual review and approval by a core maintainer. Upon approval, the package version is automaticlaly published to PyPi.
+
+### 🚀 How to cut a release (core maintainers only)
+
+To publish a new version:
+
+1. Update `VERSION` with the new version (for example `v1.1.2`).
+2. Add a matching entry at the top of `RELEASE.md`, using the same version and a changelog for that release.
+3. Merge both changes into `main`.
+4. In GitHub Actions, run the **Create Release** workflow via **Run workflow** against `main`.
+
+From there the workflow runs on its own:
+
+- Runs the unit tests across Python 3.10, 3.11, 3.12, and 3.13.
+- Verifies that the `VERSION` file matches the version declared in `RELEASE.md`.
+- Creates the git tag and the GitHub Release.
+- Builds the Python wheel and publishes it to [PyPI](https://pypi.org/project/openfilter/).
+- Builds and pushes the built-in filter images to [Docker Hub](https://hub.docker.com/u/plainsightai) (multi-arch: `amd64` and `arm64`).
+
+Publishing to PyPI runs in a protected environment, so the wheel is uploaded only after a core maintainer approves that step. Each filter image is published at `plainsightai/openfilter-<name>` and tagged with both the version (for example `1.1.2`) and `latest`. Because the images install `openfilter[extra]=={version}` from PyPI, they are built only after the PyPI publish has succeeded.
 
 ### 🧯 Hotfixes
 
