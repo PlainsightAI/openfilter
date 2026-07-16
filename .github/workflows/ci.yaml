@@ -55,7 +55,6 @@ jobs:
   # for a plain-text one, since PyPI does not render Mermaid). This guards
   # against the committed PyPI readme drifting from the source README.
   check-pypi-readme:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
