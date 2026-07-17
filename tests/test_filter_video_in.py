@@ -87,7 +87,11 @@ class TestVideoIn(unittest.TestCase):
             {'source': 'webcam://0', 'topic': 'main', 'options': {'bgr': True}},
             {'source': 'file://SOME_VIDEO_FILE.mp4', 'topic': 'other', 'options': {'sync': True, 'loop': 3}},
             {'source': 'rtsp://RTSP_HOST_ADDRESS:8554/STREAM_NAME', 'topic': 'yet_another', 'options': {'maxsize': '640x480'}}],
-            'outputs': ['tcp://*']})
+            'outputs': ['tcp://*'],
+            'control_port': None,
+            'sdi_url': 'http://localhost:8090',
+            'webvis_url': 'http://localhost:8000',
+            'webvis_topic': 'viz'})
         ncfg1 = VideoIn.normalize_config(scfg)
         ncfg2 = VideoIn.normalize_config(ncfg1)
 

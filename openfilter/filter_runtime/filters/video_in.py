@@ -15,6 +15,13 @@ try:
 except ImportError:
     HAS_BOTO3 = False
 
+try:
+    from filter_subject_data_in.video_controller import VideoController as _VideoController
+    _HAS_VIDEO_CONTROLLER = True
+except ImportError:
+    _VideoController = None
+    _HAS_VIDEO_CONTROLLER = False
+
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, Deque
 
 __all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader']
@@ -119,14 +126,15 @@ class VideoReader:
         source:  str,
         cond:    Condition | None = None,
         *,
-        bgr:     bool | None = None,
-        sync:    bool | None = None,
-        loop:    bool | int = False,
-        maxfps:  float | None = None,
-        maxsize: str | None = None,
-        resize:  str | None = None,
-        region:  str | None = None,
+        bgr:        bool | None = None,
+        sync:       bool | None = None,
+        loop:       bool | int = False,
+        maxfps:     float | None = None,
+        maxsize:    str | None = None,
+        resize:     str | None = None,
+        region:     str | None = None,
         expiration: int | None = None,
+        replay_ctrl: Any = None,
     ):
         """Read a single video file, network stream or webcam until the end.
 
@@ -212,7 +220,11 @@ class VideoReader:
         if is_file and not sync:
             self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
 
-        self.fps = fps
+        self.fps              = fps
+        self._replay_ctrl     = replay_ctrl
+        self._frame_n         = 0
+        self._last_replay_img = None
+        self._total_frames    = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if is_file else 0
 
         if fps is None:
             logger.warning(f'video does not have fixed framerate {self.source!r}{"" if maxfps is None else ", maxfps ignored"}')
@@ -337,8 +349,20 @@ class VideoReader:
 
         return image
 
+    def _seek_accurate(self, target_frame: int) -> None:
+        """Seek to target_frame with I-frame compensation (reads forward from nearest I-frame)."""
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        actual = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        while actual < target_frame:
+            ret, _ = self.cap.read()
+            if not ret:
+                break
+            actual += 1
+        self._frame_n = target_frame
+
     def thread_reader(self):
-        cond = self.cond
+        cond  = self.cond
+        ctrl  = self._replay_ctrl
 
         if size := (maxsize := self.maxsize) or self.resize:
             width, aspect, height, interp = size
@@ -354,9 +378,51 @@ class VideoReader:
                 cv2.INTER_NEAREST
             )
 
+        _just_seeked       = False
+        _seek_target_frame = None
+
         while True:
+            # ----------------------------------------------------------------
+            # Replay: check for a pending seek command (highest priority)
+            # ----------------------------------------------------------------
+            if ctrl is not None:
+                seek_target = ctrl.consume_seek()
+                if seek_target is not None:
+                    self._seek_accurate(seek_target)
+                    _just_seeked       = True
+                    _seek_target_frame = seek_target
+
+            # ----------------------------------------------------------------
+            # Replay: freeze-frame (paused) – re-emit the last image unchanged
+            # Exception: if a seek just happened, fall through to read() once
+            # so _last_replay_img is updated to the seek-target frame first.
+            # ----------------------------------------------------------------
+            if ctrl is not None and ctrl.should_freeze() and not _just_seeked:
+                if self._last_replay_img is not None:
+                    freeze_extras = {'frame_n': self._frame_n, 'frame_repeat': True}
+                    tframe        = time_ns()
+                    self.deque.append((self._last_replay_img, tframe, freeze_extras))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    # Throttle to the natural frame rate to avoid spinning
+                    if (sync_evt := self.sync_evt) is not None:
+                        sync_evt.wait()
+                        sync_evt.clear()
+                    else:
+                        ns = self.ns_per_fps or self.ns_per_maxfps or 40_000_000
+                        sleep(ns / 1_000_000_000)
+                else:
+                    sleep(0.04)
+                continue
+
+            # ----------------------------------------------------------------
+            # Normal read
+            # ----------------------------------------------------------------
             image  = None if self.stop_evt.is_set() else self.read_one()
             tframe = time_ns()
+
+            replay_extras: dict = {}
 
             if image is not None:
                 shape = image.shape
@@ -396,7 +462,21 @@ class VideoReader:
                 elif not self.as_bgr:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            self.deque.append((image, tframe))
+                # ---- replay metadata injection ----
+                if ctrl is not None:
+                    # cap.get(POS_FRAMES) points to the NEXT frame to be read, so -1
+                    frame_n = max(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1, 0)
+                    self._frame_n         = frame_n
+                    self._last_replay_img = image
+                    replay_extras         = {'frame_n': frame_n}
+                    if _just_seeked:
+                        replay_extras['seek_reset']       = True
+                        replay_extras['seek_frame_index'] = _seek_target_frame
+                        _just_seeked       = False
+                        _seek_target_frame = None
+                    ctrl.on_frame_emitted(frame_n)
+
+            self.deque.append((image, tframe, replay_extras))
 
             if cond is not None:
                 with cond:
@@ -419,13 +499,13 @@ class VideoReader:
     def frame_available(self) -> bool:
         return bool(self.deque)
 
-    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int] | None
+    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, dict] | None
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
             return None
 
-        if (image_n_tframe := self.deque.popleft()) is None:
+        if (item := self.deque.popleft()) is None:
             self.state = 2
 
             self.cap.release()
@@ -435,7 +515,10 @@ class VideoReader:
         if (sync_evt := self.sync_evt) is not None:
             sync_evt.set()
 
-        return image_n_tframe if with_tframe else image_n_tframe[0]
+        if with_tframe:
+            # item is always (image, tframe, extras) now; extras may be empty dict
+            return item
+        return item[0]
 
     @staticmethod
     def get_info(source: str) -> tuple[int, int, str, float]:  # (height, width, format, fps)
@@ -507,7 +590,7 @@ class MultiVideoReader:
     def frame_available(self) -> bool:
         return all(vid.frame_available for vid in self.videos)
 
-    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int]] | None
+    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int, dict]] | None
         if self.state == 0:
             raise RuntimeError('can not read from videos before they are started')
         elif self.state == 2:
@@ -520,14 +603,17 @@ class MultiVideoReader:
             with cond:
                 cond.wait()
 
-        images = [video.read(with_tframe) for video in videos]
+        items = [video.read(with_tframe) for video in videos]
 
-        if any(image is None for image in images):
+        # item is None when state==2, or (None, tframe, extras) when video ended
+        if any(
+            item is None or (with_tframe and item[0] is None)
+            for item in items
+        ):
             self.stop()
-
             return None
 
-        return images
+        return items
 
 
 # --- CUT HERE ---------------------------------------------------------------------------------------------------------
@@ -565,6 +651,16 @@ class VideoInConfig(FilterConfig):
     maxfps:  float | None
     maxsize: str | None
     resize:  str | None
+
+    # ---- seekable replay control (optional) ----
+    # When control_port is set VideoIn starts an HTTP replay API (pause/play/seek/step)
+    # and injects seek_reset / frame_repeat / frame_index metadata into every frame so
+    # that FilterSubjectDataIn can stay in perfect sync regardless of the sync_key used.
+    # Requires the filter_subject_data_in package to be installed.
+    control_port: int | None       # HTTP port; env VIDEO_IN_CONTROL_PORT
+    sdi_url:      str | None       # FilterSubjectDataIn API URL for browser overlay
+    webvis_url:   str | None       # Webvis base URL for browser player
+    webvis_topic: str | None       # Webvis topic for browser player
 
 
 class VideoIn(Filter):
@@ -677,6 +773,33 @@ class VideoIn(Filter):
         
         Example S3 usage:
             openfilter run - VideoIn --sources s3://my-bucket/video.mp4!region=us-west-2 - Webvis
+
+    Seekable Replay API (requires filter_subject_data_in package):
+        When `control_port` is set, VideoIn exposes an HTTP API and an HTML browser player
+        that support real-time pause, play, step, and seek.  Every emitted frame carries
+        extra metadata so that FilterSubjectDataIn stays perfectly synchronised:
+
+            meta['frame_index']        - 0-based frame counter (replaces wall-clock ts for sync)
+            meta['total_frames']       - total frames in the video file
+            meta['seek_reset']         - True on the first frame after a seek
+            meta['seek_frame_index']   - target frame index of the last seek
+            meta['seek_ts']            - target timestamp of the last seek (seconds)
+            meta['frame_repeat']       - True on every re-emitted frozen frame while paused
+
+        HTTP endpoints (all served on control_port):
+            POST /pause
+            POST /play
+            POST /step?frames=N
+            POST /seek?frame=N  |  POST /seek?ts=12.345
+            GET  /status
+            GET  /video          (streams the local MP4; single-source only)
+            GET  /player         (HTML5 browser player with scrubber + overlay)
+
+        Config / env vars:
+            control_port  /  VIDEO_IN_CONTROL_PORT   - HTTP port (default: none / disabled)
+            sdi_url       /  VIDEO_IN_SDI_URL         - FilterSubjectDataIn API for overlay
+            webvis_url    /  VIDEO_IN_WEBVIS_URL       - Webvis base URL for pipeline view
+            webvis_topic  /  VIDEO_IN_WEBVIS_TOPIC     - Webvis topic (default: viz)
     """
 
     FILTER_TYPE = 'Input'
@@ -693,6 +816,17 @@ class VideoIn(Filter):
             raise ValueError('must specify at least one source')
         if not config.outputs:
             raise ValueError('must specify at least one output')
+
+        # ---- replay control env var defaults ----
+        if config.control_port is None:
+            _env = os.getenv('VIDEO_IN_CONTROL_PORT') or os.getenv('FILTER_VIDEO_CONTROL_PORT')
+            config.control_port = int(_env) if _env else None
+        if config.sdi_url is None:
+            config.sdi_url = os.getenv('VIDEO_IN_SDI_URL') or os.getenv('FILTER_VIDEO_SDI_URL') or 'http://localhost:8090'
+        if config.webvis_url is None:
+            config.webvis_url = os.getenv('VIDEO_IN_WEBVIS_URL') or os.getenv('FILTER_VIDEO_WEBVIS_URL') or 'http://localhost:8000'
+        if config.webvis_topic is None:
+            config.webvis_topic = os.getenv('VIDEO_IN_WEBVIS_TOPIC') or os.getenv('FILTER_VIDEO_WEBVIS_TOPIC') or 'viz'
 
         for idx, source in enumerate(sources):
             if isinstance(source, dict):
@@ -733,31 +867,102 @@ class VideoIn(Filter):
             topics.append(source.topic or 'main')
             optionss.append(source.options or {})
 
-        default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
+        default_options  = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
             'maxsize': config.maxsize, 'resize': config.resize}
-        self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
-        self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
-        self.id              = -1  # frame id
+        self.mvreader    = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
+        self.tops_n_vids = tuple(zip(topics, self.mvreader.videos))
+        self.id          = -1  # frame id
         self._camera_connected = 0
+
+        # ---- seekable replay controller (optional) ----
+        self._replay_ctrl = None
+        if config.control_port:
+            if not _HAS_VIDEO_CONTROLLER:
+                logger.warning(
+                    'VideoIn: control_port=%s set but filter_subject_data_in is not installed; '
+                    'replay API disabled. Install it with: pip install filter-subject-data-in',
+                    config.control_port,
+                )
+            else:
+                # Use the first video as the canonical source for the controller
+                primary_vid  = self.mvreader.videos[0]
+                primary_src  = config.sources[0].source
+                local_path   = primary_src.replace('file://', '') if primary_src.startswith('file://') else None
+                if local_path and not os.path.isfile(local_path):
+                    local_path = None
+
+                ctrl = _VideoController(
+                    total_frames=primary_vid._total_frames,
+                    fps=primary_vid.fps or 30.0,
+                    source=primary_src,
+                    local_path=local_path,
+                )
+                ctrl.start_server(
+                    config.control_port,
+                    sdi_url=config.sdi_url,
+                    webvis_url=config.webvis_url,
+                    webvis_topic=config.webvis_topic,
+                )
+                self._replay_ctrl = ctrl
+
+                # Wire the controller into every VideoReader so they all
+                # pause/seek together (important for multi-camera rigs).
+                for vid in self.mvreader.videos:
+                    vid._replay_ctrl = ctrl
+
+                logger.info(
+                    'VideoIn: seekable replay API on port %s  player=http://localhost:%s/player',
+                    config.control_port, config.control_port,
+                )
 
         self.mvreader.start()
 
     def shutdown(self):
         self.mvreader.stop()
+        if (ctrl := getattr(self, '_replay_ctrl', None)) is not None:
+            ctrl.stop_server()
 
     def process(self, frames):
+        ctrl = getattr(self, '_replay_ctrl', None)
+
         def get():
-            if (image_n_tframes := self.mvreader.read(True)) is None:
+            if (items := self.mvreader.read(True)) is None:
                 self._camera_connected = 0
                 self.exit('video ended')
+                return None
 
             self._camera_connected = 1
             self.id = id = self.id + 1
 
-            return {topic: Frame(img,
-                {'meta': {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}},
-                'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
-            ) for (topic, vid), (img, tfrm) in zip(self.tops_n_vids, image_n_tframes)}
+            result = {}
+            for (topic, vid), item in zip(self.tops_n_vids, items):
+                img, tfrm, extras = item  # always (image, tframe, extras) since thread_reader change
+
+                meta = {
+                    'id':      id,
+                    'ts':      tfrm / 1_000_000_000,
+                    'src':     vid.source,
+                    'src_fps': vid.fps,
+                }
+
+                if ctrl is not None and extras:
+                    frame_n = extras.get('frame_n', 0)
+                    meta['frame_index']  = frame_n
+                    meta['total_frames'] = vid._total_frames
+                    if extras.get('frame_repeat'):
+                        meta['frame_repeat'] = True
+                    if extras.get('seek_reset'):
+                        meta['seek_reset']       = True
+                        meta['seek_ts']          = frame_n / (vid.fps or 30.0)
+                        meta['seek_frame_index'] = extras.get('seek_frame_index', frame_n)
+
+                result[topic] = Frame(
+                    img,
+                    {'meta': meta},
+                    'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB',
+                )
+
+            return result
 
         return get
 
