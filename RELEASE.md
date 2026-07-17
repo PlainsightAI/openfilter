@@ -6,7 +6,7 @@ OpenFilter Library release notes
 
 ### Security
 
-- **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93`. The 5.0.0.93 linux x86_64 wheel bundles ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). The shared security-scan workflow no longer suppresses this CVE by default (see PlainsightAI/openfilter#84).
+- **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93`. The 5.0.0.93 linux x86_64 wheel bundles ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). Removing the shared security-scan's default suppression of this CVE is handled separately in PlainsightAI/gh-actions-public#30 (still open). Note that `av` (PyAV) also vendors ffmpeg, so it must be on ffmpeg >= 8.1 — or excluded from the scan — before that suppression is dropped, otherwise the CVE re-flags from PyAV.
 
 ### Changed
 
