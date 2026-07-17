@@ -50,9 +50,9 @@ users.
 │                 │                        reads deque           │
 │                 │                        builds Frame{meta}   │
 │         ┌───────▼──────────┐                                  │
-│         │  VideoController │  HTTP :control_port              │
-│         │  (external pkg)  │◄──────────────────────────────── │◄── browser / curl
-│         │                  │                                  │
+│         │  ReplayController│  HTTP :control_port              │
+│         │  (Protocol, impl │◄──────────────────────────────── │◄── browser / curl
+│         │  resolved lazily)│                                  │
 │         │  is_paused       │  POST /pause                     │
 │         │  seek_target     │  POST /play                      │
 │         │  current_frame   │  POST /step?frames=N             │
@@ -77,12 +77,35 @@ users.
 └──────────────────────────────────────────────────────┘
 ```
 
-**Separation of concerns:** HTTP control + `/player` + `/video` live in
-`filter_subject_data_in.video_controller.VideoController` (optional dependency).
-`VideoIn` only wires it when `control_port` is set and keeps seek/freeze inside
-`VideoReader` because those decisions must gate which frames enter the deque
-(frame production, not browser viewing). Webvis remains the dedicated filter for
-live pipeline visualization; the VideoController player is a replay-control UI.
+**Separation of concerns:** HTTP control + `/player` + `/video` live in a
+`ReplayController` implementation (by default `filter_subject_data_in.video_controller
+.VideoController`, an optional dependency). `VideoIn` only wires it when `control_port`
+is set and keeps seek/freeze inside `VideoReader` because those decisions must gate
+which frames enter the deque (frame production, not browser viewing). Webvis remains
+the dedicated filter for live pipeline visualization; the VideoController player is a
+replay-control UI.
+
+**Core never imports a concrete downstream package.** `VideoIn` core only depends on
+the `ReplayController` Protocol (`consume_seek`, `should_freeze`, `on_frame_emitted`,
+`start_server`, `stop_server`), defined at module scope in `video_in.py`. The concrete
+implementation is resolved **lazily**, only when `control_port` is set, by dotted class
+path (`replay_controller_class` config / `VIDEO_IN_REPLAY_CONTROLLER_CLASS` /
+`FILTER_REPLAY_CONTROLLER_CLASS`, default `filter_subject_data_in.video_controller
+:VideoController`). This means:
+
+- No static top-level `import filter_subject_data_in...` in openfilter core — no
+  undeclared, unpinned dependency edge from core onto a downstream filter.
+- No risk of a partial-init circular import (the resolution happens after `VideoIn`
+  is fully defined, only inside `setup()`).
+- `_resolve_replay_controller_class` distinguishes "target module genuinely not
+  installed" (`ModuleNotFoundError` naming that exact module → returns `None` →
+  fail-loud "not installed" message) from "target module is installed but broken"
+  (`ModuleNotFoundError` naming some *other*, transitively-imported module → re-raised
+  as-is) — the previous bare `except ImportError` around the static import could not
+  tell these apart and would misreport a broken package as merely absent.
+- Any object structurally satisfying `ReplayController` works as a controller —
+  operators can point `replay_controller_class` at their own implementation without
+  patching openfilter.
 
 Three threads cooperate:
 
@@ -282,8 +305,11 @@ desync the SDI cursor from the displayed frame.
 | Scenario | Behavior |
 |---|---|
 | `control_port` not set | Identical to previous `VideoIn` — zero overhead |
-| `control_port` set, package missing | **`RuntimeError` in `setup()`** — pipeline does not start |
-| Multi-source `VideoIn` with `control_port` | All `VideoReader`s share one controller — all cameras pause/seek together |
+| `control_port` set, replay controller module missing | **`RuntimeError` in `setup()`** — pipeline does not start (already-opened captures are released first) |
+| `control_port` set, replay controller module installed but broken | The underlying `ImportError`/`ModuleNotFoundError` is raised, not mistaken for "not installed" |
+| Multi-source `VideoIn` with `control_port` | All `VideoReader`s share one controller via `_SeekFanout` — all cameras pause/seek together |
+| `read(with_tframe=False)` | Unchanged — still returns just the image ndarray (or `None`) |
+| `read(with_tframe=True)` | **Breaking** — now `(image, tframe, extras)`, was `(image, tframe)`. See §9. |
 
 ---
 
@@ -291,8 +317,9 @@ desync the SDI cursor from the displayed frame.
 
 | File | Change |
 |---|---|
-| `openfilter/filter_runtime/filters/video_in.py` | Seek/freeze in VideoReader; Replay Sync Meta Spec v1; dual-prefix env vars; fail-loud setup; `seek_frame_index == frame_index` post-seek |
-| `tests/test_filter_video_in.py` | Unit tests for env aliases, missing package, seek compensation, freeze re-emit, deque 3-tuple, multi-source shared controller, post-seek index equality |
+| `openfilter/filter_runtime/filters/video_in.py` | Seek/freeze in VideoReader; Replay Sync Meta Spec v1; dual-prefix env vars; fail-loud setup; `seek_frame_index == frame_index` post-seek; `_SeekFanout` multi-source fan-out; `stop_evt`-aware freeze loop; EOF seek clamp; `ReplayController` Protocol + lazy `replay_controller_class` resolution; capture cleanup on fail-loud raise |
+| `tests/test_filter_video_in.py` | Unit tests for env aliases, missing/broken controller resolution, seek compensation, freeze re-emit, stop-while-paused, EOF seek clamp, seek fan-out, deque 3-tuple, multi-source shared controller, post-seek index equality |
+| `VERSION` / `RELEASE.md` | Bumped to v1.1.4 (was colliding with the already-released v1.1.3); added changelog entry incl. the breaking change |
 | `docs/design-video-in-seekable-replay.md` | This document |
 
 ---
@@ -311,8 +338,26 @@ desync the SDI cursor from the displayed frame.
 
 ## 8. PR #118 review (blocking) resolutions
 
-| # | Comment | Resolution |
-|---|---|---|
-| B1 | Multi-source seek only moves one reader | **Done.** `_SeekFanout` / `_SeekFanoutView` generation counter so every reader observes each seek once. |
-| B2 | `stop()` while paused hangs in freeze loop | **Done.** Freeze branch checks `stop_evt`; `shutdown()` calls `play()` then `stop_server()` before stopping readers. |
-| B3 | Seek into EOF ends the pipeline | **Done.** `_seek_accurate` clamps to `total_frames-1`; post-seek EOF falls back to last-frame re-emit with `seek_reset`. |
+| # | Reviewer | Comment | Resolution |
+|---|---|---|---|
+| B1 | leandrobmarinho | Multi-source seek only moves one reader | **Done.** `_SeekFanout` / `_SeekFanoutView` generation counter so every reader observes each seek once. |
+| B2 | leandrobmarinho, lucasmundim | `stop()` while paused hangs in freeze loop | **Done.** Freeze branch checks `stop_evt` and breaks instead of looping forever; `shutdown()` calls `play()` then `stop_server()` before stopping readers. |
+| B3 | leandrobmarinho | Seek into EOF ends the pipeline | **Done.** `_seek_accurate` clamps to `total_frames-1`; post-seek EOF falls back to last-frame re-emit with `seek_reset`. |
+| B4 | lucasmundim | `VERSION` collides with the already-released v1.1.3; no changelog entry | **Done.** Merged `main` (which had already cut v1.1.3 for #114) into this branch, bumped `VERSION` to `v1.1.4`, added a `RELEASE.md` entry covering the feature and the breaking change (§9). |
+
+### Architectural / non-blocking items also addressed
+
+| # | Reviewer | Comment | Resolution |
+|---|---|---|---|
+| A1 | leandrobmarinho | Core imports a concrete downstream package (`filter_subject_data_in.video_controller.VideoController`) at module scope — layering inversion, undeclared/unpinned dependency, circular-import risk, bare `except ImportError` conflates "missing" with "broken" | **Done.** Replaced with the `ReplayController` Protocol + lazy dotted-path resolution (`replay_controller_class` / `_resolve_replay_controller_class`), described in §2. `ModuleNotFoundError` naming the target module → "not installed"; any other `ModuleNotFoundError`/`ImportError` → re-raised, never swallowed. |
+| A2 | leandrobmarinho | `read(with_tframe=True)` return shape changed `(image, tframe)` → `(image, tframe, extras)`, silently breaking any external caller (`VideoReader`/`MultiVideoReader` are in `__all__`) | **Done.** Documented as an explicit breaking change in `VideoReader.read`'s docstring, the `VideoIn` class docstring, and `RELEASE.md` v1.1.4 (§9). `with_tframe=False` is unaffected and was never changed. |
+| A3 | shingonoide | `setup()` opens one `cv2.VideoCapture` per source before the `control_port` guard; if that guard raises, the captures leak (no `shutdown()` runs) | **Done.** `VideoIn._release_mvreader_captures()` releases every already-open capture before both `RuntimeError`s in the `control_port` branch. Covered by `test_missing_controller_package_raises` asserting `cap.isOpened() is False` afterwards. |
+
+---
+
+## 9. v1.1.4 release notes (summary)
+
+See `RELEASE.md` for the full entry. In short:
+
+- **Added:** opt-in seekable replay API for `VideoIn` (`control_port`) — pause/play/step/seek, Replay Sync Meta Spec v1 metadata, EOF-clamped seeks, multi-source fan-out, `ReplayController` Protocol with lazy resolution.
+- **Breaking:** `VideoReader.read(with_tframe=True)` / `MultiVideoReader.read(with_tframe=True)` now return `(image, tframe, extras)` instead of `(image, tframe)`.

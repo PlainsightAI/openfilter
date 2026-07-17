@@ -4,6 +4,16 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.1.4 - 2026-07-16
+
+### Added
+
+- **Opt-in seekable replay API for `VideoIn`**: setting `control_port` wires an HTTP control server (pause/play/step/seek + HTML player) and injects frame-accurate sync metadata (`frame_index`, `frame_repeat`, `seek_reset`, `seek_frame_index`, `seek_ts`) into every emitted `Frame.meta` — the "Replay Sync Meta Spec v1", documented in the `VideoIn` docstring and `docs/design-video-in-seekable-replay.md`. Seeks are I-frame-accurate with forward-read compensation and clamp to the last frame near EOF instead of ending the pipeline; multi-source pipelines share one controller so every camera pauses/seeks together. The concrete controller implementation (e.g. `filter_subject_data_in`'s `VideoController`) is resolved lazily by dotted class path (`replay_controller_class` / `VIDEO_IN_REPLAY_CONTROLLER_CLASS` / `FILTER_REPLAY_CONTROLLER_CLASS`) against the new `ReplayController` Protocol — core never imports a concrete downstream package at module scope. Without `control_port`, `VideoIn` behavior is unchanged.
+
+### Breaking Changes
+
+- **`VideoReader.read(with_tframe=True)` / `MultiVideoReader.read(with_tframe=True)` now return a 3-tuple**: `(image, tframe, extras)` instead of `(image, tframe)`. `extras` is `{}` when no replay controller is attached. Both classes are exported in `__all__`; any external caller doing `img, tframe = reader.read(with_tframe=True)` must add the third element. `with_tframe=False` (the default) is unaffected.
+
 ## v1.1.3 - 2026-07-10
 
 ### Fixed

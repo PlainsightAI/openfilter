@@ -1,9 +1,10 @@
+import importlib
 import logging
 import os
 import re
 from threading import Condition, Event, Lock, Thread, current_thread
 from time import time_ns, sleep
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import cv2
@@ -15,18 +16,74 @@ try:
 except ImportError:
     HAS_BOTO3 = False
 
-try:
-    from filter_subject_data_in.video_controller import VideoController as _VideoController
-    _HAS_VIDEO_CONTROLLER = True
-except ImportError:
-    _VideoController = None
-    _HAS_VIDEO_CONTROLLER = False
-
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, Deque
 
-__all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader']
+__all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader',
+    'ReplayController']
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ReplayController(Protocol):
+    """Structural interface for a seekable-replay controller.
+
+    openfilter core depends only on this Protocol, never on a concrete
+    downstream package — the previous implementation imported
+    ``filter_subject_data_in.video_controller.VideoController`` directly at
+    module scope, which put a hard, undeclared, unpinned dependency on a
+    downstream filter into core (and risked a partial-init circular import
+    the moment that package imported anything from openfilter). Any object
+    that structurally satisfies this Protocol works, whether or not it
+    imports openfilter or subclasses anything here.
+
+    `VideoReader` only calls `consume_seek` / `should_freeze` /
+    `on_frame_emitted` on the frame-production hot path. `VideoIn.setup` /
+    `shutdown` additionally call `start_server` / `stop_server` and, if
+    present, `play` (used to quiesce a paused controller before teardown).
+    The concrete class is resolved lazily by dotted path — see
+    `replay_controller_class` / `_resolve_replay_controller_class` below —
+    so core never names the implementation and the import only happens once
+    `control_port` is actually configured.
+    """
+
+    def consume_seek(self) -> int | None: ...
+    def should_freeze(self) -> bool: ...
+    def on_frame_emitted(self, frame_n: int) -> None: ...
+    def start_server(self, port: int, *, sdi_url: str | None = None, webvis_url: str | None = None,
+        webvis_topic: str | None = None) -> None: ...
+    def stop_server(self) -> None: ...
+
+
+_DEFAULT_REPLAY_CONTROLLER_PATH = 'filter_subject_data_in.video_controller:VideoController'
+
+
+def _resolve_replay_controller_class(dotted_path: str):
+    """Lazily resolve a ``module:Class`` or ``module.Class`` path to a class.
+
+    Returns `None` only when the *target module itself* is not installed —
+    that is the "not installed" case `VideoIn.setup` fails loudly on. Any
+    other `ImportError` (a broken dependency *of* that module, a genuine bug
+    on import, etc.) is re-raised as-is so a broken package is never mistaken
+    for an absent one (the old bare `except ImportError` around the static
+    top-level import could not tell these apart).
+    """
+    module_path, _, cls_name = dotted_path.partition(':')
+
+    if not cls_name:
+        module_path, _, cls_name = dotted_path.rpartition('.')
+
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as e:
+        missing = e.name or ''
+
+        if missing == module_path or module_path.startswith(missing + '.'):
+            return None  # the target module itself is absent
+
+        raise  # some other module *imported by* module_path is missing/broken
+
+    return getattr(module, cls_name)
 
 
 class _SeekFanout:
@@ -632,6 +689,21 @@ class VideoReader:
         return bool(self.deque)
 
     def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, dict] | None
+        """Pop the next available frame.
+
+        BREAKING CHANGE (seekable replay, unreleased): `with_tframe=True` used to
+        return `(image, tframe)`. It now always returns a 3-tuple
+        `(image, tframe, extras)`, where `extras` is `{}` when no replay controller
+        is attached and otherwise carries the Replay Sync Meta Spec v1 keys
+        (`frame_n`, `frame_repeat`, `seek_reset`, `seek_frame_index`). `image` may be
+        `None` on the tuple emitted when the video ends. `VideoReader` /
+        `MultiVideoReader` are exported in `__all__`, so any external caller doing
+        `img, tframe = reader.read(with_tframe=True)` must be updated to
+        `img, tframe, extras = reader.read(with_tframe=True)`.
+
+        `with_tframe=False` is unaffected — it still returns just the image
+        ndarray (or `None`), matching every prior release.
+        """
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
@@ -786,22 +858,28 @@ class VideoInConfig(FilterConfig):
 
     # ---- seekable replay control (optional) ----
     # When control_port is set, VideoIn starts an HTTP replay API (pause/play/seek/step)
-    # via VideoController (from filter_subject_data_in) and injects replay sync metadata
-    # (frame_index / frame_repeat / seek_*) into every Frame.meta.
+    # via a ReplayController (see the ReplayController Protocol above) and injects
+    # replay sync metadata (frame_index / frame_repeat / seek_*) into every Frame.meta.
     #
     # IMPORTANT: only FilterSubjectDataIn with sync_key='sequential' consumes these
     # signals today. Other sync_key modes (e.g. 'ts') ignore them — see the Replay
     # Sync Meta Spec in the class docstring.
     #
     # Env vars (legacy VIDEO_IN_* takes precedence over FILTER_*):
-    #   VIDEO_IN_CONTROL_PORT / FILTER_CONTROL_PORT
-    #   VIDEO_IN_SDI_URL      / FILTER_SDI_URL
-    #   VIDEO_IN_WEBVIS_URL   / FILTER_WEBVIS_URL
-    #   VIDEO_IN_WEBVIS_TOPIC / FILTER_WEBVIS_TOPIC
+    #   VIDEO_IN_CONTROL_PORT             / FILTER_CONTROL_PORT
+    #   VIDEO_IN_SDI_URL                  / FILTER_SDI_URL
+    #   VIDEO_IN_WEBVIS_URL               / FILTER_WEBVIS_URL
+    #   VIDEO_IN_WEBVIS_TOPIC             / FILTER_WEBVIS_TOPIC
+    #   VIDEO_IN_REPLAY_CONTROLLER_CLASS  / FILTER_REPLAY_CONTROLLER_CLASS
     control_port: int | None
     sdi_url:      str | None
     webvis_url:   str | None
     webvis_topic: str | None
+
+    # Dotted `module:Class` (or `module.Class`) path to the ReplayController
+    # implementation. Defaults to filter_subject_data_in's VideoController, resolved
+    # lazily (only when control_port is set) — core never imports it at module scope.
+    replay_controller_class: str | None
 
 
 class VideoIn(Filter):
@@ -919,14 +997,30 @@ class VideoIn(Filter):
         Example S3 usage:
             openfilter run - VideoIn --sources s3://my-bucket/video.mp4!region=us-west-2 - Webvis
 
-    Seekable Replay API (requires filter_subject_data_in package):
-        When `control_port` is set, VideoIn wires a VideoController HTTP server
-        (pause/play/step/seek + HTML player). HTTP/UI lives in that package so VideoIn
-        stays focused on frame production; seek/freeze still run inside VideoReader
-        because they gate which frames enter the deque.
+    BREAKING CHANGE (seekable replay, unreleased): `VideoReader.read(with_tframe=True)`
+        and `MultiVideoReader.read(with_tframe=True)` now return a 3-tuple
+        `(image, tframe, extras)` instead of `(image, tframe)`. Both classes are
+        exported in `__all__`. `with_tframe=False` (the default) is unaffected.
+        See `VideoReader.read` docstring. All in-repo callers are updated.
 
-        If `control_port` is set but filter_subject_data_in is not installed, setup()
-        raises RuntimeError (fail loud — the operator explicitly requested controls).
+    Seekable Replay API (requires a ReplayController implementation, e.g. the
+    filter_subject_data_in package):
+        When `control_port` is set, VideoIn resolves a `ReplayController` (see the
+        `ReplayController` Protocol at module scope) by dotted class path and wires
+        it up as an HTTP server (pause/play/step/seek + HTML player). openfilter
+        core never imports a concrete downstream package at module scope — the
+        controller class is resolved lazily, only when `control_port` is set, via
+        `replay_controller_class` (default points at filter_subject_data_in's
+        `VideoController`, which structurally satisfies `ReplayController`).
+        HTTP/UI lives in that package so VideoIn stays focused on frame production;
+        seek/freeze still run inside VideoReader because they gate which frames
+        enter the deque.
+
+        If `control_port` is set but the target module is not installed, setup()
+        raises RuntimeError (fail loud — the operator explicitly requested
+        controls). If the module *is* installed but fails to import for some other
+        reason (e.g. one of its own dependencies is broken), that underlying error
+        is raised instead of being mistaken for "not installed".
 
         Frame.meta keys (always present when control_port is active):
 
@@ -960,10 +1054,13 @@ class VideoIn(Filter):
             GET  /player         (HTML5 browser player with scrubber + overlay)
 
         Config / env vars (VIDEO_IN_* takes precedence over FILTER_*):
-            control_port  / VIDEO_IN_CONTROL_PORT  / FILTER_CONTROL_PORT
-            sdi_url       / VIDEO_IN_SDI_URL       / FILTER_SDI_URL
-            webvis_url    / VIDEO_IN_WEBVIS_URL    / FILTER_WEBVIS_URL
-            webvis_topic  / VIDEO_IN_WEBVIS_TOPIC  / FILTER_WEBVIS_TOPIC
+            control_port             / VIDEO_IN_CONTROL_PORT             / FILTER_CONTROL_PORT
+            sdi_url                  / VIDEO_IN_SDI_URL                  / FILTER_SDI_URL
+            webvis_url               / VIDEO_IN_WEBVIS_URL               / FILTER_WEBVIS_URL
+            webvis_topic             / VIDEO_IN_WEBVIS_TOPIC             / FILTER_WEBVIS_TOPIC
+            replay_controller_class  / VIDEO_IN_REPLAY_CONTROLLER_CLASS  / FILTER_REPLAY_CONTROLLER_CLASS
+                Dotted `module:Class` path to an alternate ReplayController
+                implementation. Defaults to filter_subject_data_in's VideoController.
     """
 
     FILTER_TYPE = 'Input'
@@ -1011,6 +1108,12 @@ class VideoIn(Filter):
                 or os.getenv('FILTER_WEBVIS_TOPIC')
                 or os.getenv('FILTER_VIDEO_WEBVIS_TOPIC')
                 or 'viz'
+            )
+        if config.replay_controller_class is None:
+            config.replay_controller_class = (
+                os.getenv('VIDEO_IN_REPLAY_CONTROLLER_CLASS')
+                or os.getenv('FILTER_REPLAY_CONTROLLER_CLASS')
+                or _DEFAULT_REPLAY_CONTROLLER_PATH
             )
 
         for idx, source in enumerate(sources):
@@ -1062,13 +1165,27 @@ class VideoIn(Filter):
         # ---- seekable replay controller (optional) ----
         self._replay_ctrl = None
         if config.control_port:
-            if not _HAS_VIDEO_CONTROLLER:
+            controller_path = config.replay_controller_class or _DEFAULT_REPLAY_CONTROLLER_PATH
+
+            try:
+                controller_cls = _resolve_replay_controller_class(controller_path)
+            except Exception as e:
+                self._release_mvreader_captures()
                 raise RuntimeError(
-                    f'VideoIn: control_port={config.control_port} was set but '
-                    'filter_subject_data_in is not installed — refusing to start '
-                    'without the requested replay API. Install with: '
+                    f'VideoIn: control_port={config.control_port} was set but loading the '
+                    f'replay controller {controller_path!r} failed (it looks installed but '
+                    f'broken, not simply missing): {e}'
+                ) from e
+
+            if controller_cls is None:
+                self._release_mvreader_captures()
+                raise RuntimeError(
+                    f'VideoIn: control_port={config.control_port} was set but the replay '
+                    f'controller module for {controller_path!r} is not installed — refusing '
+                    'to start without the requested replay API. Install with: '
                     'pip install filter-subject-data-in'
                 )
+
             # Use the first video as the canonical source for the controller
             primary_vid  = self.mvreader.videos[0]
             primary_src  = config.sources[0].source
@@ -1076,12 +1193,18 @@ class VideoIn(Filter):
             if local_path and not os.path.isfile(local_path):
                 local_path = None
 
-            ctrl = _VideoController(
+            ctrl = controller_cls(
                 total_frames=primary_vid._total_frames,
                 fps=primary_vid.fps or 30.0,
                 source=primary_src,
                 local_path=local_path,
             )
+            if not isinstance(ctrl, ReplayController):
+                logger.warning(
+                    'VideoIn: replay controller %r does not fully satisfy the ReplayController '
+                    'protocol (missing method?) — proceeding, but calls may fail at runtime.',
+                    controller_path,
+                )
             ctrl.start_server(
                 config.control_port,
                 sdi_url=config.sdi_url,
@@ -1102,6 +1225,25 @@ class VideoIn(Filter):
             )
 
         self.mvreader.start()
+
+    def _release_mvreader_captures(self):
+        """Release cv2.VideoCapture handles opened by setup() before raising.
+
+        setup() constructs MultiVideoReader (opening one cv2.VideoCapture per
+        source) before the control_port guard above. If that guard raises,
+        mvreader.start() never runs so shutdown() never runs either — release
+        the already-open captures directly so a failed setup() (e.g. in tests
+        or config validators that call setup() without a full run) does not
+        leak file handles.
+        """
+        mvreader = getattr(self, 'mvreader', None)
+        if mvreader is None:
+            return
+        for vid in mvreader.videos:
+            try:
+                vid.cap.release()
+            except Exception:
+                pass
 
     def shutdown(self):
         ctrl = getattr(self, '_replay_ctrl', None)

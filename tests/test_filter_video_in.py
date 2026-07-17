@@ -91,7 +91,8 @@ class TestVideoIn(unittest.TestCase):
             'control_port': None,
             'sdi_url': 'http://localhost:8090',
             'webvis_url': 'http://localhost:8000',
-            'webvis_topic': 'viz'})
+            'webvis_topic': 'viz',
+            'replay_controller_class': 'filter_subject_data_in.video_controller:VideoController'})
         ncfg1 = VideoIn.normalize_config(scfg)
         ncfg2 = VideoIn.normalize_config(ncfg1)
 
@@ -614,27 +615,62 @@ class TestVideoInSeekableReplay(unittest.TestCase):
                     os.environ[k] = v
 
     def test_missing_controller_package_raises(self):
-        """control_port set without filter_subject_data_in must fail loudly."""
-        with patch.object(video_in_mod, '_HAS_VIDEO_CONTROLLER', False):
-            with patch.object(video_in_mod, '_VideoController', None):
-                filt = VideoIn.__new__(VideoIn)
-                cfg = VideoIn.normalize_config(dict(
-                    id='vidin',
-                    sources=f'file://{TEST_VIDEO_FNM}!sync',
-                    outputs='tcp://*',
-                    control_port=8091,
-                ))
-                with self.assertRaises(RuntimeError) as cm:
-                    filt.setup(cfg)
-                self.assertIn('filter_subject_data_in', str(cm.exception))
-                self.assertIn('8091', str(cm.exception))
-                # setup() opens captures before the package check — release them
-                if getattr(filt, 'mvreader', None) is not None:
-                    for vid in filt.mvreader.videos:
-                        try:
-                            vid.cap.release()
-                        except Exception:
-                            pass
+        """control_port set with an unresolvable replay_controller_class must fail loudly."""
+        filt = VideoIn.__new__(VideoIn)
+        cfg = VideoIn.normalize_config(dict(
+            id='vidin',
+            sources=f'file://{TEST_VIDEO_FNM}!sync',
+            outputs='tcp://*',
+            control_port=8091,
+            replay_controller_class='totally_bogus_missing_pkg_xyz:Foo',
+        ))
+        with self.assertRaises(RuntimeError) as cm:
+            filt.setup(cfg)
+        self.assertIn('not installed', str(cm.exception))
+        self.assertIn('8091', str(cm.exception))
+        # setup() must release the cv2.VideoCapture handles it already opened
+        # before raising (_release_mvreader_captures), not leak them.
+        for vid in filt.mvreader.videos:
+            self.assertFalse(vid.cap.isOpened())
+
+    def test_missing_controller_default_message_names_filter_subject_data_in(self):
+        """Default replay_controller_class points at filter_subject_data_in by name."""
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=None) as mock_resolve:
+            filt = VideoIn.__new__(VideoIn)
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}!sync',
+                outputs='tcp://*',
+                control_port=8092,
+            ))
+            with self.assertRaises(RuntimeError) as cm:
+                filt.setup(cfg)
+            self.assertIn('filter_subject_data_in', str(cm.exception))
+            mock_resolve.assert_called_once_with(video_in_mod._DEFAULT_REPLAY_CONTROLLER_PATH)
+            for vid in filt.mvreader.videos:
+                self.assertFalse(vid.cap.isOpened())
+
+    def test_resolve_replay_controller_missing_target_returns_none(self):
+        """A dotted path whose target module does not exist resolves to None."""
+        self.assertIsNone(
+            video_in_mod._resolve_replay_controller_class('totally_bogus_missing_pkg_xyz:Foo')
+        )
+
+    def test_resolve_replay_controller_broken_dependency_reraises(self):
+        """A ModuleNotFoundError for something *other* than the target module is not swallowed."""
+        with patch('importlib.import_module') as mock_import:
+            mock_import.side_effect = ModuleNotFoundError("No module named 'some_other_dep'", name='some_other_dep')
+            with self.assertRaises(ModuleNotFoundError):
+                video_in_mod._resolve_replay_controller_class(
+                    'filter_subject_data_in.video_controller:VideoController'
+                )
+
+    def test_resolve_replay_controller_resolves_real_class(self):
+        """The default dotted path resolves to a class satisfying ReplayController."""
+        cls = video_in_mod._resolve_replay_controller_class(video_in_mod._DEFAULT_REPLAY_CONTROLLER_PATH)
+        self.assertIsNotNone(cls)
+        for method in ('consume_seek', 'should_freeze', 'on_frame_emitted', 'start_server', 'stop_server'):
+            self.assertTrue(hasattr(cls, method), method)
 
     def test_seek_accurate_forward_reads_to_non_iframe_target(self):
         """_seek_accurate compensates when OpenCV lands before the target."""
@@ -851,8 +887,7 @@ class TestVideoInSeekableReplay(unittest.TestCase):
         instance.should_freeze.return_value = False
         FakeVC.return_value = instance
 
-        with patch.object(video_in_mod, '_HAS_VIDEO_CONTROLLER', True), \
-             patch.object(video_in_mod, '_VideoController', FakeVC):
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=FakeVC):
             filt = VideoIn.__new__(VideoIn)
             cfg = VideoIn.normalize_config(dict(
                 id='vidin',
