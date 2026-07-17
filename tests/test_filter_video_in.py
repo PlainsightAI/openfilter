@@ -518,6 +518,9 @@ class TestVideoIn(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 from unittest.mock import MagicMock, patch
+import importlib
+import sys
+import types
 
 import cv2
 
@@ -666,11 +669,36 @@ class TestVideoInSeekableReplay(unittest.TestCase):
                 )
 
     def test_resolve_replay_controller_resolves_real_class(self):
-        """The default dotted path resolves to a class satisfying ReplayController."""
+        """The default dotted path resolves to a class satisfying ReplayController.
+
+        Skipped when filter_subject_data_in is not installed (e.g. openfilter CI).
+        """
+        try:
+            importlib.import_module('filter_subject_data_in.video_controller')
+        except ImportError:
+            self.skipTest('filter_subject_data_in not installed')
+
         cls = video_in_mod._resolve_replay_controller_class(video_in_mod._DEFAULT_REPLAY_CONTROLLER_PATH)
         self.assertIsNotNone(cls)
         for method in ('consume_seek', 'should_freeze', 'on_frame_emitted', 'start_server', 'stop_server'):
             self.assertTrue(hasattr(cls, method), method)
+
+    def test_resolve_replay_controller_resolves_injected_class(self):
+        """Resolver returns the class from an importable dotted path (CI-safe mock)."""
+        class _StubCtrl:
+            def consume_seek(self): return None
+            def should_freeze(self): return False
+            def on_frame_emitted(self, frame_n): pass
+            def start_server(self, *a, **k): pass
+            def stop_server(self): pass
+
+        fake_mod = types.ModuleType('openfilter_test_replay_stub')
+        fake_mod.StubCtrl = _StubCtrl
+        with patch.dict(sys.modules, {'openfilter_test_replay_stub': fake_mod}):
+            cls = video_in_mod._resolve_replay_controller_class(
+                'openfilter_test_replay_stub:StubCtrl'
+            )
+        self.assertIs(cls, _StubCtrl)
 
     def test_seek_accurate_forward_reads_to_non_iframe_target(self):
         """_seek_accurate compensates when OpenCV lands before the target."""
