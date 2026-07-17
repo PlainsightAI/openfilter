@@ -7,32 +7,93 @@
 
 ---
 
-## Motivation
+## 1. Motivation
 
 Replay pipelines re-process a recorded video alongside its stored subject-data
 (detections, tracks, classifications) so operators can review, audit, or debug
-pipeline output frame by frame.
+pipeline output frame by frame:
 
-Before this change, `VideoIn` had no way to pause, seek, or step through a video
-at runtime. Every emitted frame carried only a wall-clock timestamp (`ts`), which
-made it impossible for downstream filters such as `FilterSubjectDataIn` to stay
-synchronized after any interactive operation:
+```
+VideoIn ──► FilterSubjectDataIn ──► Webvis
+             (recorded data)         (browser viewer)
+```
 
-- **After a seek** — `FilterSubjectDataIn`'s sequential cursor kept advancing from
-  the old position, overlaying data from the wrong point in time.
-- **While paused** — the same image was re-emitted but the cursor still advanced,
-  so bounding boxes kept moving on a frozen frame.
+Before this change, `VideoIn` had no way to pause, seek, or step through a video at
+runtime. Every emitted frame carried only a wall-clock timestamp (`ts`), which made
+it impossible for downstream filters such as `FilterSubjectDataIn` to stay synchronized
+after any interactive operation:
 
-A prototype filter (`SeekableVideoIn`) proved the concept but duplicated all of
-`VideoIn`'s video-reading logic and forced every replay pipeline to use a different
-filter class name. The correct fix is to add these capabilities directly to `VideoIn`,
-activated only when the operator sets the new `control_port` field.
+- **After a seek** — `FilterSubjectDataIn`'s sequential cursor kept advancing from the
+  old position, overlaying data from the wrong point in time.
+- **While paused** — the same image was re-emitted but the cursor still advanced, so
+  bounding boxes kept moving on a frozen frame.
+
+The goal is to add full interactive replay controls directly to `VideoIn`, activated
+only when the operator sets the new `control_port` field, with no impact on existing
+users.
 
 ---
 
-## What Changed in `VideoIn`
+## 2. Architecture
 
-### 1. New configuration fields
+```
+┌────────────────────────────────────────────────────────────────┐
+│  VideoIn process                                               │
+│                                                                │
+│  ┌──────────────────────────────────┐                         │
+│  │  VideoReader (background thread) │                         │
+│  │                                  │   (image, tframe,       │
+│  │  loop:                           │    extras)              │
+│  │    1. consume_seek()  ──────────►│──────────────────►      │
+│  │       seek accurate              │   Deque(maxlen=1)       │
+│  │    2. should_freeze()            │        │                │
+│  │       re-emit last image         │        │                │
+│  │    3. read_one() → frame         │        │                │
+│  │       inject extras              │        ▼                │
+│  └──────────────┬───────────────────┘  VideoIn.process()      │
+│                 │                        reads deque           │
+│                 │                        builds Frame{meta}   │
+│         ┌───────▼──────────┐                                  │
+│         │  VideoController │  HTTP :control_port              │
+│         │  (state machine) │◄──────────────────────────────── │◄── browser / curl
+│         │                  │                                  │
+│         │  is_paused       │  POST /pause                     │
+│         │  seek_target     │  POST /play                      │
+│         │  current_frame   │  POST /step?frames=N             │
+│         │                  │  POST /seek?frame=N              │
+│         │                  │  POST /seek?ts=12.3              │
+│         │                  │  GET  /status                    │
+│         │                  │  GET  /video  (MP4 stream)       │
+│         │                  │  GET  /player (browser UI)       │
+│         └──────────────────┘                                  │
+└────────────────────────────────────────────────────────────────┘
+                │
+                │  Frame { meta: { frame_index, total_frames,
+                │                  seek_reset, seek_frame_index,
+                │                  seek_ts, frame_repeat } }
+                ▼
+┌──────────────────────────────────────────────────────┐
+│  FilterSubjectDataIn  (sync_key='sequential')        │
+│                                                      │
+│  frame_repeat = True  →  cursor unchanged            │
+│  seek_reset   = True  →  cursor = seek_frame_index   │
+│  (normal)             →  cursor += 1                 │
+└──────────────────────────────────────────────────────┘
+```
+
+Three threads cooperate:
+
+| Thread | Role |
+|---|---|
+| **HTTP thread** (VideoController) | Receives operator commands, writes `is_paused` / `seek_target` under a mutex |
+| **VideoReader thread** | Reads frames from disk, checks controller state each iteration, writes `(image, tframe, extras)` to a `Deque(maxlen=1)` |
+| **Main thread** (VideoIn.process) | Reads from deque, builds `Frame` objects with replay metadata, sends downstream |
+
+---
+
+## 3. What Changed
+
+### 3.1 New configuration fields
 
 | Field | Type | Default | Env var |
 |---|---|---|---|
@@ -41,99 +102,165 @@ activated only when the operator sets the new `control_port` field.
 | `webvis_url` | `str` | `http://localhost:8000` | `VIDEO_IN_WEBVIS_URL` |
 | `webvis_topic` | `str` | `viz` | `VIDEO_IN_WEBVIS_TOPIC` |
 
-Setting `control_port` is the only opt-in required. All other fields have sensible
-defaults. Existing `VideoIn` configurations without `control_port` are completely
-unaffected.
+Setting `control_port` is the only opt-in required. Existing configurations without it
+are completely unaffected.
 
-### 2. Embedded HTTP replay API
+### 3.2 `VideoReader` — seek, freeze, and extras
 
-When `control_port` is set, `VideoIn.setup()` creates a `VideoController` (from the
-`filter_subject_data_in` package) and starts its HTTP server. The server exposes:
+The `thread_reader` loop gains two new phases that execute **before** the normal
+`read_one()` call on every iteration.
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/pause` | Pause playback |
-| `POST` | `/play` | Resume playback |
-| `POST` | `/step?frames=N` | Advance N frames while paused |
-| `POST` | `/seek?frame=N` | Seek to frame index N |
-| `POST` | `/seek?ts=12.3` | Seek to timestamp in seconds |
-| `GET` | `/status` | JSON: frame index, ts, fps, total frames |
-| `GET` | `/video` | Stream the local MP4 (Range request support) |
-| `GET` | `/player` | HTML5 browser player with scrubber and overlay |
+#### Phase 1 — Seek (highest priority)
 
-The controller is wired into every `VideoReader` in the filter so multi-camera sources
-pause and seek together. If the `filter_subject_data_in` package is not installed, a
-warning is logged and the filter continues in normal streaming mode.
+```python
+seek_target = ctrl.consume_seek()   # atomic read-and-clear
+if seek_target is not None:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, seek_target)   # jump to nearest I-frame
+    actual = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+    while actual < seek_target:                      # forward-read compensation
+        cap.read()
+        actual += 1
+    self._frame_n      = seek_target
+    _just_seeked       = True
+    _seek_target_frame = seek_target
+```
 
-### 3. Frame-accurate seek in `VideoReader.thread_reader`
+`cv2.VideoCapture` can only seek to I-frames (keyframes). For H.264/HEVC files the
+nearest I-frame may be several frames before the target. The forward-read loop
+compensates by decoding and discarding intermediate frames until the exact target
+position is reached.
 
-A seek command sets a target frame index in the controller. At the top of the next
-`thread_reader` loop iteration, the thread:
+`_just_seeked` survives into Phase 2. It forces one normal read even when the player
+is paused so that the frozen image is updated to the seek-target frame before the
+freeze loop resumes.
 
-1. Reads and clears the pending seek target atomically.
-2. Calls `cv2.CAP_PROP_POS_FRAMES` to jump to the nearest I-frame.
-3. Reads forward frame by frame until the exact target index is reached
-   (I-frame compensation).
-4. Sets an internal `_just_seeked` flag so the resulting frame is read and
-   stored before the freeze loop resumes.
+#### Phase 2 — Freeze (pause)
 
-### 4. Freeze-frame (pause) in `VideoReader.thread_reader`
+```python
+if ctrl.should_freeze() and not _just_seeked:
+    if self._last_replay_img is not None:
+        freeze_extras = {'frame_n': self._frame_n, 'frame_repeat': True}
+        self.deque.append((self._last_replay_img, time_ns(), freeze_extras))
+        notify_cond()
+        # throttle: respect sync_evt in sync mode, sleep ns_per_fps otherwise
+        if sync_evt:
+            sync_evt.wait(); sync_evt.clear()
+        else:
+            sleep((ns_per_fps or ns_per_maxfps or 40_000_000) / 1e9)
+    else:
+        sleep(0.04)
+    continue   # skip Phase 3
+```
 
-While paused, instead of reading the next frame from the video file the thread
-re-emits the last captured image at the natural frame rate. The re-emitted frame
-carries `frame_repeat: True` in its extras dict. This keeps pipeline throughput
-stable — downstream filters continue to receive frames and can serve API queries
-— while preventing the data cursor from advancing.
+Re-emitting the last image at the natural frame rate keeps pipeline throughput stable —
+`FilterSubjectDataIn` continues to receive frames and can serve API queries while the
+operator is paused. The throttle prevents the thread from spinning at CPU speed.
 
-The freeze loop respects the existing timing mechanisms: in `sync` mode it waits
-for `sync_evt` backpressure from the consumer; in async mode it sleeps one frame
-period (`ns_per_fps`).
+#### Phase 3 — Normal read
 
-### 5. Sync metadata injected into every Frame
+```python
+image = self.read_one()                         # existing timing / loop logic
+frame_n = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+self._frame_n         = frame_n
+self._last_replay_img = image                   # stored for future freeze
 
-`VideoIn.process()` maps the extras produced by `thread_reader` into standard
-`meta` keys on the outgoing `Frame`:
+extras = {'frame_n': frame_n}
+if _just_seeked:
+    extras['seek_reset']       = True
+    extras['seek_frame_index'] = _seek_target_frame
+    _just_seeked = False
+
+ctrl.on_frame_emitted(frame_n)
+self.deque.append((image, tframe, extras))
+```
+
+#### Deque format
+
+| Before | After |
+|---|---|
+| `(image, tframe)` | `(image, tframe, extras)` |
+
+`extras` is always a dict (empty `{}` when replay mode is not active). `VideoReader.read()`
+and `MultiVideoReader.read()` are updated to handle the three-tuple. The public
+`read(with_tframe=False)` return type is backward-compatible.
+
+### 3.3 Sync metadata on every Frame
+
+`VideoIn.process()` maps `extras` to standard `meta` keys on the outgoing `Frame`:
 
 | `meta` key | Present when | Meaning |
 |---|---|---|
 | `frame_index` | replay mode, every frame | 0-based position in the video file |
 | `total_frames` | replay mode, every frame | total frames in the file |
-| `frame_repeat` | paused | this frame is a re-emission; do not advance data cursor |
+| `frame_repeat` | paused | re-emitted frame; do not advance data cursor |
 | `seek_reset` | first frame after a seek | a seek just occurred |
 | `seek_frame_index` | seek | exact target frame index |
 | `seek_ts` | seek | target timestamp in seconds |
 
-`FilterSubjectDataIn` already consumes all three signals for `sync_key='sequential'`:
+`FilterSubjectDataIn` already handles all three signals for `sync_key='sequential'`:
 
 ```
 frame_repeat = True  →  return stored_frames[cursor - 1]   (cursor unchanged)
-seek_reset   = True  →  cursor = seek_frame_index           (jump to exact position)
+seek_reset   = True  →  cursor = seek_frame_index           (jump)
 (normal)             →  return stored_frames[cursor]; cursor += 1
 ```
 
 No changes to `FilterSubjectDataIn` were required.
 
-### 6. Internal deque format
+### 3.4 `VideoController` wiring in `VideoIn.setup()`
 
-The `VideoReader` deque item format was extended from `(image, tframe)` to
-`(image, tframe, extras)` where `extras` is always present (empty dict `{}`
-when replay mode is not active). `VideoReader.read()` and `MultiVideoReader.read()`
-were updated accordingly. The change is entirely internal; the public `Frame` API
-and all downstream filters are unaffected.
+```python
+if config.control_port:
+    ctrl = VideoController(
+        total_frames = primary_vid._total_frames,
+        fps          = primary_vid.fps or 30.0,
+        source       = primary_src,
+        local_path   = local_path,          # for /video streaming
+    )
+    ctrl.start_server(
+        config.control_port,
+        sdi_url      = config.sdi_url,
+        webvis_url   = config.webvis_url,
+        webvis_topic = config.webvis_topic,
+    )
+    # wire into every VideoReader so all cameras pause/seek together
+    for vid in self.mvreader.videos:
+        vid._replay_ctrl = ctrl
+```
+
+If the `filter_subject_data_in` package is not installed the warning is logged and
+`control_port` is silently ignored — the filter runs in normal streaming mode.
 
 ---
 
-## Backward Compatibility
+## 4. Synchronization Guarantee
+
+The table below shows the exact state machine for `FilterSubjectDataIn`
+`sync_key='sequential'` — the recommended mode for replay:
+
+| Event | VideoIn emits | FilterSubjectDataIn action |
+|---|---|---|
+| Normal frame | `frame_index=N` | `stored_frames[cursor]; cursor += 1` |
+| Paused frame | `frame_repeat=True` | `stored_frames[cursor-1]` — cursor frozen |
+| First frame after seek | `seek_reset=True`, `seek_frame_index=K` | `cursor = K` then `stored_frames[K]` |
+
+Because the control happens **inside the thread that reads the video** — before any frame
+is placed in the deque — there is no window where a frame can be emitted without the
+correct metadata. The seek and freeze decisions are made atomically with the cap read.
+
+---
+
+## 5. Backward Compatibility
 
 | Scenario | Behavior |
 |---|---|
-| `control_port` not set | Identical to the previous `VideoIn` — zero overhead |
+| `control_port` not set | Identical to previous `VideoIn` — zero overhead |
 | `control_port` set, package missing | Warning logged, replay disabled, pipeline continues |
-| `SeekableVideoIn` users | No change — filter is preserved and still works |
+| Multi-source `VideoIn` with `control_port` | All `VideoReader`s share one controller — all cameras pause/seek together |
 
 ---
 
-## Files Changed
+## 6. Files Changed
 
 | File | Change |
 |---|---|
