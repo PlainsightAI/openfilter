@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from threading import Condition, Event, Thread
+from threading import Condition, Event, Thread, current_thread
 from time import time_ns, sleep
 from typing import Any
 from urllib.parse import urlparse
@@ -269,7 +269,16 @@ class VideoReader:
         self.state = 2
 
         self.stop_evt.set()
-        self.cap.release()
+        # Unblock thread_reader / read_one waiting on sync_evt.wait()
+        if (sync_evt := self.sync_evt) is not None:
+            sync_evt.set()
+        # Wait for the reader thread to leave cap.read() before releasing
+        if self.thread.is_alive() and self.thread is not current_thread():
+            self.thread.join(timeout=2.0)
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
@@ -349,8 +358,11 @@ class VideoReader:
 
         return image
 
-    def _seek_accurate(self, target_frame: int) -> None:
-        """Seek to target_frame with I-frame compensation (reads forward from nearest I-frame)."""
+    def _seek_accurate(self, target_frame: int) -> int:
+        """Seek to target_frame with I-frame compensation (reads forward from nearest I-frame).
+
+        Returns the last reported OpenCV position after compensation (may be < target if EOF).
+        """
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
         actual = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
         while actual < target_frame:
@@ -359,6 +371,7 @@ class VideoReader:
                 break
             actual += 1
         self._frame_n = target_frame
+        return actual
 
     def thread_reader(self):
         cond  = self.cond
@@ -470,8 +483,21 @@ class VideoReader:
                     self._last_replay_img = image
                     replay_extras         = {'frame_n': frame_n}
                     if _just_seeked:
+                        # Keep frame_index and seek_frame_index identical on the
+                        # first post-seek frame. Prefer the actual decoded position
+                        # when OpenCV undershoots the requested target.
+                        if (
+                            _seek_target_frame is not None
+                            and frame_n != _seek_target_frame
+                        ):
+                            logger.warning(
+                                'VideoIn seek: requested frame %s but decoded '
+                                'position is %s; emitting seek_frame_index=%s '
+                                'to match frame_index',
+                                _seek_target_frame, frame_n, frame_n,
+                            )
                         replay_extras['seek_reset']       = True
-                        replay_extras['seek_frame_index'] = _seek_target_frame
+                        replay_extras['seek_frame_index'] = frame_n
                         _just_seeked       = False
                         _seek_target_frame = None
                     ctrl.on_frame_emitted(frame_n)
@@ -653,14 +679,23 @@ class VideoInConfig(FilterConfig):
     resize:  str | None
 
     # ---- seekable replay control (optional) ----
-    # When control_port is set VideoIn starts an HTTP replay API (pause/play/seek/step)
-    # and injects seek_reset / frame_repeat / frame_index metadata into every frame so
-    # that FilterSubjectDataIn can stay in perfect sync regardless of the sync_key used.
-    # Requires the filter_subject_data_in package to be installed.
-    control_port: int | None       # HTTP port; env VIDEO_IN_CONTROL_PORT
-    sdi_url:      str | None       # FilterSubjectDataIn API URL for browser overlay
-    webvis_url:   str | None       # Webvis base URL for browser player
-    webvis_topic: str | None       # Webvis topic for browser player
+    # When control_port is set, VideoIn starts an HTTP replay API (pause/play/seek/step)
+    # via VideoController (from filter_subject_data_in) and injects replay sync metadata
+    # (frame_index / frame_repeat / seek_*) into every Frame.meta.
+    #
+    # IMPORTANT: only FilterSubjectDataIn with sync_key='sequential' consumes these
+    # signals today. Other sync_key modes (e.g. 'ts') ignore them — see the Replay
+    # Sync Meta Spec in the class docstring.
+    #
+    # Env vars (legacy VIDEO_IN_* takes precedence over FILTER_*):
+    #   VIDEO_IN_CONTROL_PORT / FILTER_CONTROL_PORT
+    #   VIDEO_IN_SDI_URL      / FILTER_SDI_URL
+    #   VIDEO_IN_WEBVIS_URL   / FILTER_WEBVIS_URL
+    #   VIDEO_IN_WEBVIS_TOPIC / FILTER_WEBVIS_TOPIC
+    control_port: int | None
+    sdi_url:      str | None
+    webvis_url:   str | None
+    webvis_topic: str | None
 
 
 class VideoIn(Filter):
@@ -754,12 +789,16 @@ class VideoIn(Filter):
             per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
 
     Environment variables (FILTER_* or legacy VIDEO_IN_* prefix, legacy takes precedence):
-        FILTER_BGR      / VIDEO_IN_BGR
-        FILTER_SYNC     / VIDEO_IN_SYNC
-        FILTER_LOOP     / VIDEO_IN_LOOP
-        FILTER_MAXFPS   / VIDEO_IN_MAXFPS
-        FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
-        FILTER_RESIZE   / VIDEO_IN_RESIZE
+        FILTER_BGR           / VIDEO_IN_BGR
+        FILTER_SYNC          / VIDEO_IN_SYNC
+        FILTER_LOOP          / VIDEO_IN_LOOP
+        FILTER_MAXFPS        / VIDEO_IN_MAXFPS
+        FILTER_MAXSIZE       / VIDEO_IN_MAXSIZE
+        FILTER_RESIZE        / VIDEO_IN_RESIZE
+        FILTER_CONTROL_PORT  / VIDEO_IN_CONTROL_PORT
+        FILTER_SDI_URL       / VIDEO_IN_SDI_URL
+        FILTER_WEBVIS_URL    / VIDEO_IN_WEBVIS_URL
+        FILTER_WEBVIS_TOPIC  / VIDEO_IN_WEBVIS_TOPIC
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
@@ -775,18 +814,37 @@ class VideoIn(Filter):
             openfilter run - VideoIn --sources s3://my-bucket/video.mp4!region=us-west-2 - Webvis
 
     Seekable Replay API (requires filter_subject_data_in package):
-        When `control_port` is set, VideoIn exposes an HTTP API and an HTML browser player
-        that support real-time pause, play, step, and seek.  Every emitted frame carries
-        extra metadata so that FilterSubjectDataIn stays perfectly synchronised:
+        When `control_port` is set, VideoIn wires a VideoController HTTP server
+        (pause/play/step/seek + HTML player). HTTP/UI lives in that package so VideoIn
+        stays focused on frame production; seek/freeze still run inside VideoReader
+        because they gate which frames enter the deque.
 
-            meta['frame_index']        - 0-based frame counter (replaces wall-clock ts for sync)
+        If `control_port` is set but filter_subject_data_in is not installed, setup()
+        raises RuntimeError (fail loud — the operator explicitly requested controls).
+
+        Frame.meta keys (always present when control_port is active):
+
+            meta['id']                 - monotonic emit counter (pipeline order; NOT file position)
+            meta['ts']                 - wall-clock emit time in seconds (NOT video-relative)
+            meta['frame_index']        - 0-based position in the video file (trust this for sync)
             meta['total_frames']       - total frames in the video file
-            meta['seek_reset']         - True on the first frame after a seek
-            meta['seek_frame_index']   - target frame index of the last seek
-            meta['seek_ts']            - target timestamp of the last seek (seconds)
-            meta['frame_repeat']       - True on every re-emitted frozen frame while paused
 
-        HTTP endpoints (all served on control_port):
+        Replay Sync Meta Spec v1 (emitted only when control_port is active):
+
+            meta['frame_repeat']       - True on every re-emitted frozen frame while paused
+            meta['seek_reset']         - True on the first frame after a seek
+            meta['seek_frame_index']   - actual decoded frame index of that seek (always == frame_index
+                                         on the seek_reset frame)
+            meta['seek_ts']            - seek_frame_index / src_fps (seconds)
+
+        Downstream consumers:
+            FilterSubjectDataIn sync_key='sequential' — honors frame_repeat / seek_reset /
+                seek_frame_index (cursor freeze / jump).
+            FilterSubjectDataIn sync_key='ts' (and any other mode) — ignores these signals;
+                do not use interactive seek/pause with those modes if sync must hold.
+            Any third-party filter — may rely on Replay Sync Meta Spec v1 keys above.
+
+        HTTP endpoints (served by VideoController on control_port):
             POST /pause
             POST /play
             POST /step?frames=N
@@ -795,11 +853,11 @@ class VideoIn(Filter):
             GET  /video          (streams the local MP4; single-source only)
             GET  /player         (HTML5 browser player with scrubber + overlay)
 
-        Config / env vars:
-            control_port  /  VIDEO_IN_CONTROL_PORT   - HTTP port (default: none / disabled)
-            sdi_url       /  VIDEO_IN_SDI_URL         - FilterSubjectDataIn API for overlay
-            webvis_url    /  VIDEO_IN_WEBVIS_URL       - Webvis base URL for pipeline view
-            webvis_topic  /  VIDEO_IN_WEBVIS_TOPIC     - Webvis topic (default: viz)
+        Config / env vars (VIDEO_IN_* takes precedence over FILTER_*):
+            control_port  / VIDEO_IN_CONTROL_PORT  / FILTER_CONTROL_PORT
+            sdi_url       / VIDEO_IN_SDI_URL       / FILTER_SDI_URL
+            webvis_url    / VIDEO_IN_WEBVIS_URL    / FILTER_WEBVIS_URL
+            webvis_topic  / VIDEO_IN_WEBVIS_TOPIC  / FILTER_WEBVIS_TOPIC
     """
 
     FILTER_TYPE = 'Input'
@@ -818,15 +876,36 @@ class VideoIn(Filter):
             raise ValueError('must specify at least one output')
 
         # ---- replay control env var defaults ----
+        # Dual-prefix convention: VIDEO_IN_* (legacy) takes precedence over FILTER_*.
+        # Also accept FILTER_VIDEO_* as a transitional alias.
         if config.control_port is None:
-            _env = os.getenv('VIDEO_IN_CONTROL_PORT') or os.getenv('FILTER_VIDEO_CONTROL_PORT')
+            _env = (
+                os.getenv('VIDEO_IN_CONTROL_PORT')
+                or os.getenv('FILTER_CONTROL_PORT')
+                or os.getenv('FILTER_VIDEO_CONTROL_PORT')
+            )
             config.control_port = int(_env) if _env else None
         if config.sdi_url is None:
-            config.sdi_url = os.getenv('VIDEO_IN_SDI_URL') or os.getenv('FILTER_VIDEO_SDI_URL') or 'http://localhost:8090'
+            config.sdi_url = (
+                os.getenv('VIDEO_IN_SDI_URL')
+                or os.getenv('FILTER_SDI_URL')
+                or os.getenv('FILTER_VIDEO_SDI_URL')
+                or 'http://localhost:8090'
+            )
         if config.webvis_url is None:
-            config.webvis_url = os.getenv('VIDEO_IN_WEBVIS_URL') or os.getenv('FILTER_VIDEO_WEBVIS_URL') or 'http://localhost:8000'
+            config.webvis_url = (
+                os.getenv('VIDEO_IN_WEBVIS_URL')
+                or os.getenv('FILTER_WEBVIS_URL')
+                or os.getenv('FILTER_VIDEO_WEBVIS_URL')
+                or 'http://localhost:8000'
+            )
         if config.webvis_topic is None:
-            config.webvis_topic = os.getenv('VIDEO_IN_WEBVIS_TOPIC') or os.getenv('FILTER_VIDEO_WEBVIS_TOPIC') or 'viz'
+            config.webvis_topic = (
+                os.getenv('VIDEO_IN_WEBVIS_TOPIC')
+                or os.getenv('FILTER_WEBVIS_TOPIC')
+                or os.getenv('FILTER_VIDEO_WEBVIS_TOPIC')
+                or 'viz'
+            )
 
         for idx, source in enumerate(sources):
             if isinstance(source, dict):
@@ -878,42 +957,42 @@ class VideoIn(Filter):
         self._replay_ctrl = None
         if config.control_port:
             if not _HAS_VIDEO_CONTROLLER:
-                logger.warning(
-                    'VideoIn: control_port=%s set but filter_subject_data_in is not installed; '
-                    'replay API disabled. Install it with: pip install filter-subject-data-in',
-                    config.control_port,
+                raise RuntimeError(
+                    f'VideoIn: control_port={config.control_port} was set but '
+                    'filter_subject_data_in is not installed — refusing to start '
+                    'without the requested replay API. Install with: '
+                    'pip install filter-subject-data-in'
                 )
-            else:
-                # Use the first video as the canonical source for the controller
-                primary_vid  = self.mvreader.videos[0]
-                primary_src  = config.sources[0].source
-                local_path   = primary_src.replace('file://', '') if primary_src.startswith('file://') else None
-                if local_path and not os.path.isfile(local_path):
-                    local_path = None
+            # Use the first video as the canonical source for the controller
+            primary_vid  = self.mvreader.videos[0]
+            primary_src  = config.sources[0].source
+            local_path   = primary_src.replace('file://', '') if primary_src.startswith('file://') else None
+            if local_path and not os.path.isfile(local_path):
+                local_path = None
 
-                ctrl = _VideoController(
-                    total_frames=primary_vid._total_frames,
-                    fps=primary_vid.fps or 30.0,
-                    source=primary_src,
-                    local_path=local_path,
-                )
-                ctrl.start_server(
-                    config.control_port,
-                    sdi_url=config.sdi_url,
-                    webvis_url=config.webvis_url,
-                    webvis_topic=config.webvis_topic,
-                )
-                self._replay_ctrl = ctrl
+            ctrl = _VideoController(
+                total_frames=primary_vid._total_frames,
+                fps=primary_vid.fps or 30.0,
+                source=primary_src,
+                local_path=local_path,
+            )
+            ctrl.start_server(
+                config.control_port,
+                sdi_url=config.sdi_url,
+                webvis_url=config.webvis_url,
+                webvis_topic=config.webvis_topic,
+            )
+            self._replay_ctrl = ctrl
 
-                # Wire the controller into every VideoReader so they all
-                # pause/seek together (important for multi-camera rigs).
-                for vid in self.mvreader.videos:
-                    vid._replay_ctrl = ctrl
+            # Wire the controller into every VideoReader so they all
+            # pause/seek together (important for multi-camera rigs).
+            for vid in self.mvreader.videos:
+                vid._replay_ctrl = ctrl
 
-                logger.info(
-                    'VideoIn: seekable replay API on port %s  player=http://localhost:%s/player',
-                    config.control_port, config.control_port,
-                )
+            logger.info(
+                'VideoIn: seekable replay API on port %s  player=http://localhost:%s/player',
+                config.control_port, config.control_port,
+            )
 
         self.mvreader.start()
 

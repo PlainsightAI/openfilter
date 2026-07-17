@@ -1,9 +1,5 @@
 # Design Doc: Seekable Replay API for `VideoIn`
 
-**Branch:** `feat/video-in-seekable-replay`  
-**Status:** Implemented  
-**Author:** Tales Rodrigues  
-**Date:** 2026-07-07
 
 ---
 
@@ -55,7 +51,7 @@ users.
 │                 │                        builds Frame{meta}   │
 │         ┌───────▼──────────┐                                  │
 │         │  VideoController │  HTTP :control_port              │
-│         │  (state machine) │◄──────────────────────────────── │◄── browser / curl
+│         │  (external pkg)  │◄──────────────────────────────── │◄── browser / curl
 │         │                  │                                  │
 │         │  is_paused       │  POST /pause                     │
 │         │  seek_target     │  POST /play                      │
@@ -81,6 +77,13 @@ users.
 └──────────────────────────────────────────────────────┘
 ```
 
+**Separation of concerns:** HTTP control + `/player` + `/video` live in
+`filter_subject_data_in.video_controller.VideoController` (optional dependency).
+`VideoIn` only wires it when `control_port` is set and keeps seek/freeze inside
+`VideoReader` because those decisions must gate which frames enter the deque
+(frame production, not browser viewing). Webvis remains the dedicated filter for
+live pipeline visualization; the VideoController player is a replay-control UI.
+
 Three threads cooperate:
 
 | Thread | Role |
@@ -95,12 +98,12 @@ Three threads cooperate:
 
 ### 3.1 New configuration fields
 
-| Field | Type | Default | Env var |
+| Field | Type | Default | Env vars (legacy `VIDEO_IN_*` takes precedence) |
 |---|---|---|---|
-| `control_port` | `int \| None` | `None` (disabled) | `VIDEO_IN_CONTROL_PORT` |
-| `sdi_url` | `str` | `http://localhost:8090` | `VIDEO_IN_SDI_URL` |
-| `webvis_url` | `str` | `http://localhost:8000` | `VIDEO_IN_WEBVIS_URL` |
-| `webvis_topic` | `str` | `viz` | `VIDEO_IN_WEBVIS_TOPIC` |
+| `control_port` | `int \| None` | `None` (disabled) | `VIDEO_IN_CONTROL_PORT` / `FILTER_CONTROL_PORT` |
+| `sdi_url` | `str` | `http://localhost:8090` | `VIDEO_IN_SDI_URL` / `FILTER_SDI_URL` |
+| `webvis_url` | `str` | `http://localhost:8000` | `VIDEO_IN_WEBVIS_URL` / `FILTER_WEBVIS_URL` |
+| `webvis_topic` | `str` | `viz` | `VIDEO_IN_WEBVIS_TOPIC` / `FILTER_WEBVIS_TOPIC` |
 
 Setting `control_port` is the only opt-in required. Existing configurations without it
 are completely unaffected.
@@ -160,14 +163,18 @@ operator is paused. The throttle prevents the thread from spinning at CPU speed.
 
 ```python
 image = self.read_one()                         # existing timing / loop logic
-frame_n = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+frame_n = int(cap.get(CAP_PROP_POS_FRAMES)) - 1
 self._frame_n         = frame_n
 self._last_replay_img = image                   # stored for future freeze
 
 extras = {'frame_n': frame_n}
 if _just_seeked:
+    # Always emit seek_frame_index == frame_n so downstream sync cannot desync
+    # if OpenCV undershoots the requested target after I-frame compensation.
+    if frame_n != _seek_target_frame:
+        logger.warning(...)
     extras['seek_reset']       = True
-    extras['seek_frame_index'] = _seek_target_frame
+    extras['seek_frame_index'] = frame_n
     _just_seeked = False
 
 ctrl.on_frame_emitted(frame_n)
@@ -182,22 +189,40 @@ self.deque.append((image, tframe, extras))
 
 `extras` is always a dict (empty `{}` when replay mode is not active). `VideoReader.read()`
 and `MultiVideoReader.read()` are updated to handle the three-tuple. The public
-`read(with_tframe=False)` return type is backward-compatible.
+`read(with_tframe=False)` return type is backward-compatible (returns image only).
 
 ### 3.3 Sync metadata on every Frame
 
-`VideoIn.process()` maps `extras` to standard `meta` keys on the outgoing `Frame`:
+`VideoIn.process()` maps `extras` to standard `meta` keys on the outgoing `Frame`.
+
+#### Always-present keys (unchanged semantics)
+
+| `meta` key | Meaning |
+|---|---|
+| `id` | Monotonic **emit** counter (pipeline order). Advances on every emit including freeze re-emits. **Not** file position. |
+| `ts` | Wall-clock emit time in seconds (`time_ns()`). **Not** video-relative. |
+| `src` / `src_fps` | Source URI and FPS |
+
+#### Replay Sync Meta Spec v1 (only when `control_port` is active)
 
 | `meta` key | Present when | Meaning |
 |---|---|---|
-| `frame_index` | replay mode, every frame | 0-based position in the video file |
-| `total_frames` | replay mode, every frame | total frames in the file |
+| `frame_index` | every frame | 0-based position in the video file — **trust this for sync** |
+| `total_frames` | every frame | total frames in the file |
 | `frame_repeat` | paused | re-emitted frame; do not advance data cursor |
 | `seek_reset` | first frame after a seek | a seek just occurred |
-| `seek_frame_index` | seek | exact target frame index |
-| `seek_ts` | seek | target timestamp in seconds |
+| `seek_frame_index` | seek | actual decoded frame index (= `frame_index` on that frame) |
+| `seek_ts` | seek | `seek_frame_index / src_fps` |
 
-`FilterSubjectDataIn` already handles all three signals for `sync_key='sequential'`:
+**Downstream consumers:**
+
+| Consumer | Behavior |
+|---|---|
+| `FilterSubjectDataIn` `sync_key='sequential'` | Honors `frame_repeat` / `seek_reset` / `seek_frame_index` |
+| `FilterSubjectDataIn` `sync_key='ts'` (and others) | **Ignores** these signals — do not use interactive seek/pause if sync must hold |
+| Third-party filters | May rely on Replay Sync Meta Spec v1 keys above |
+
+`FilterSubjectDataIn` sequential mode:
 
 ```
 frame_repeat = True  →  return stored_frames[cursor - 1]   (cursor unchanged)
@@ -205,48 +230,39 @@ seek_reset   = True  →  cursor = seek_frame_index           (jump)
 (normal)             →  return stored_frames[cursor]; cursor += 1
 ```
 
-No changes to `FilterSubjectDataIn` were required.
-
 ### 3.4 `VideoController` wiring in `VideoIn.setup()`
 
 ```python
 if config.control_port:
-    ctrl = VideoController(
-        total_frames = primary_vid._total_frames,
-        fps          = primary_vid.fps or 30.0,
-        source       = primary_src,
-        local_path   = local_path,          # for /video streaming
-    )
-    ctrl.start_server(
-        config.control_port,
-        sdi_url      = config.sdi_url,
-        webvis_url   = config.webvis_url,
-        webvis_topic = config.webvis_topic,
-    )
-    # wire into every VideoReader so all cameras pause/seek together
+    if not _HAS_VIDEO_CONTROLLER:
+        raise RuntimeError(...)   # fail loud — operator explicitly requested controls
+    ctrl = VideoController(...)
+    ctrl.start_server(config.control_port, ...)
     for vid in self.mvreader.videos:
         vid._replay_ctrl = ctrl
 ```
-
-If the `filter_subject_data_in` package is not installed the warning is logged and
-`control_port` is silently ignored — the filter runs in normal streaming mode.
 
 ---
 
 ## 4. Synchronization Guarantee
 
 The table below shows the exact state machine for `FilterSubjectDataIn`
-`sync_key='sequential'` — the recommended mode for replay:
+`sync_key='sequential'` — the recommended (and currently only supported) mode for
+interactive replay:
 
 | Event | VideoIn emits | FilterSubjectDataIn action |
 |---|---|---|
 | Normal frame | `frame_index=N` | `stored_frames[cursor]; cursor += 1` |
 | Paused frame | `frame_repeat=True` | `stored_frames[cursor-1]` — cursor frozen |
-| First frame after seek | `seek_reset=True`, `seek_frame_index=K` | `cursor = K` then `stored_frames[K]` |
+| First frame after seek | `seek_reset=True`, `seek_frame_index=K` (= `frame_index`) | `cursor = K` then `stored_frames[K]` |
 
 Because the control happens **inside the thread that reads the video** — before any frame
 is placed in the deque — there is no window where a frame can be emitted without the
 correct metadata. The seek and freeze decisions are made atomically with the cap read.
+
+On the first post-seek frame, `frame_index` and `seek_frame_index` are forced equal to
+the **actual** decoded position (not the requested target) so an OpenCV undershoot cannot
+desync the SDI cursor from the displayed frame.
 
 ---
 
@@ -255,7 +271,7 @@ correct metadata. The seek and freeze decisions are made atomically with the cap
 | Scenario | Behavior |
 |---|---|
 | `control_port` not set | Identical to previous `VideoIn` — zero overhead |
-| `control_port` set, package missing | Warning logged, replay disabled, pipeline continues |
+| `control_port` set, package missing | **`RuntimeError` in `setup()`** — pipeline does not start |
 | Multi-source `VideoIn` with `control_port` | All `VideoReader`s share one controller — all cameras pause/seek together |
 
 ---
@@ -264,5 +280,20 @@ correct metadata. The seek and freeze decisions are made atomically with the cap
 
 | File | Change |
 |---|---|
-| `openfilter/filter_runtime/filters/video_in.py` | Core implementation (+237 lines) |
-| `tests/test_filter_video_in.py` | Update `test_normalize_config` for new default config keys |
+| `openfilter/filter_runtime/filters/video_in.py` | Seek/freeze in VideoReader; Replay Sync Meta Spec v1; dual-prefix env vars; fail-loud setup; `seek_frame_index == frame_index` post-seek |
+| `tests/test_filter_video_in.py` | Unit tests for env aliases, missing package, seek compensation, freeze re-emit, deque 3-tuple, multi-source shared controller, post-seek index equality |
+| `docs/design-video-in-seekable-replay.md` | This document |
+
+---
+
+## 7. Review comment resolutions
+
+| # | Comment | Resolution |
+|---|---|---|
+| 1 | HTTP/player should not live in VideoIn | **Done.** `VideoController` (HTTP + `/player` + `/video`) lives in `filter_subject_data_in`. VideoIn only wires it. Seek/freeze stay in `VideoReader` as frame-production concerns. Documented in §2. |
+| 2 | Env-var dual-prefix | **Done.** `VIDEO_IN_*` / `FILTER_*` for `CONTROL_PORT`, `SDI_URL`, `WEBVIS_URL`, `WEBVIS_TOPIC` (legacy takes precedence). Transitional `FILTER_VIDEO_*` still accepted. |
+| 3 | `id` vs `frame_index` ambiguity | **Done.** Documented in §3.3 and class docstring: `id` = emit counter, `ts` = wall-clock, `frame_index` = file position (trust for sync). |
+| 4 | Hidden cross-filter contract | **Done.** Published as **Replay Sync Meta Spec v1** with consumer table; sequential-only; `ts` mode explicitly ignores signals. |
+| 5 | Silent failure when package missing | **Done.** `setup()` raises `RuntimeError` when `control_port` is set but the package is missing. |
+| 6 | `frame_index` ≠ `seek_frame_index` after seek | **Done.** Post-seek frame always sets `seek_frame_index = frame_n` (actual decoded position); WARNING if request undershot. Covered by unit test. |
+| 7 | Test coverage | **Done.** Added unit tests listed in §6. |
