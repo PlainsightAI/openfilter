@@ -490,15 +490,17 @@ class VideoReader:
             actual += 1
 
         if actual < target_frame:
-            # EOF during forward-read — land on the last decodable index
+            # EOF during forward-read — land on the last decodable index.
+            # Always reposition the capture: when the only decoded frame was
+            # index 0 and then EOF hit (landed=0, actual>0), skipping the set
+            # leaves the capture past EOF so the next read ends the pipeline.
             landed = max(actual - 1, 0)
             logger.warning(
                 'VideoIn seek: requested/clamped target %s undershot at %s; '
                 'clamping to frame %s',
                 target_frame, actual, landed,
             )
-            if landed > 0 or actual == 0:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, landed)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, landed)
             self._frame_n = landed
             return landed
 
@@ -1193,24 +1195,33 @@ class VideoIn(Filter):
             if local_path and not os.path.isfile(local_path):
                 local_path = None
 
-            ctrl = controller_cls(
-                total_frames=primary_vid._total_frames,
-                fps=primary_vid.fps or 30.0,
-                source=primary_src,
-                local_path=local_path,
-            )
-            if not isinstance(ctrl, ReplayController):
-                logger.warning(
-                    'VideoIn: replay controller %r does not fully satisfy the ReplayController '
-                    'protocol (missing method?) — proceeding, but calls may fail at runtime.',
-                    controller_path,
+            try:
+                ctrl = controller_cls(
+                    total_frames=primary_vid._total_frames,
+                    fps=primary_vid.fps or 30.0,
+                    source=primary_src,
+                    local_path=local_path,
                 )
-            ctrl.start_server(
-                config.control_port,
-                sdi_url=config.sdi_url,
-                webvis_url=config.webvis_url,
-                webvis_topic=config.webvis_topic,
-            )
+                if not isinstance(ctrl, ReplayController):
+                    logger.warning(
+                        'VideoIn: replay controller %r does not fully satisfy the ReplayController '
+                        'protocol (missing method?) — proceeding, but calls may fail at runtime.',
+                        controller_path,
+                    )
+                ctrl.start_server(
+                    config.control_port,
+                    sdi_url=config.sdi_url,
+                    webvis_url=config.webvis_url,
+                    webvis_topic=config.webvis_topic,
+                )
+            except Exception:
+                # controller_cls(...) / start_server(...) sit after MultiVideoReader
+                # already opened captures; release them before propagating so a
+                # failed setup() does not leak file handles (same as the import
+                # fail-loud path above).
+                self._release_mvreader_captures()
+                raise
+
             self._replay_ctrl = ctrl
 
             # Fan each seek out to every reader (consume_seek is read-and-clear

@@ -653,6 +653,28 @@ class TestVideoInSeekableReplay(unittest.TestCase):
             for vid in filt.mvreader.videos:
                 self.assertFalse(vid.cap.isOpened())
 
+    def test_start_server_failure_releases_captures(self):
+        """If controller start_server raises, already-opened captures must be released."""
+        FakeVC = MagicMock()
+        instance = MagicMock()
+        instance.start_server.side_effect = RuntimeError('bind failed')
+        FakeVC.return_value = instance
+
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=FakeVC):
+            filt = VideoIn.__new__(VideoIn)
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}!sync',
+                outputs='tcp://*',
+                control_port=18092,
+            ))
+            with self.assertRaises(RuntimeError) as cm:
+                filt.setup(cfg)
+            self.assertIn('bind failed', str(cm.exception))
+            for vid in filt.mvreader.videos:
+                self.assertFalse(vid.cap.isOpened())
+            self.assertIsNone(getattr(filt, '_replay_ctrl', None))
+
     def test_resolve_replay_controller_missing_target_returns_none(self):
         """A dotted path whose target module does not exist resolves to None."""
         self.assertIsNone(
@@ -853,6 +875,51 @@ class TestVideoInSeekableReplay(unittest.TestCase):
             self.assertEqual(extras['frame_n'], extras['seek_frame_index'])
         finally:
             vid.stop()
+
+    def test_seek_undershoot_landing_on_frame_zero_repositions_cap(self):
+        """EOF after decoding only frame 0 must still call cap.set(0), not skip it."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid._total_frames = 0  # disable clamp so target 5 is kept
+
+        positions = {'pos': 0}
+        sets = []
+        fake_cap = MagicMock()
+
+        def fake_set(prop, value):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                sets.append(int(value))
+                # First set (to target 5) undershoots to 0; corrective set lands on 0
+                positions['pos'] = 0 if int(value) == 5 else int(value)
+
+        def fake_get(prop):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                return float(positions['pos'])
+            return 0.0
+
+        reads = {'n': 0}
+
+        def fake_read():
+            # One successful decode at frame 0, then EOF (actual becomes 1, then break)
+            reads['n'] += 1
+            if reads['n'] == 1:
+                positions['pos'] = 1
+                return True, np.zeros((8, 8, 3), dtype=np.uint8)
+            return False, None
+
+        fake_cap.set.side_effect = fake_set
+        fake_cap.get.side_effect = fake_get
+        fake_cap.read.side_effect = fake_read
+        fake_cap.isOpened.return_value = True
+        vid.cap = fake_cap
+
+        landed = vid._seek_accurate(5)
+        self.assertEqual(landed, 0)
+        self.assertEqual(vid._frame_n, 0)
+        # Must include the corrective reposition to frame 0 (not skipped when landed==0)
+        self.assertIn(0, sets)
+        self.assertEqual(sets[-1], 0)
+        vid.stop()
 
     def test_seek_fanout_delivers_to_every_reader(self):
         """_SeekFanout: each reader observes the same seek once."""
