@@ -640,6 +640,8 @@ class TestVideoInSeekableReplay(unittest.TestCase):
         """_seek_accurate compensates when OpenCV lands before the target."""
         ctrl = _FakeCtrl()
         vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        # Disable EOF clamp so this unit test can target frame 10 on a mock cap
+        vid._total_frames = 0
 
         # Replace the whole capture object — cv2.VideoCapture methods are read-only.
         positions = {'pos': 0}
@@ -731,8 +733,80 @@ class TestVideoInSeekableReplay(unittest.TestCase):
             # All freeze re-emits must share the same frozen frame_n
             self.assertEqual(len(set(repeats)), 1, repeats)
         finally:
-            ctrl.set_paused(False)
+            # stop() must work while still paused (scrub-UI shutdown)
             vid.stop()
+
+    def test_stop_while_paused_does_not_hang(self):
+        """stop() while should_freeze() is True must join cleanly."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+            ctrl.set_paused(True)
+            # Drain one freeze frame so the reader is parked in the freeze branch
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[2].get('frame_repeat'):
+                    break
+                sleep(0.02)
+        finally:
+            vid.stop()
+        self.assertFalse(vid.thread.is_alive())
+        self.assertEqual(vid.state, 2)
+
+    def test_seek_past_eof_clamps_to_last_frame(self):
+        """Seek target beyond total_frames must clamp, not end the video."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        self.assertGreaterEqual(vid._total_frames, 1)
+        last = vid._total_frames - 1
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+
+            ctrl.request_seek(vid._total_frames + 100)
+            got = None
+            for _ in range(100):
+                got = vid.read(with_tframe=True)
+                if got is not None and got[0] is not None and got[2].get('seek_reset'):
+                    break
+                sleep(0.02)
+
+            self.assertIsNotNone(got)
+            image, _tframe, extras = got
+            self.assertIsNotNone(image)
+            self.assertTrue(extras.get('seek_reset'))
+            self.assertLessEqual(extras['frame_n'], last)
+            self.assertEqual(extras['frame_n'], extras['seek_frame_index'])
+        finally:
+            vid.stop()
+
+    def test_seek_fanout_delivers_to_every_reader(self):
+        """_SeekFanout: each reader observes the same seek once."""
+        inner = _FakeCtrl()
+        fanout = video_in_mod._SeekFanout(inner)
+        v0 = fanout.view(0)
+        v1 = fanout.view(1)
+
+        inner.request_seek(7)
+        self.assertEqual(v0.consume_seek(), 7)
+        self.assertEqual(v1.consume_seek(), 7)
+        self.assertIsNone(v0.consume_seek())
+        self.assertIsNone(v1.consume_seek())
+
+        # A new seek advances the generation for both again
+        inner.request_seek(2)
+        self.assertEqual(v1.consume_seek(), 2)
+        self.assertEqual(v0.consume_seek(), 2)
 
     def test_read_with_tframe_false_back_compat(self):
         """read(with_tframe=False) still returns just the image ndarray."""
@@ -770,7 +844,7 @@ class TestVideoInSeekableReplay(unittest.TestCase):
             vid.stop()
 
     def test_multi_source_shares_controller(self):
-        """All VideoReaders in a VideoIn with control_port share one controller."""
+        """All VideoReaders in a VideoIn with control_port share one controller via fanout."""
         FakeVC = MagicMock()
         instance = MagicMock()
         instance.consume_seek.return_value = None
@@ -793,9 +867,14 @@ class TestVideoInSeekableReplay(unittest.TestCase):
                 filt.setup(cfg)
                 videos = filt.mvreader.videos
                 self.assertEqual(len(videos), 2)
-                self.assertIs(videos[0]._replay_ctrl, instance)
-                self.assertIs(videos[1]._replay_ctrl, instance)
                 self.assertIs(filt._replay_ctrl, instance)
+                self.assertIsInstance(videos[0]._replay_ctrl, video_in_mod._SeekFanoutView)
+                self.assertIsInstance(videos[1]._replay_ctrl, video_in_mod._SeekFanoutView)
+                # Same fanout shared state under both views
+                self.assertIs(
+                    videos[0]._replay_ctrl._shared,
+                    videos[1]._replay_ctrl._shared,
+                )
                 instance.start_server.assert_called_once()
             finally:
                 # Proper shutdown unblocks sync waits and releases captures

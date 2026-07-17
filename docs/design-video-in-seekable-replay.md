@@ -116,14 +116,18 @@ The `thread_reader` loop gains two new phases that execute **before** the normal
 #### Phase 1 — Seek (highest priority)
 
 ```python
-seek_target = ctrl.consume_seek()   # atomic read-and-clear
+seek_target = ctrl.consume_seek()   # per-reader view of a fanned-out target
 if seek_target is not None:
+    # Clamp to [0, total_frames-1] when frame count is known
+    seek_target = clamp(seek_target, total_frames)
     cap.set(cv2.CAP_PROP_POS_FRAMES, seek_target)   # jump to nearest I-frame
     actual = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     while actual < seek_target:                      # forward-read compensation
-        cap.read()
+        ret, _ = cap.read()
+        if not ret:
+            break                                    # EOF → land on last decodable
         actual += 1
-    self._frame_n      = seek_target
+    self._frame_n      = landed_or_target
     _just_seeked       = True
     _seek_target_frame = seek_target
 ```
@@ -131,7 +135,12 @@ if seek_target is not None:
 `cv2.VideoCapture` can only seek to I-frames (keyframes). For H.264/HEVC files the
 nearest I-frame may be several frames before the target. The forward-read loop
 compensates by decoding and discarding intermediate frames until the exact target
-position is reached.
+position is reached. Targets past EOF are clamped to the last frame so scrubbing
+near the end does not terminate the pipeline.
+
+Multi-source: the underlying controller's `consume_seek()` is read-and-clear. VideoIn
+wraps it in `_SeekFanout` so each `VideoReader` observes every seek exactly once
+(generation counter), keeping all cameras locked together.
 
 `_just_seeked` survives into Phase 2. It forces one normal read even when the player
 is paused so that the frozen image is updated to the seek-target frame before the
@@ -141,6 +150,8 @@ freeze loop resumes.
 
 ```python
 if ctrl.should_freeze() and not _just_seeked:
+    if stop_evt.is_set():
+        emit None and break                          # allow stop() while paused
     if self._last_replay_img is not None:
         freeze_extras = {'frame_n': self._frame_n, 'frame_repeat': True}
         self.deque.append((self._last_replay_img, time_ns(), freeze_extras))
@@ -297,3 +308,11 @@ desync the SDI cursor from the displayed frame.
 | 5 | Silent failure when package missing | **Done.** `setup()` raises `RuntimeError` when `control_port` is set but the package is missing. |
 | 6 | `frame_index` ≠ `seek_frame_index` after seek | **Done.** Post-seek frame always sets `seek_frame_index = frame_n` (actual decoded position); WARNING if request undershot. Covered by unit test. |
 | 7 | Test coverage | **Done.** Added unit tests listed in §6. |
+
+## 8. PR #118 review (blocking) resolutions
+
+| # | Comment | Resolution |
+|---|---|---|
+| B1 | Multi-source seek only moves one reader | **Done.** `_SeekFanout` / `_SeekFanoutView` generation counter so every reader observes each seek once. |
+| B2 | `stop()` while paused hangs in freeze loop | **Done.** Freeze branch checks `stop_evt`; `shutdown()` calls `play()` then `stop_server()` before stopping readers. |
+| B3 | Seek into EOF ends the pipeline | **Done.** `_seek_accurate` clamps to `total_frames-1`; post-seek EOF falls back to last-frame re-emit with `seek_reset`. |

@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from threading import Condition, Event, Thread, current_thread
+from threading import Condition, Event, Lock, Thread, current_thread
 from time import time_ns, sleep
 from typing import Any
 from urllib.parse import urlparse
@@ -27,6 +27,58 @@ from openfilter.filter_runtime.utils import json_getval, dict_without, split_com
 __all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader']
 
 logger = logging.getLogger(__name__)
+
+
+class _SeekFanout:
+    """Fan a single controller seek out to every VideoReader.
+
+    Controllers typically clear the pending seek on the first ``consume_seek()``
+    call. With N readers sharing one controller, that leaves N-1 cameras
+    unsought. This wrapper records each new target under a generation counter
+    so every reader observes it exactly once.
+    """
+
+    def __init__(self, inner: Any):
+        self.inner = inner
+        self._lock = Lock()
+        self._gen = 0
+        self._target: int | None = None
+        self._last_gen: dict[int, int] = {}
+
+    def view(self, reader_id: int) -> '_SeekFanoutView':
+        return _SeekFanoutView(self, reader_id)
+
+    def consume_for(self, reader_id: int) -> int | None:
+        with self._lock:
+            t = self.inner.consume_seek()
+            if t is not None:
+                self._gen += 1
+                self._target = int(t)
+            last = self._last_gen.get(reader_id, 0)
+            if self._target is not None and last < self._gen:
+                self._last_gen[reader_id] = self._gen
+                return self._target
+            return None
+
+
+class _SeekFanoutView:
+    """Per-reader facade; seek is fanned out, other methods delegate to inner."""
+
+    def __init__(self, shared: _SeekFanout, reader_id: int):
+        self._shared = shared
+        self._reader_id = reader_id
+
+    def consume_seek(self) -> int | None:
+        return self._shared.consume_for(self._reader_id)
+
+    def should_freeze(self) -> bool:
+        return self._shared.inner.should_freeze()
+
+    def on_frame_emitted(self, frame_n: int) -> None:
+        self._shared.inner.on_frame_emitted(frame_n)
+
+    def __getattr__(self, name: str):
+        return getattr(self._shared.inner, name)
 
 VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
 VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or os.getenv('FILTER_SYNC') or 'false').lower()))
@@ -361,8 +413,17 @@ class VideoReader:
     def _seek_accurate(self, target_frame: int) -> int:
         """Seek to target_frame with I-frame compensation (reads forward from nearest I-frame).
 
-        Returns the last reported OpenCV position after compensation (may be < target if EOF).
+        Clamps to ``[0, total_frames-1]`` when frame count is known so scrubbing
+        past EOF lands on the last frame instead of ending the pipeline.
+
+        Returns the effective frame index the capture is positioned to decode next
+        (may be < requested target if OpenCV undershoots / hits EOF early).
         """
+        if self._total_frames > 0:
+            target_frame = max(0, min(int(target_frame), self._total_frames - 1))
+        else:
+            target_frame = max(0, int(target_frame))
+
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
         actual = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
         while actual < target_frame:
@@ -370,8 +431,22 @@ class VideoReader:
             if not ret:
                 break
             actual += 1
+
+        if actual < target_frame:
+            # EOF during forward-read — land on the last decodable index
+            landed = max(actual - 1, 0)
+            logger.warning(
+                'VideoIn seek: requested/clamped target %s undershot at %s; '
+                'clamping to frame %s',
+                target_frame, actual, landed,
+            )
+            if landed > 0 or actual == 0:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, landed)
+            self._frame_n = landed
+            return landed
+
         self._frame_n = target_frame
-        return actual
+        return target_frame
 
     def thread_reader(self):
         cond  = self.cond
@@ -411,6 +486,12 @@ class VideoReader:
             # so _last_replay_img is updated to the seek-target frame first.
             # ----------------------------------------------------------------
             if ctrl is not None and ctrl.should_freeze() and not _just_seeked:
+                if self.stop_evt.is_set():
+                    self.deque.append((None, time_ns(), {}))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    break
                 if self._last_replay_img is not None:
                     freeze_extras = {'frame_n': self._frame_n, 'frame_repeat': True}
                     tframe        = time_ns()
@@ -434,6 +515,31 @@ class VideoReader:
             # ----------------------------------------------------------------
             image  = None if self.stop_evt.is_set() else self.read_one()
             tframe = time_ns()
+
+            # After a seek near EOF, OpenCV may return no frame — clamp by
+            # re-emitting the last decoded image (or a re-seek to last frame)
+            # so scrubbing to the end does not kill the pipeline.
+            if image is None and _just_seeked and not self.stop_evt.is_set():
+                if self._total_frames > 0:
+                    self._seek_accurate(self._total_frames - 1)
+                    image = self.read_one()
+                if image is None and self._last_replay_img is not None:
+                    image = self._last_replay_img
+                    # Keep seek_reset semantics using the clamped _frame_n
+                    replay_extras = {
+                        'frame_n': self._frame_n,
+                        'seek_reset': True,
+                        'seek_frame_index': self._frame_n,
+                    }
+                    self.deque.append((image, tframe, replay_extras))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    if ctrl is not None:
+                        ctrl.on_frame_emitted(self._frame_n)
+                    _just_seeked = False
+                    _seek_target_frame = None
+                    continue
 
             replay_extras: dict = {}
 
@@ -984,10 +1090,11 @@ class VideoIn(Filter):
             )
             self._replay_ctrl = ctrl
 
-            # Wire the controller into every VideoReader so they all
-            # pause/seek together (important for multi-camera rigs).
-            for vid in self.mvreader.videos:
-                vid._replay_ctrl = ctrl
+            # Fan each seek out to every reader (consume_seek is read-and-clear
+            # on the underlying controller — without this only one camera seeks).
+            fanout = _SeekFanout(ctrl)
+            for i, vid in enumerate(self.mvreader.videos):
+                vid._replay_ctrl = fanout.view(i)
 
             logger.info(
                 'VideoIn: seekable replay API on port %s  player=http://localhost:%s/player',
@@ -997,9 +1104,24 @@ class VideoIn(Filter):
         self.mvreader.start()
 
     def shutdown(self):
+        ctrl = getattr(self, '_replay_ctrl', None)
+        if ctrl is not None:
+            # Quiesce freeze/seek before joining reader threads
+            play = getattr(ctrl, 'play', None)
+            if callable(play):
+                try:
+                    play()
+                except Exception:
+                    pass
+            stop_server = getattr(ctrl, 'stop_server', None)
+            if callable(stop_server):
+                try:
+                    stop_server()
+                except Exception:
+                    pass
         self.mvreader.stop()
-        if (ctrl := getattr(self, '_replay_ctrl', None)) is not None:
-            ctrl.stop_server()
+        if ctrl is not None:
+            self._replay_ctrl = None
 
     def process(self, frames):
         ctrl = getattr(self, '_replay_ctrl', None)
