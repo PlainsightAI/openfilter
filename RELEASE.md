@@ -4,6 +4,14 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Security
+
+- **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93`. The 5.0.0.93 linux x86_64 wheel bundles ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). The shared security-scan workflow no longer suppresses this CVE by default (see PlainsightAI/openfilter#84).
+
+### Changed
+
+- Refreshed the dependency floors to current releases: `openlineage-python~=1.51.0`, `requests~=2.34.2`, the OpenTelemetry stack to `~=1.44.0` (`semantic-conventions~=0.65b0`, GCP exporters `~=1.12.0a0`), `pydantic~=2.13.4`, `fastapi~=0.139.2`, `uvicorn~=0.51.0`, `python-multipart~=0.0.32`, `google-cloud-storage~=3.13.0`, `google-cloud-monitoring~=2.31.0`, and the `dev` tooling (`setuptools~=83.0.0`, `pytest~=9.1.1`, `build~=1.5.0`, `docker~=7.2.0`, `wheel~=0.47.0`, `jq~=1.12.0`, `pytest-cov~=7.1.0`). `numpy` (held at `~=2.2.6`) and `av` (held at `~=16.1.0`) were deliberately left in place: their latest releases drop Python 3.10/3.11, which OpenFilter still supports. No filter code changes were required; the full non-slow test suite passes against the new set.
+
 ## v1.1.3 - 2026-07-10
 
 ### Fixed
