@@ -318,6 +318,29 @@ Filter.run_multi([
 - **Parameters**: `topic` in URL path
 - **Response**: text/event-stream data
 
+#### 4. Snapshot Endpoint (`/snapshot` or `/{topic}/snapshot`)
+- **Method**: GET
+- **Purpose**: Retrieve the latest single JPEG frame snapshot for a given topic
+- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/snapshot` or `/api/snapshot/{topic}`)
+- **Response**: `image/jpeg` binary content of the latest frame. Returns `404` if no frame has been received yet.
+
+#### 5. Snapshot Payload Endpoint (`/snapshot-payload` or `/{topic}/snapshot-payload`)
+- **Method**: GET
+- **Purpose**: Retrieve the latest JPEG frame snapshot along with its associated metadata packed into HTTP response headers
+- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/snapshot-payload` or `/api/snapshot-payload/{topic}`)
+- **Response**: `image/jpeg` binary content of the latest frame, plus custom HTTP headers:
+  - `X-Topic`: The URL-encoded topic name.
+  - `X-Metadata`: The URL-encoded JSON string representation of the frame's metadata.
+  - `X-Timestamp`: The epoch timestamp of the frame.
+  - `X-Width` / `X-Height` / `X-Format`: Dimensions and color format of the frame.
+- **Header Size Limits**: Note that HTTP response headers are subject to size constraints (typically 8–16KB depending on proxies and web servers). For highly complex frame metadata (e.g., many detections), clients should poll `/snapshot` and `/latest-data` separately to avoid header truncation or rejection.
+
+#### 6. Latest Data Endpoint (`/latest-data` or `/{topic}/latest-data`)
+- **Method**: GET
+- **Purpose**: Retrieve the latest frame metadata as a static JSON payload
+- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/latest-data` or `/api/latest-data/{topic}`)
+- **Response**: `application/json` payload containing the latest metadata dictionary.
+
 ### API Examples
 
 #### Stream Images
@@ -336,6 +359,18 @@ curl -N http://localhost:8000/main/data
 
 curl -N http://localhost:8000/camera1/data
 # Response: text/event-stream data
+```
+
+#### Fetch Snapshot & Latest Data (Polling)
+```bash
+# Get raw snapshot image
+curl -o snapshot.jpg http://localhost:8000/main/snapshot
+
+# Get snapshot image with metadata packed in headers
+curl -v http://localhost:8000/main/snapshot-payload > snapshot_with_headers.jpg
+
+# Get latest metadata JSON payload
+curl http://localhost:8000/main/latest-data
 ```
 
 ## CORS Configuration

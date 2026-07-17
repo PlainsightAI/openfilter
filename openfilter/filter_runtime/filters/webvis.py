@@ -72,35 +72,12 @@ class Webvis(Filter):
         configure_http_security(app, auth_token=auth_token, cors_origins=cors_origins)
 
         async def stream_data(topic: str | None = None):
-            is_multi_topic_config = getattr(self, 'is_multi_topic_static', False) or len(getattr(self, 'configured_topics', set())) > 1
-
-            with self._lock:
-                streams_keys = list(self.streams.keys())
-                current_data_len = len(self.current_data)
-
-            # If topic is 'main' but not in streams, treat it as default fallback (None)
-            is_default = (topic is None or (topic == 'main' and 'main' not in streams_keys))
-
             # Decide on connection whether this stream is in flat mode (locked for this connection's lifetime)
-            if is_default:
-                # Flat mode if not statically multi-topic, and at most one active topic in current data
-                is_flat = (not is_multi_topic_config) and (current_data_len <= 1)
-            else:
-                is_flat = True
+            _, _, is_flat = get_metadata_for_topic(topic)
 
             def gen(flat: bool):
                 while True:
-                    with self._lock:
-                        current_data_snapshot = dict(self.current_data)
-                    if flat:
-                        if is_default:
-                            # Use the single active topic if present, otherwise default to 'main'
-                            active_topic = list(current_data_snapshot.keys())[0] if current_data_snapshot else 'main'
-                        else:
-                            active_topic = topic
-                        data = current_data_snapshot.get(active_topic, {})
-                    else:
-                        data = current_data_snapshot
+                    _, data, _ = get_metadata_for_topic(topic, force_flat=flat)
                     
                     if self.enable_json:
                         yield f"data: {json.dumps(data)}\n\n"
@@ -110,10 +87,10 @@ class Webvis(Filter):
 
             return StreamingResponse(gen(is_flat), media_type='text/event-stream')
 
-        def get_metadata_for_topic(topic: str | None) -> tuple[str, dict]:
+        def get_metadata_for_topic(topic: str | None, force_flat: bool | None = None) -> tuple[str, dict, bool]:
             """Helper to resolve the active topic and return the metadata snapshot matching SSE data schema."""
             with self._lock:
-                latest_frames_keys = list(self.latest_frames.keys())
+                latest_frames_keys = list(getattr(self, 'latest_frames', {}).keys())
                 streams_keys = list(self.streams.keys())
                 current_data_snapshot = dict(self.current_data)
 
@@ -122,13 +99,15 @@ class Webvis(Filter):
 
             # Resolve topic
             if is_default:
-                active_topics = latest_frames_keys or streams_keys or list(current_data_snapshot.keys())
+                active_topics = latest_frames_keys or list(current_data_snapshot.keys()) or streams_keys
                 resolved_topic = active_topics[0] if active_topics else 'main'
             else:
                 resolved_topic = topic
 
             # Decide on flat mode
-            if is_default:
+            if force_flat is not None:
+                is_flat = force_flat
+            elif is_default:
                 is_flat = (not is_multi_topic_config) and (len(current_data_snapshot) <= 1)
             else:
                 is_flat = True
@@ -138,7 +117,7 @@ class Webvis(Filter):
             else:
                 data = current_data_snapshot
 
-            return resolved_topic, data
+            return resolved_topic, data, is_flat
 
         @app.get('/{topic:str}/snapshot-payload')
         @app.get('/snapshot-payload')
@@ -153,7 +132,7 @@ class Webvis(Filter):
             """
             import urllib.parse
 
-            resolved_topic, data = get_metadata_for_topic(topic)
+            resolved_topic, data, _ = get_metadata_for_topic(topic)
             with self._lock:
                 frame = self.latest_frames.get(resolved_topic)
             
@@ -171,26 +150,39 @@ class Webvis(Filter):
             if frame is None:
                 return Response(status_code=404, content="No frame available", headers=headers)
                 
-            return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg", headers=headers)
+            try:
+                jpg_bytes = bytes(frame.bgr.jpg)
+            except RuntimeError as exc:
+                logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
+                return Response(status_code=500, content="JPEG encoding failed", headers=headers)
+
+            return Response(content=jpg_bytes, media_type="image/jpeg", headers=headers)
 
         @app.get('/{topic:str}/snapshot')
         @app.get('/snapshot')
         @app.get('/api/snapshot/{topic:str}')
         @app.get('/api/snapshot')
         def get_snapshot(topic: str | None = None):
-            resolved_topic, _ = get_metadata_for_topic(topic)
+            resolved_topic, _, _ = get_metadata_for_topic(topic)
             with self._lock:
                 frame = self.latest_frames.get(resolved_topic)
             if frame is None:
                 return Response(status_code=404, content="No snapshot available")
-            return Response(content=bytes(frame.bgr.jpg), media_type="image/jpeg")
+
+            try:
+                jpg_bytes = bytes(frame.bgr.jpg)
+            except RuntimeError as exc:
+                logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
+                return Response(status_code=500, content="JPEG encoding failed")
+
+            return Response(content=jpg_bytes, media_type="image/jpeg")
 
         @app.get('/{topic:str}/latest-data')
         @app.get('/latest-data')
         @app.get('/api/latest-data/{topic:str}')
         @app.get('/api/latest-data')
         def get_latest_data(topic: str | None = None):
-            _, data = get_metadata_for_topic(topic)
+            _, data, _ = get_metadata_for_topic(topic)
             # Use json.dumps with default=str to match SSE semantics and handle non-JSON-serializable metadata gracefully
             serialized_data = json.dumps(data, default=str)
             return Response(content=serialized_data, media_type="application/json")
