@@ -30,7 +30,6 @@ jobs:
           source-paths: "openfilter/**"
 
   run-unit-tests:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -50,6 +49,23 @@ jobs:
 
       - name: Run tests
         run: make test-all
+
+  # README.pypi.md is generated from README.md (the Mermaid diagram is swapped
+  # for a plain-text one, since PyPI does not render Mermaid). This guards
+  # against the committed PyPI readme drifting from the source README.
+  check-pypi-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify README.pypi.md is in sync with README.md
+        run: make check-pypi-readme
 
   # Path-filtered checks for the tag-cascade scripts on PRs touching
   # scripts/cascade/** or the cascade workflow: shellcheck + actionlint +
