@@ -132,8 +132,8 @@ class Webvis(Filter):
             """
             import urllib.parse
 
-            resolved_topic, data, _ = get_metadata_for_topic(topic)
             with self._lock:
+                resolved_topic, data, _ = get_metadata_for_topic(topic)
                 frame = self.latest_frames.get(resolved_topic)
             
             # Pack metadata into custom HTTP headers (URL encoded for safety)

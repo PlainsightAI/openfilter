@@ -689,30 +689,34 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         client = TestClient(app)
 
         stop_threads = False
+        errors = []
 
         def writer_thread():
-            image = np.zeros((10, 10, 3), dtype=np.uint8)
-            i = 0
-            while not stop_threads:
-                topic = f"cam_{i % 10}"
-                frame = Frame(image=image, data={f"key_{i}": i}, format="BGR")
-                webvis.process({topic: frame})
-                i += 1
-                if i % 50 == 0:
-                    with webvis._lock:
-                        webvis.current_data.clear()
-                        webvis.latest_frames.clear()
+            try:
+                image = np.zeros((10, 10, 3), dtype=np.uint8)
+                i = 0
+                while not stop_threads:
+                    topic = f"cam_{i % 10}"
+                    frame = Frame(image=image, data={f"key_{i}": i}, format="BGR")
+                    webvis.process({topic: frame})
+                    i += 1
+                    if i % 50 == 0:
+                        with webvis._lock:
+                            webvis.current_data.clear()
+                            webvis.latest_frames.clear()
+            except Exception as e:
+                errors.append(e)
 
         def reader_thread():
-            while not stop_threads:
-                try:
+            try:
+                while not stop_threads:
                     res1 = client.get('/latest-data')
                     self.assertIn(res1.status_code, [200, 404])
                     
                     res2 = client.get('/snapshot-payload')
                     self.assertIn(res2.status_code, [200, 404])
-                except Exception as e:
-                    raise e
+            except Exception as e:
+                errors.append(e)
 
         t1 = Thread(target=writer_thread)
         t2 = Thread(target=reader_thread)
@@ -720,11 +724,17 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         t1.start()
         t2.start()
 
-        sleep(0.5)
+        # Bounded poll/sleep
+        for _ in range(50):
+            if errors:
+                break
+            sleep(0.01)
         stop_threads = True
 
         t1.join()
         t2.join()
+
+        self.assertEqual(errors, [])
 
     def test_endpoints_with_failed_jpeg_encoding(self):
         import numpy as np
