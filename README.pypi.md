@@ -1,3 +1,5 @@
+<!-- Generated from README.md by scripts/make_pypi_readme.py. Do not edit directly. -->
+
 # <img src="https://raw.githubusercontent.com/PlainsightAI/openfilter/main/docs/openfilterlogo.png" width="38" align="center" alt="OpenFilter Logo" /> OpenFilter
 
 [![PyPI version](https://img.shields.io/pypi/v/openfilter.svg?style=flat-square)](https://pypi.org/project/openfilter/)
@@ -13,13 +15,7 @@ A filter is a component that originates, processes, or exports a stream of frame
 (with many-to-many topologies), and the runtime keeps frames that enter together synchronized through to the output. Develop and test
 filters locally as ordinary Python processes, then ship each one as a Docker image.
 
-```mermaid
-flowchart LR
-    A[VideoIn] -->|tcp://| B[Detect]
-    B -->|tcp://| C[Annotate]
-    C -->|tcp://| D[Webvis]
-    C -->|tcp://| E[Recorder]
-```
+> **Pipeline diagram:** rendered on the [GitHub README](https://github.com/PlainsightAI/openfilter#readme).
 
 Homepage: [openfilter.io](https://openfilter.io) · Package: [PyPI](https://pypi.org/project/openfilter/) · Images: [Docker Hub](https://hub.docker.com/u/plainsightai)
 
