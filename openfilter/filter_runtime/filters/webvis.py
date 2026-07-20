@@ -61,7 +61,7 @@ class Webvis(Filter):
 
     def create_app(self, auth_token: str | None = None, cors_origins: str | None = None) -> 'FastAPI':
         from fastapi import FastAPI, Response
-        from fastapi.responses import StreamingResponse, JSONResponse
+        from fastapi.responses import StreamingResponse
         from openfilter.filter_runtime.filters.http_security import configure_http_security
 
         if not hasattr(self, '_lock'):

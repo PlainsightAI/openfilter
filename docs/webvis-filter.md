@@ -331,7 +331,7 @@ Filter.run_multi([
 - **Response**: `image/jpeg` binary content of the latest frame, plus custom HTTP headers:
   - `X-Topic`: The URL-encoded topic name.
   - `X-Metadata`: The URL-encoded JSON string representation of the frame's metadata.
-  - `X-Timestamp`: The epoch timestamp of the frame.
+  - `X-Timestamp`: The server epoch time when the snapshot response was generated.
   - `X-Width` / `X-Height` / `X-Format`: Dimensions and color format of the frame.
 - **Header Size Limits**: Note that HTTP response headers are subject to size constraints (typically 8–16KB depending on proxies and web servers). For highly complex frame metadata (e.g., many detections), clients should poll `/snapshot` and `/latest-data` separately to avoid header truncation or rejection.
 
