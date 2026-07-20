@@ -921,6 +921,85 @@ class TestVideoInSeekableReplay(unittest.TestCase):
         self.assertEqual(sets[-1], 0)
         vid.stop()
 
+    def test_post_seek_eof_clamp_uses_raw_read_not_read_one(self):
+        """Post-seek EOF clamp must use raw cap.read(), not read_one().
+
+        Using read_one() here deadlocks sync mode (second wait on a cleared
+        sync_evt) and corrupts play-once loop==1 into loop==0 (infinite),
+        which reopens from frame 0 instead of ending/clamping.
+        """
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, loop=False, replay_ctrl=ctrl)
+        self.assertEqual(vid.loop, 1)
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+
+            loop_before = vid.loop
+            # Metadata overstates decodable frames (truncated-file scenario)
+            vid._total_frames = 10
+            last = 9
+            positions = {'pos': 0}
+            reads = {'n': 0}
+
+            fake_cap = MagicMock()
+
+            def fake_set(prop, value):
+                if prop == cv2.CAP_PROP_POS_FRAMES:
+                    positions['pos'] = int(value)
+
+            def fake_get(prop):
+                if prop == cv2.CAP_PROP_POS_FRAMES:
+                    return float(positions['pos'])
+                return 0.0
+
+            def fake_read():
+                reads['n'] += 1
+                # First post-seek decode fails (metadata past real EOF); clamp retry succeeds
+                if reads['n'] == 1:
+                    return False, None
+                positions['pos'] = last + 1
+                return True, np.zeros((8, 8, 3), dtype=np.uint8)
+
+            fake_cap.set.side_effect = fake_set
+            fake_cap.get.side_effect = fake_get
+            fake_cap.read.side_effect = fake_read
+            fake_cap.isOpened.return_value = True
+            vid.cap = fake_cap
+
+            # Forbid read_one until post-seek raw decode has started (reads['n']>0).
+            # After that, the next normal frame may call read_one again.
+            real_read_one = vid.read_one
+
+            def guarded_read_one():
+                if reads['n'] == 0:
+                    raise AssertionError('read_one must not be used for post-seek decode')
+                return real_read_one()
+
+            with patch.object(vid, 'read_one', side_effect=guarded_read_one):
+                ctrl.request_seek(last)
+                got = None
+                for _ in range(100):
+                    got = vid.read(with_tframe=True)
+                    if got is not None and got[0] is not None and got[2].get('seek_reset'):
+                        break
+                    sleep(0.02)
+
+            self.assertIsNotNone(got)
+            image, _tframe, extras = got
+            self.assertIsNotNone(image)
+            self.assertTrue(extras.get('seek_reset'))
+            self.assertEqual(extras['frame_n'], extras['seek_frame_index'])
+            # Play-once counter must not have been flipped to infinite (0)
+            self.assertEqual(vid.loop, loop_before)
+            self.assertGreaterEqual(reads['n'], 2)  # fail once, then clamp retry
+        finally:
+            vid.stop()
+
     def test_seek_fanout_delivers_to_every_reader(self):
         """_SeekFanout: each reader observes the same seek once."""
         inner = _FakeCtrl()

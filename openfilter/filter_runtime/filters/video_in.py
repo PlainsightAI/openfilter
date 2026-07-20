@@ -570,21 +570,42 @@ class VideoReader:
                 continue
 
             # ----------------------------------------------------------------
-            # Normal read
+            # Normal read / post-seek decode
             # ----------------------------------------------------------------
-            image  = None if self.stop_evt.is_set() else self.read_one()
-            tframe = time_ns()
+            # After a seek, decode with raw cap.read() — never read_one().
+            # read_one() on post-seek EOF would (a) decrement play-once loop
+            # 1→0 (infinite) and reopen from frame 0, and (b) a second
+            # read_one() for the EOF clamp would deadlock sync mode because
+            # the first EOF wait() already consumed sync_evt.
+            # Pace with the same sync/fps wait as read_one, then clear so the
+            # next iteration blocks until the consumer pops this seek frame.
+            if _just_seeked and not self.stop_evt.is_set():
+                t = time_ns()
+                if (sync_evt := self.sync_evt) is not None:
+                    sync_evt.wait()
+                    sync_evt.clear()
+                    if (ns_per_maxfps := self.ns_per_maxfps) is not None:
+                        if (tleft := (ns_per_maxfps - ((t := time_ns()) - (tmaxfps := self.tmaxfps)))) > 0:
+                            sleep(tleft / 1_000_000_000)
+                            t = tmaxfps + ns_per_maxfps
+                        self.tmaxfps = t
+                elif self.is_file and (ns_per_fps := self.ns_per_fps) is not None:
+                    if (tleft := (ns_per_fps - (t - (tfps := self.tfps)))) > 0:
+                        sleep(tleft / 1_000_000_000)
+                        t = tfps + ns_per_fps
+                    self.tfps = t
 
-            # After a seek near EOF, OpenCV may return no frame — clamp by
-            # re-emitting the last decoded image (or a re-seek to last frame)
-            # so scrubbing to the end does not kill the pipeline.
-            if image is None and _just_seeked and not self.stop_evt.is_set():
-                if self._total_frames > 0:
-                    self._seek_accurate(self._total_frames - 1)
-                    image = self.read_one()
+                ret, image = self.cap.read()
+                if not ret or image is None:
+                    image = None
+                    if self._total_frames > 0:
+                        self._seek_accurate(self._total_frames - 1)
+                        ret, image = self.cap.read()
+                        if not ret:
+                            image = None
                 if image is None and self._last_replay_img is not None:
                     image = self._last_replay_img
-                    # Keep seek_reset semantics using the clamped _frame_n
+                    tframe = time_ns()
                     replay_extras = {
                         'frame_n': self._frame_n,
                         'seek_reset': True,
@@ -599,6 +620,10 @@ class VideoReader:
                     _just_seeked = False
                     _seek_target_frame = None
                     continue
+                tframe = time_ns()
+            else:
+                image  = None if self.stop_evt.is_set() else self.read_one()
+                tframe = time_ns()
 
             replay_extras: dict = {}
 
