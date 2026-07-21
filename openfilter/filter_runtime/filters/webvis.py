@@ -152,7 +152,7 @@ class Webvis(Filter):
                 
             try:
                 jpg_bytes = bytes(frame.bgr.jpg)
-            except RuntimeError as exc:
+            except Exception as exc:
                 logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
                 return Response(status_code=500, content="JPEG encoding failed", headers=headers)
 
@@ -171,7 +171,7 @@ class Webvis(Filter):
 
             try:
                 jpg_bytes = bytes(frame.bgr.jpg)
-            except RuntimeError as exc:
+            except Exception as exc:
                 logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
                 return Response(status_code=500, content="JPEG encoding failed")
 
@@ -197,6 +197,8 @@ class Webvis(Filter):
 
         @app.get('/')
         @app.get('/{topic:str}')
+        @app.get('/api/{topic:str}')
+        @app.get('/api')
         def topic(topic: str | None = None):
             with self._lock:
                 streams_keys = list(self.streams.keys())

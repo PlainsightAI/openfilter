@@ -767,6 +767,66 @@ class TestWebvisNewEndpoints(unittest.TestCase):
             self.assertEqual(res.content, b"JPEG encoding failed")
             self.assertIn("X-Metadata", res.headers)
 
+    def test_endpoints_with_failed_jpeg_encoding_generic_exception(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+        from unittest.mock import PropertyMock, patch
+
+        webvis = self._make_webvis()
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(image=image, data={"camera": "main"}, format="BGR")
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # Patch the .jpg property to raise a non-RuntimeError Exception
+        with patch.object(frame.bgr.__class__, 'jpg', new_callable=PropertyMock) as mock_jpg:
+            mock_jpg.side_effect = Exception("generic opencv or other encoding failure")
+
+            # 1. GET /snapshot -> should return 500 instead of crashing
+            res = client.get('/snapshot')
+            self.assertEqual(res.status_code, 500)
+            self.assertEqual(res.content, b"JPEG encoding failed")
+
+            # 2. GET /snapshot-payload -> should return 500 with proper headers
+            res = client.get('/snapshot-payload')
+            self.assertEqual(res.status_code, 500)
+            self.assertEqual(res.content, b"JPEG encoding failed")
+            self.assertIn("X-Metadata", res.headers)
+
+    def test_api_stream_route_aliases(self):
+        from fastapi.testclient import TestClient
+        from starlette.routing import Match
+        webvis = self._make_webvis()
+        app = webvis.create_app()
+
+        # Check route matches for the new stream aliases
+        scope_api_default = {'type': 'http', 'method': 'GET', 'path': '/api'}
+        matching_route_api_default = None
+        for route in app.routes:
+            match, _ = route.matches(scope_api_default)
+            if match == Match.FULL:
+                matching_route_api_default = route
+                break
+        
+        self.assertIsNotNone(matching_route_api_default)
+        self.assertEqual(matching_route_api_default.endpoint.__name__, 'topic')
+
+        scope_api_topic = {'type': 'http', 'method': 'GET', 'path': '/api/my_topic'}
+        matching_route_api_topic = None
+        for route in app.routes:
+            match, _ = route.matches(scope_api_topic)
+            if match == Match.FULL:
+                matching_route_api_topic = route
+                break
+
+        self.assertIsNotNone(matching_route_api_topic)
+        self.assertEqual(matching_route_api_topic.endpoint.__name__, 'topic')
+
 
 if __name__ == '__main__':
     unittest.main()
