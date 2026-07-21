@@ -306,11 +306,13 @@ Filter.run_multi([
 - **Purpose**: Main web interface
 - **Response**: HTML page with visualization
 
-#### 2. Topic Stream Endpoint (`/{topic}`)
+#### 2. Topic Stream Endpoint (`/{topic}` or `/api/{topic}`)
 - **Method**: GET
-- **Purpose**: Image streaming for specific topic
+- **Purpose**: Image streaming for a specific topic (or the default topic via `/` or `/api`)
 - **Parameters**: `topic` in URL path
 - **Response**: multipart/x-mixed-replace JPEG stream
+- **Aliases**: `/api` (streams the default topic) and `/api/{topic}` (streams a specific topic). Namespacing under `/api/{topic}` provides a clean route structure and avoids collisions with reserved words.
+
 
 #### 3. Topic Data Endpoint (`/{topic}/data`)
 - **Method**: GET
@@ -341,6 +343,17 @@ Filter.run_multi([
 - **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/latest-data` or `/api/latest-data/{topic}`)
 - **Response**: `application/json` payload containing the latest metadata dictionary.
 
+### Reserved Topic Names
+
+> [!WARNING]
+> The names `snapshot`, `snapshot-payload`, `latest-data`, and `api` are reserved keyword paths used by the Web Viewer filter's static endpoints.
+> If a pipeline topic is literally named one of these reserved words, its bare route (e.g., `/{topic}`) is shadowed by the static endpoint.
+> To ensure the live video stream remains accessible for a topic with one of these names, clients must use the namespaced stream alias:
+> - **Reserved Topic `snapshot`**: Stream at `/api/snapshot` (instead of `/snapshot` which returns a single JPEG snapshot)
+> - **Reserved Topic `snapshot-payload`**: Stream at `/api/snapshot-payload` (instead of `/snapshot-payload` which returns snapshot with headers)
+> - **Reserved Topic `latest-data`**: Stream at `/api/latest-data` (instead of `/latest-data` which returns static metadata JSON)
+> - **Reserved Topic `api`**: Stream at `/api/api` (instead of `/api` which streams the default topic)
+
 ### API Examples
 
 #### Stream Images
@@ -350,6 +363,10 @@ curl -N http://localhost:8000/main
 
 curl -N http://localhost:8000/camera1
 # Response: multipart/x-mixed-replace JPEG stream
+
+# Or stream via namespaced aliases (recommended for reserved topic names)
+curl -N http://localhost:8000/api/main
+curl -N http://localhost:8000/api/camera1
 ```
 
 #### Stream Data
