@@ -10,7 +10,7 @@ OpenFilter Library release notes
 
 ### Added
 
-- **Snapshot and latest-data REST endpoints for Webvis**: Added `/api/snapshot`, `/api/snapshot-payload`, and `/api/latest-data` endpoints (including topic-specific routes) to support HTTP-based polling. Features automatic flat vs. multi-topic schema resolution to match the SSE `/data` endpoint layout, and reentrant thread-safety locking (`RLock`) on shared data resources.
+- **Snapshot payload REST endpoint for Webvis**: Added a single opt-in `/snapshot-payload` (and `/{topic}/snapshot-payload`) JSON endpoint to support HTTP-based polling, default off via `enable_snapshot_payload` / `FILTER_ENABLE_SNAPSHOT_PAYLOAD`. Features automatic flat vs. multi-topic schema resolution to match the SSE `/data` endpoint layout, and reentrant thread-safety locking (`RLock`) on shared data resources.
 
 ### Changed
 

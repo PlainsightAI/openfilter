@@ -331,6 +331,9 @@ Filter.run_multi([
   - `metadata`: The frame's metadata dictionary.
   - `image`: The base64-encoded JPEG image string.
 
+> [!NOTE]
+> In multi-topic default mode (e.g. bare `/snapshot-payload` request on a multi-topic pipeline), the response returns the combined metadata for all topics, but the image for only the first topic. This is intentional and matches the behavior of the `/data` view.
+
 ### Reserved Topic Names
 
 > [!WARNING]

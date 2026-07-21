@@ -107,6 +107,17 @@ class TestWebvisConfig(unittest.TestCase):
             normalized = Webvis.normalize_config(config)
             self.assertTrue(normalized.access_log)
 
+    def test_enable_snapshot_payload_default_false(self):
+        config = {'sources': 'tcp://localhost:5550'}
+        normalized = Webvis.normalize_config(config)
+        self.assertFalse(normalized.enable_snapshot_payload)
+
+    def test_enable_snapshot_payload_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_ENABLE_SNAPSHOT_PAYLOAD': 'true'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertTrue(normalized.enable_snapshot_payload)
+
 
 class TestWebvisCreateApp(unittest.TestCase):
     """Test the Webvis.create_app() method."""
