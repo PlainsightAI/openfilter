@@ -23,6 +23,7 @@ class WebvisConfig(FilterConfig):
     auth_token: str | None = None
     cors_origins: str | None = None
     access_log: bool = False
+    enable_snapshot_payload: bool = False
 
 
 class Webvis(Filter):
@@ -66,6 +67,9 @@ class Webvis(Filter):
 
         if not hasattr(self, '_lock'):
             self._lock = RLock()
+
+        if not hasattr(self, 'enable_snapshot_payload'):
+            self.enable_snapshot_payload = False
 
         app = FastAPI(title='webvis')
 
@@ -119,73 +123,47 @@ class Webvis(Filter):
 
             return resolved_topic, data, is_flat
 
-        @app.get('/{topic:str}/snapshot-payload')
-        @app.get('/snapshot-payload')
-        @app.get('/api/snapshot-payload/{topic:str}')
-        @app.get('/api/snapshot-payload')
-        def get_snapshot_payload(topic: str | None = None):
-            """Serves JPEG frame snapshots along with associated frame metadata packed into response headers.
-
-            NOTE: Response headers (X-Metadata) are subject to HTTP header size limits (typically 8-16KB depending 
-            on downstream proxies/servers). For large metadata structures (e.g. many detections), clients 
-            should poll /snapshot and /latest-data separately to avoid HTTP header truncation or refusal.
-            """
-            import urllib.parse
-
-            with self._lock:
-                resolved_topic, data, _ = get_metadata_for_topic(topic)
-                frame = self.latest_frames.get(resolved_topic)
-            
-            # Pack metadata into custom HTTP headers (URL encoded for safety)
-            headers = {
-                "Access-Control-Expose-Headers": "X-Metadata, X-Topic, X-Timestamp, X-Width, X-Height, X-Format",
-                "X-Topic": urllib.parse.quote(str(resolved_topic)),
-                "X-Metadata": urllib.parse.quote(json.dumps(data, default=str)),
-                "X-Timestamp": str(time.time()),
-                "X-Width": str(frame.width) if frame else "",
-                "X-Height": str(frame.height) if frame else "",
-                "X-Format": str(frame.format) if frame else ""
-            }
-
-            if frame is None:
-                return Response(status_code=404, content="No frame available", headers=headers)
+        if self.enable_snapshot_payload:
+            @app.get('/{topic:str}/snapshot-payload')
+            @app.get('/snapshot-payload')
+            def get_snapshot_payload(topic: str | None = None):
+                """Serves JPEG frame snapshots along with associated frame metadata packed into a JSON response.
                 
-            try:
-                jpg_bytes = bytes(frame.bgr.jpg)
-            except Exception as exc:
-                logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
-                return Response(status_code=500, content="JPEG encoding failed", headers=headers)
+                Returns a JSON body containing:
+                - topic: The resolved topic name.
+                - timestamp: The server epoch time when the snapshot response was generated.
+                - width / height / format: Dimensions and color format of the frame.
+                - metadata: The frame's metadata dictionary.
+                - image: The base64-encoded JPEG image string.
+                """
+                import base64
 
-            return Response(content=jpg_bytes, media_type="image/jpeg", headers=headers)
+                with self._lock:
+                    resolved_topic, data, _ = get_metadata_for_topic(topic)
+                    frame = self.latest_frames.get(resolved_topic)
+                
+                if frame is None:
+                    return Response(status_code=404, content="No frame available")
+                    
+                try:
+                    jpg_bytes = bytes(frame.bgr.jpg)
+                except Exception as exc:
+                    logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
+                    return Response(status_code=500, content="JPEG encoding failed")
 
-        @app.get('/{topic:str}/snapshot')
-        @app.get('/snapshot')
-        @app.get('/api/snapshot/{topic:str}')
-        @app.get('/api/snapshot')
-        def get_snapshot(topic: str | None = None):
-            resolved_topic, _, _ = get_metadata_for_topic(topic)
-            with self._lock:
-                frame = self.latest_frames.get(resolved_topic)
-            if frame is None:
-                return Response(status_code=404, content="No snapshot available")
-
-            try:
-                jpg_bytes = bytes(frame.bgr.jpg)
-            except Exception as exc:
-                logger.error("JPEG encoding failed for topic %s: %s", resolved_topic, exc)
-                return Response(status_code=500, content="JPEG encoding failed")
-
-            return Response(content=jpg_bytes, media_type="image/jpeg")
-
-        @app.get('/{topic:str}/latest-data')
-        @app.get('/latest-data')
-        @app.get('/api/latest-data/{topic:str}')
-        @app.get('/api/latest-data')
-        def get_latest_data(topic: str | None = None):
-            _, data, _ = get_metadata_for_topic(topic)
-            # Use json.dumps with default=str to match SSE semantics and handle non-JSON-serializable metadata gracefully
-            serialized_data = json.dumps(data, default=str)
-            return Response(content=serialized_data, media_type="application/json")
+                response_body = {
+                    "topic": resolved_topic,
+                    "timestamp": time.time(),
+                    "width": frame.width,
+                    "height": frame.height,
+                    "format": str(frame.format),
+                    "metadata": data,
+                    "image": base64.b64encode(jpg_bytes).decode('utf-8')
+                }
+                return Response(
+                    content=json.dumps(response_body, default=str),
+                    media_type="application/json"
+                )
 
         @app.get('/data')
         async def get_data_default():
@@ -197,8 +175,6 @@ class Webvis(Filter):
 
         @app.get('/')
         @app.get('/{topic:str}')
-        @app.get('/api/{topic:str}')
-        @app.get('/api')
         def topic(topic: str | None = None):
             with self._lock:
                 streams_keys = list(self.streams.keys())
@@ -239,6 +215,7 @@ class Webvis(Filter):
             "auth_token": str,
             "cors_origins": str,
             "access_log": bool,
+            "enable_snapshot_payload": bool,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -292,6 +269,7 @@ class Webvis(Filter):
         self.enable_json = config.enable_json
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
+        self.enable_snapshot_payload = config.enable_snapshot_payload
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()

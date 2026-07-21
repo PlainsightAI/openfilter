@@ -57,6 +57,7 @@ Filter.run_multi([
         host='0.0.0.0',        # Listen on all interfaces
         enable_json=True,      # Subject data in JSON format
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
+        enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
     )),
 ])
 ```
@@ -72,6 +73,7 @@ export FILTER_PORT="8000"
 export FILTER_HOST="0.0.0.0"
 export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
+export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
 ```
 
 ## Web Interface
@@ -306,53 +308,35 @@ Filter.run_multi([
 - **Purpose**: Main web interface
 - **Response**: HTML page with visualization
 
-#### 2. Topic Stream Endpoint (`/{topic}` or `/api/{topic}`)
+#### 2. Topic Stream Endpoint (`/{topic}`)
 - **Method**: GET
-- **Purpose**: Image streaming for a specific topic (or the default topic via `/` or `/api`)
+- **Purpose**: Image streaming for a specific topic (or the default topic via `/`)
 - **Parameters**: `topic` in URL path
-- **Response**: multipart/x-mixed-replace JPEG stream
-- **Aliases**: `/api` (streams the default topic) and `/api/{topic}` (streams a specific topic). Namespacing under `/api/{topic}` provides a clean route structure and avoids collisions with reserved words.
+- **Response**: `multipart/x-mixed-replace` JPEG stream
 
-
-#### 3. Topic Data Endpoint (`/{topic}/data`)
+#### 3. Topic Data Endpoint (`/{topic}/data` or `/data`)
 - **Method**: GET
-- **Purpose**: Frame metadata streaming for specific topic
+- **Purpose**: Frame metadata streaming for a specific topic (or the default topic via `/data`)
 - **Parameters**: `topic` in URL path
-- **Response**: text/event-stream data
+- **Response**: `text/event-stream` data
 
-#### 4. Snapshot Endpoint (`/snapshot` or `/{topic}/snapshot`)
+#### 4. Snapshot Payload Endpoint (`/snapshot-payload` or `/{topic}/snapshot-payload`)
 - **Method**: GET
-- **Purpose**: Retrieve the latest single JPEG frame snapshot for a given topic
-- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/snapshot` or `/api/snapshot/{topic}`)
-- **Response**: `image/jpeg` binary content of the latest frame. Returns `404` if no frame has been received yet.
-
-#### 5. Snapshot Payload Endpoint (`/snapshot-payload` or `/{topic}/snapshot-payload`)
-- **Method**: GET
-- **Purpose**: Retrieve the latest JPEG frame snapshot along with its associated metadata packed into HTTP response headers
-- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/snapshot-payload` or `/api/snapshot-payload/{topic}`)
-- **Response**: `image/jpeg` binary content of the latest frame, plus custom HTTP headers:
-  - `X-Topic`: The URL-encoded topic name.
-  - `X-Metadata`: The URL-encoded JSON string representation of the frame's metadata.
-  - `X-Timestamp`: The server epoch time when the snapshot response was generated.
-  - `X-Width` / `X-Height` / `X-Format`: Dimensions and color format of the frame.
-- **Header Size Limits**: Note that HTTP response headers are subject to size constraints (typically 8–16KB depending on proxies and web servers). For highly complex frame metadata (e.g., many detections), clients should poll `/snapshot` and `/latest-data` separately to avoid header truncation or rejection.
-
-#### 6. Latest Data Endpoint (`/latest-data` or `/{topic}/latest-data`)
-- **Method**: GET
-- **Purpose**: Retrieve the latest frame metadata as a static JSON payload
-- **Parameters**: Optional `topic` in URL path (can also be namespaced under `/api/latest-data` or `/api/latest-data/{topic}`)
-- **Response**: `application/json` payload containing the latest metadata dictionary.
+- **Purpose**: Retrieve the latest JPEG frame snapshot along with its associated metadata as a single JSON payload.
+- **Prerequisite**: Set `enable_snapshot_payload` to `True` (default is `False`) in the filter configuration or set `FILTER_ENABLE_SNAPSHOT_PAYLOAD=true` in the environment. If disabled, these endpoints will not be registered, and requests will fall back to live stream routes (e.g. for a topic literally named `snapshot-payload`).
+- **Response**: `application/json` payload carrying:
+  - `topic`: The resolved topic name.
+  - `timestamp`: The server epoch time when the snapshot response was generated.
+  - `width` / `height` / `format`: Dimensions and color format of the frame.
+  - `metadata`: The frame's metadata dictionary.
+  - `image`: The base64-encoded JPEG image string.
 
 ### Reserved Topic Names
 
 > [!WARNING]
-> The names `snapshot`, `snapshot-payload`, `latest-data`, and `api` are reserved keyword paths used by the Web Viewer filter's static endpoints.
-> If a pipeline topic is literally named one of these reserved words, its bare route (e.g., `/{topic}`) is shadowed by the static endpoint.
-> To ensure the live video stream remains accessible for a topic with one of these names, clients must use the namespaced stream alias:
-> - **Reserved Topic `snapshot`**: Stream at `/api/snapshot` (instead of `/snapshot` which returns a single JPEG snapshot)
-> - **Reserved Topic `snapshot-payload`**: Stream at `/api/snapshot-payload` (instead of `/snapshot-payload` which returns snapshot with headers)
-> - **Reserved Topic `latest-data`**: Stream at `/api/latest-data` (instead of `/latest-data` which returns static metadata JSON)
-> - **Reserved Topic `api`**: Stream at `/api/api` (instead of `/api` which streams the default topic)
+> The name `snapshot-payload` is a reserved keyword path used by the Web Viewer filter's static snapshot payload endpoint when `enable_snapshot_payload` is enabled.
+> If a pipeline topic is literally named `snapshot-payload`, its bare route (`/snapshot-payload`) is shadowed by the static endpoint.
+> When `enable_snapshot_payload` is disabled (default), no shadowing occurs, and `/snapshot-payload` will correctly stream the topic named `snapshot-payload`.
 
 ### API Examples
 
@@ -363,10 +347,6 @@ curl -N http://localhost:8000/main
 
 curl -N http://localhost:8000/camera1
 # Response: multipart/x-mixed-replace JPEG stream
-
-# Or stream via namespaced aliases (recommended for reserved topic names)
-curl -N http://localhost:8000/api/main
-curl -N http://localhost:8000/api/camera1
 ```
 
 #### Stream Data
@@ -378,16 +358,10 @@ curl -N http://localhost:8000/camera1/data
 # Response: text/event-stream data
 ```
 
-#### Fetch Snapshot & Latest Data (Polling)
+#### Fetch Snapshot Payload (JSON)
 ```bash
-# Get raw snapshot image
-curl -o snapshot.jpg http://localhost:8000/main/snapshot
-
-# Get snapshot image with metadata packed in headers
-curl -v http://localhost:8000/main/snapshot-payload > snapshot_with_headers.jpg
-
-# Get latest metadata JSON payload
-curl http://localhost:8000/main/latest-data
+# Get the JSON snapshot payload containing both base64 image and metadata
+curl http://localhost:8000/main/snapshot-payload
 ```
 
 ## CORS Configuration

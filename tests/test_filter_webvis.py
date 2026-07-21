@@ -433,9 +433,9 @@ class TestWebvisCreateApp(unittest.TestCase):
 
 
 class TestWebvisNewEndpoints(unittest.TestCase):
-    """Test the newly added endpoints: snapshot, snapshot-payload, and latest-data."""
+    """Test the newly added endpoints: snapshot-payload."""
 
-    def _make_webvis(self):
+    def _make_webvis(self, enable_snapshot_payload=True):
         webvis = object.__new__(Webvis)
         webvis.streams = {}
         webvis.enable_json = False
@@ -444,32 +444,37 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         webvis.latest_frames = {}
         webvis.configured_topics = set()
         webvis.is_multi_topic_static = False
+        webvis.enable_snapshot_payload = enable_snapshot_payload
         return webvis
+
+    def test_disabled_by_default(self):
+        # When enable_snapshot_payload is False (default), the routes should not be registered.
+        # We check app.routes directly to avoid making requests that would hit the catch-all stream and hang.
+        webvis = self._make_webvis(enable_snapshot_payload=False)
+        app = webvis.create_app()
+        paths = [r.path for r in app.routes]
+        self.assertNotIn('/snapshot-payload', paths)
+        self.assertNotIn('/{topic:str}/snapshot-payload', paths)
 
     def test_endpoints_404_when_no_frame(self):
         from fastapi.testclient import TestClient
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         app = webvis.create_app()
         client = TestClient(app)
-
-        # GET /snapshot -> 404
-        res = client.get('/snapshot')
-        self.assertEqual(res.status_code, 404)
 
         # GET /snapshot-payload -> 404
         res = client.get('/snapshot-payload')
         self.assertEqual(res.status_code, 404)
-        # X-Metadata should be present even in 404
-        self.assertIn("X-Metadata", res.headers)
+        self.assertEqual(res.content, b"No frame available")
 
     def test_endpoints_with_single_topic_frame(self):
         import numpy as np
-        import urllib.parse
+        import base64
         import json
         from fastapi.testclient import TestClient
         from openfilter.filter_runtime.frame import Frame
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         
         # Create a dummy frame and populate latest_frames / current_data
         image = np.zeros((120, 160, 3), dtype=np.uint8)
@@ -481,39 +486,31 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         app = webvis.create_app()
         client = TestClient(app)
 
-        # 1. GET /snapshot -> 200, returns jpeg
-        res = client.get('/snapshot')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["content-type"], "image/jpeg")
-        self.assertEqual(res.content, bytes(frame.bgr.jpg))
-
-        # 2. GET /snapshot-payload -> 200, returns jpeg + headers
+        # GET /snapshot-payload -> 200, returns JSON
         res = client.get('/snapshot-payload')
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["content-type"], "image/jpeg")
-        self.assertEqual(res.headers["X-Topic"], "main")
-        self.assertEqual(res.headers["X-Width"], "160")
-        self.assertEqual(res.headers["X-Height"], "120")
-        self.assertEqual(res.headers["X-Format"], "BGR")
+        self.assertEqual(res.headers["content-type"], "application/json")
         
-        metadata_raw = urllib.parse.unquote(res.headers["X-Metadata"])
-        metadata = json.loads(metadata_raw)
-        # Single topic -> should be flat
-        self.assertEqual(metadata, {"camera": "main", "detections": []})
-
-        # 3. GET /latest-data -> 200, returns flat JSON dict
-        res = client.get('/latest-data')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json(), {"camera": "main", "detections": []})
+        body = res.json()
+        self.assertEqual(body["topic"], "main")
+        self.assertIn("timestamp", body)
+        self.assertEqual(body["width"], 160)
+        self.assertEqual(body["height"], 120)
+        self.assertEqual(body["format"], "BGR")
+        self.assertEqual(body["metadata"], {"camera": "main", "detections": []})
+        
+        # Decode base64 image and check content
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame.bgr.jpg))
 
     def test_endpoints_with_multi_topic_frames(self):
         import numpy as np
-        import urllib.parse
+        import base64
         import json
         from fastapi.testclient import TestClient
         from openfilter.filter_runtime.frame import Frame
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         webvis.is_multi_topic_static = True
 
         image_front = np.zeros((100, 150, 3), dtype=np.uint8)
@@ -528,41 +525,32 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         app = webvis.create_app()
         client = TestClient(app)
 
-        # 1. GET /latest-data (default) -> multi-topic combined dictionary
-        res = client.get('/latest-data')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json(), {
-            "front": {"camera": "front"},
-            "back": {"camera": "back"}
-        })
-
-        # 2. GET /front/latest-data -> flat dictionary for front
-        res = client.get('/front/latest-data')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json(), {"camera": "front"})
-
-        # 3. GET /snapshot-payload (default) -> resolves to 'front' (the first key), returns front's snapshot and combined metadata
+        # 1. GET /snapshot-payload (default) -> resolves to 'front' (the first key), returns front's snapshot and combined metadata
         res = client.get('/snapshot-payload')
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["X-Topic"], "front")
-        self.assertEqual(res.headers["X-Width"], "150")
-        self.assertEqual(res.headers["X-Height"], "100")
         
-        metadata = json.loads(urllib.parse.unquote(res.headers["X-Metadata"]))
-        self.assertEqual(metadata, {
+        body = res.json()
+        self.assertEqual(body["topic"], "front")
+        self.assertEqual(body["width"], 150)
+        self.assertEqual(body["height"], 100)
+        self.assertEqual(body["metadata"], {
             "front": {"camera": "front"},
             "back": {"camera": "back"}
         })
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame_front.bgr.jpg))
 
-        # 4. GET /back/snapshot-payload -> returns back's snapshot and back's flat metadata
+        # 2. GET /back/snapshot-payload -> returns back's snapshot and back's flat metadata
         res = client.get('/back/snapshot-payload')
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["X-Topic"], "back")
-        self.assertEqual(res.headers["X-Width"], "300")
-        self.assertEqual(res.headers["X-Height"], "200")
         
-        metadata = json.loads(urllib.parse.unquote(res.headers["X-Metadata"]))
-        self.assertEqual(metadata, {"camera": "back"})
+        body = res.json()
+        self.assertEqual(body["topic"], "back")
+        self.assertEqual(body["width"], 300)
+        self.assertEqual(body["height"], 200)
+        self.assertEqual(body["metadata"], {"camera": "back"})
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame_back.bgr.jpg))
 
     def test_endpoints_with_special_characters_topic(self):
         import numpy as np
@@ -570,7 +558,7 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         from fastapi.testclient import TestClient
         from openfilter.filter_runtime.frame import Frame
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         
         image = np.zeros((100, 150, 3), dtype=np.uint8)
         # Topic containing space and carriage return/line feed characters
@@ -588,20 +576,15 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         res = client.get(f'/{encoded_path}/snapshot-payload')
         self.assertEqual(res.status_code, 200)
         
-        # Verify X-Topic header is fully URL-encoded and safe
-        expected_encoded_topic = urllib.parse.quote(special_topic)
-        self.assertEqual(res.headers["X-Topic"], expected_encoded_topic)
-        self.assertNotIn("\r", res.headers["X-Topic"])
-        self.assertNotIn("\n", res.headers["X-Topic"])
+        body = res.json()
+        self.assertEqual(body["topic"], special_topic)
 
     def test_endpoints_with_non_json_serializable_metadata(self):
         import numpy as np
-        import urllib.parse
-        import json
         from fastapi.testclient import TestClient
         from openfilter.filter_runtime.frame import Frame
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         
         # Create a dummy frame and populate latest_frames / current_data with non-JSON-serializable types
         image = np.zeros((120, 160, 3), dtype=np.uint8)
@@ -621,56 +604,13 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         app = webvis.create_app()
         client = TestClient(app)
 
-        # 1. GET /snapshot -> 200, returns jpeg
-        res = client.get('/snapshot')
-        self.assertEqual(res.status_code, 200)
-
-        # 2. GET /snapshot-payload -> 200, returns jpeg + headers, and does not raise 500 error
+        # GET /snapshot-payload -> 200, returns JSON with gracefully handled metadata
         res = client.get('/snapshot-payload')
         self.assertEqual(res.status_code, 200)
         
-        metadata_raw = urllib.parse.unquote(res.headers["X-Metadata"])
-        metadata = json.loads(metadata_raw)
-        self.assertEqual(metadata["count"], "5")
-        self.assertEqual(metadata["box"], "[1 2 3]")
-
-        # 3. GET /latest-data -> 200, returns JSON dict, does not raise 500 error
-        res = client.get('/latest-data')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["count"], "5")
-        self.assertEqual(res.json()["box"], "[1 2 3]")
-
-    def test_endpoints_with_reserved_word_topics(self):
-        import numpy as np
-        from fastapi.testclient import TestClient
-        from openfilter.filter_runtime.frame import Frame
-
-        webvis = self._make_webvis()
-        webvis.is_multi_topic_static = True
-        
-        image_api = np.zeros((100, 150, 3), dtype=np.uint8)
-        frame_api = Frame(image=image_api, data={"camera": "api_camera"}, format="BGR")
-
-        image_payload = np.zeros((200, 300, 3), dtype=np.uint8)
-        frame_payload = Frame(image=image_payload, data={"camera": "payload_camera"}, format="BGR")
-
-        webvis.latest_frames = {"api": frame_api, "snapshot-payload": frame_payload}
-        webvis.current_data = {"api": frame_api.data, "snapshot-payload": frame_payload.data}
-
-        app = webvis.create_app()
-        client = TestClient(app)
-
-        # 1. GET /api/snapshot-payload/api -> returns 'api' topic's snapshot-payload
-        res = client.get('/api/snapshot-payload/api')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["X-Topic"], "api")
-        self.assertEqual(res.headers["X-Width"], "150")
-
-        # 2. GET /api/snapshot-payload/snapshot-payload -> returns 'snapshot-payload' topic's snapshot-payload
-        res = client.get('/api/snapshot-payload/snapshot-payload')
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers["X-Topic"], "snapshot-payload")
-        self.assertEqual(res.headers["X-Width"], "300")
+        body = res.json()
+        self.assertEqual(body["metadata"]["count"], "5")
+        self.assertEqual(body["metadata"]["box"], "[1 2 3]")
 
     def test_concurrent_process_and_read(self):
         import numpy as np
@@ -678,7 +618,7 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         from openfilter.filter_runtime.frame import Frame
         from fastapi.testclient import TestClient
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         webvis._lock = RLock()
         webvis.streams = {}
         webvis.current_data = {}
@@ -710,9 +650,6 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         def reader_thread():
             try:
                 while not stop_threads:
-                    res1 = client.get('/latest-data')
-                    self.assertIn(res1.status_code, [200, 404])
-                    
                     res2 = client.get('/snapshot-payload')
                     self.assertIn(res2.status_code, [200, 404])
             except Exception as e:
@@ -742,7 +679,7 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         from openfilter.filter_runtime.frame import Frame
         from unittest.mock import PropertyMock, patch
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         image = np.zeros((120, 160, 3), dtype=np.uint8)
         frame = Frame(image=image, data={"camera": "main"}, format="BGR")
         
@@ -756,16 +693,10 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         with patch.object(frame.bgr.__class__, 'jpg', new_callable=PropertyMock) as mock_jpg:
             mock_jpg.side_effect = RuntimeError("jpg encoding failed")
 
-            # 1. GET /snapshot -> should return 500 instead of crashing the FastAPI worker
-            res = client.get('/snapshot')
-            self.assertEqual(res.status_code, 500)
-            self.assertEqual(res.content, b"JPEG encoding failed")
-
-            # 2. GET /snapshot-payload -> should return 500 with proper headers
+            # GET /snapshot-payload -> should return 500
             res = client.get('/snapshot-payload')
             self.assertEqual(res.status_code, 500)
             self.assertEqual(res.content, b"JPEG encoding failed")
-            self.assertIn("X-Metadata", res.headers)
 
     def test_endpoints_with_failed_jpeg_encoding_generic_exception(self):
         import numpy as np
@@ -773,7 +704,7 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         from openfilter.filter_runtime.frame import Frame
         from unittest.mock import PropertyMock, patch
 
-        webvis = self._make_webvis()
+        webvis = self._make_webvis(enable_snapshot_payload=True)
         image = np.zeros((120, 160, 3), dtype=np.uint8)
         frame = Frame(image=image, data={"camera": "main"}, format="BGR")
         
@@ -787,46 +718,10 @@ class TestWebvisNewEndpoints(unittest.TestCase):
         with patch.object(frame.bgr.__class__, 'jpg', new_callable=PropertyMock) as mock_jpg:
             mock_jpg.side_effect = Exception("generic opencv or other encoding failure")
 
-            # 1. GET /snapshot -> should return 500 instead of crashing
-            res = client.get('/snapshot')
-            self.assertEqual(res.status_code, 500)
-            self.assertEqual(res.content, b"JPEG encoding failed")
-
-            # 2. GET /snapshot-payload -> should return 500 with proper headers
+            # GET /snapshot-payload -> should return 500
             res = client.get('/snapshot-payload')
             self.assertEqual(res.status_code, 500)
             self.assertEqual(res.content, b"JPEG encoding failed")
-            self.assertIn("X-Metadata", res.headers)
-
-    def test_api_stream_route_aliases(self):
-        from fastapi.testclient import TestClient
-        from starlette.routing import Match
-        webvis = self._make_webvis()
-        app = webvis.create_app()
-
-        # Check route matches for the new stream aliases
-        scope_api_default = {'type': 'http', 'method': 'GET', 'path': '/api'}
-        matching_route_api_default = None
-        for route in app.routes:
-            match, _ = route.matches(scope_api_default)
-            if match == Match.FULL:
-                matching_route_api_default = route
-                break
-        
-        self.assertIsNotNone(matching_route_api_default)
-        self.assertEqual(matching_route_api_default.endpoint.__name__, 'topic')
-
-        scope_api_topic = {'type': 'http', 'method': 'GET', 'path': '/api/my_topic'}
-        matching_route_api_topic = None
-        for route in app.routes:
-            match, _ = route.matches(scope_api_topic)
-            if match == Match.FULL:
-                matching_route_api_topic = route
-                break
-
-        self.assertIsNotNone(matching_route_api_topic)
-        self.assertEqual(matching_route_api_topic.endpoint.__name__, 'topic')
-
 
 if __name__ == '__main__':
     unittest.main()
