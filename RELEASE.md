@@ -4,6 +4,14 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Added
+
+- **`VideoIn` frame meta gains `pts_s` / `src_frame` for file sources (#128)**: file (and s3) sources now stamp the decoder position of each delivered frame into `meta` — `src_frame` (0-based source frame index, `CAP_PROP_POS_FRAMES` sampled before the read, exact) and `pts_s` (presentation timestamp in seconds: `src_frame / container_fps`, the nominal CFR timeline; `CAP_PROP_POS_MSEC` only for containers reporting no frame rate, and `pts_s` is omitted when neither is trustworthy while `src_frame` stays present and exact). This is the video offset jump-to-frame consumers need, which `id` (chain-rate-dependent counter) and `ts` (wall-clock) cannot provide and which cannot be reconstructed downstream. Stream/webcam sources are unchanged: both keys absent. Design note: `docs/design-video-in-pts.md`.
+
+### Breaking Changes
+
+- **`VideoReader.read(with_tframe=True)` / `MultiVideoReader.read(with_tframe=True)` now return a 3-tuple**: `(image, tframe, extras)` instead of `(image, tframe)`, where `extras` is a dict (`{}` for non-file sources; `frame_n` / `pts_s` for files) that absorbs future additions without another arity break. This is deliberately the same tuple shape and `frame_n` key the seekable-replay work (#118) introduces, so the two contracts merge by key union. Both classes are exported in `__all__`; any external caller doing `img, tframe = reader.read(with_tframe=True)` must add the third element. `with_tframe=False` (the default) is unaffected.
+
 ### Security
 
 - **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93` and `av` (PyAV) from `~=16.1.0` to `~=17.1.0`. Both vendor ffmpeg, and both linux x86_64 wheels now bundle ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). `av 17.1.0` is the first release that pairs ffmpeg 8.1 with Python 3.10 support (av 18 requires Python >= 3.11); av 16.1.0 and 17.0.0 still bundled the vulnerable ffmpeg 8.0. With both vendored copies remediated, the shared security-scan's default suppression of this CVE is removed in PlainsightAI/gh-actions-public#30.
