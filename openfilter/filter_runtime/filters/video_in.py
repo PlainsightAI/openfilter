@@ -201,6 +201,8 @@ class VideoReader:
                 raise ValueError(f'invalid source {self.source!r}')
 
         self.ssource  = source  # with 'file://' stripped and 'webcam://num' converted to num
+        self.pts_ms   = None    # presentation timestamp (ms) of the last frame read, files only
+        self.frame_no = None    # 0-based source frame index of the last frame read, files only
         self.stop_evt = Event()
         self.deque    = Deque(maxlen=1)
         self.thread   = Thread(target=self.thread_reader, daemon=True)
@@ -208,6 +210,7 @@ class VideoReader:
         if not cap.isOpened():
             raise RuntimeError(f'failed to open video source: {self.source!r}')
         fps           = cap.get(cv2.CAP_PROP_FPS) or None
+        self.native_fps = fps  # container frame rate, kept for pts fallback (self.fps may be overwritten by maxfps)
 
         if is_file and not sync:
             self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
@@ -259,6 +262,37 @@ class VideoReader:
         self.stop_evt.set()
         self.cap.release()
 
+    def _cap_read(self):
+        """cap.read() capturing the decoder position of the frame being read.
+
+        CAP_PROP_POS_MSEC / CAP_PROP_POS_FRAMES refer to the frame about to be
+        decoded, so they are sampled BEFORE the read and committed only when the
+        read succeeds. This is the frame's presentation timestamp — the video
+        offset jump-to-frame needs — which wall-clock `ts` cannot provide.
+        Files only: stream/webcam positions are not meaningful here."""
+        if not self.is_file:
+            return self.cap.read()
+
+        pos_msec  = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        pos_frame = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+        ret, image = self.cap.read()
+
+        if ret and image is not None:
+            self.frame_no = frame_no = int(pos_frame)
+
+            # Primary: frame index over the container frame rate - exact for CFR
+            # sources and immune to the B-frame reordering and report-zero bugs
+            # POS_MSEC shows on several backends. POS_MSEC only covers the rare
+            # VFR container that reports no frame rate at all.
+            if self.native_fps:
+                self.pts_ms = frame_no / self.native_fps * 1000
+            elif pos_msec > 0 or frame_no == 0:
+                self.pts_ms = pos_msec
+            else:
+                self.pts_ms = None
+
+        return ret, image
+
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
             t = time_ns()
@@ -294,7 +328,7 @@ class VideoReader:
             return True
 
         while True:
-            ret, image = self.cap.read()
+            ret, image = self._cap_read()
 
             if not ret or image is None:
                 if not self.is_file:
@@ -327,7 +361,7 @@ class VideoReader:
 
                     return None
 
-                ret, image = self.cap.read()
+                ret, image = self._cap_read()
 
                 if not ret or image is None:  # no wait() here because if first frame fails then nothing means anything anymore and we might as well just end it
                     return None
@@ -396,7 +430,7 @@ class VideoReader:
                 elif not self.as_bgr:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            self.deque.append((image, tframe))
+            self.deque.append((image, tframe, self.pts_ms, self.frame_no))
 
             if cond is not None:
                 with cond:
@@ -419,7 +453,7 @@ class VideoReader:
     def frame_available(self) -> bool:
         return bool(self.deque)
 
-    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int] | None
+    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, float | None, int | None] | None
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
@@ -507,7 +541,7 @@ class MultiVideoReader:
     def frame_available(self) -> bool:
         return all(vid.frame_available for vid in self.videos)
 
-    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int]] | None
+    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int, float | None, int | None]] | None
         if self.state == 0:
             raise RuntimeError('can not read from videos before they are started')
         elif self.state == 2:
@@ -754,10 +788,19 @@ class VideoIn(Filter):
             self._camera_connected = 1
             self.id = id = self.id + 1
 
+            def meta(vid, tfrm, pts_ms, frame_no):
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}
+
+                if pts_ms is not None:  # file sources: decoder presentation timestamp = video offset
+                    meta['pts_s']     = pts_ms / 1000.0
+                    meta['src_frame'] = frame_no
+
+                return meta
+
             return {topic: Frame(img,
-                {'meta': {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}},
+                {'meta': meta(vid, tfrm, pts_ms, frame_no)},
                 'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
-            ) for (topic, vid), (img, tfrm) in zip(self.tops_n_vids, image_n_tframes)}
+            ) for (topic, vid), (img, tfrm, pts_ms, frame_no) in zip(self.tops_n_vids, image_n_tframes)}
 
         return get
 

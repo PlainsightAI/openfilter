@@ -126,6 +126,47 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_pts(self):
+        """File sources stamp the decoder presentation timestamp (pts_s) and the
+        0-based source frame index (src_frame) into each frame's meta, so
+        downstream consumers get the video offset without guessing it from the
+        frame counter and an assumed frame rate (`ts` is wall-clock, not video
+        position)."""
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync',
+                outputs = 'ipc://test-VideoIn-pts',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-pts',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            metas = []
+
+            while frames := queue.get():
+                metas.append(frames['main'].data['meta'])
+
+            self.assertEqual(len(metas), 3)
+            self.assertEqual([m['src_frame'] for m in metas], [0, 1, 2])
+
+            ptss = [m['pts_s'] for m in metas]
+
+            for pts in ptss:
+                self.assertIsInstance(pts, float)
+
+            deltas = [b - a for a, b in zip(ptss, ptss[1:])]
+
+            for delta in deltas:  # 30 fps test video -> ~33.3ms between frames
+                self.assertAlmostEqual(delta, 1 / 30, delta=1 / 60)
+
+        finally:
+            runner.stop()
+            queue.close()
+
+
     def test_bgr(self):
         runner = Filter.Runner([
             (VideoIn, dict(
