@@ -57,6 +57,7 @@ Filter.run_multi([
         host='0.0.0.0',        # Listen on all interfaces
         enable_json=True,      # Subject data in JSON format
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
+        enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
     )),
 ])
 ```
@@ -72,6 +73,7 @@ export FILTER_PORT="8000"
 export FILTER_HOST="0.0.0.0"
 export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
+export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
 ```
 
 ## Web Interface
@@ -308,15 +310,36 @@ Filter.run_multi([
 
 #### 2. Topic Stream Endpoint (`/{topic}`)
 - **Method**: GET
-- **Purpose**: Image streaming for specific topic
+- **Purpose**: Image streaming for a specific topic (or the default topic via `/`)
 - **Parameters**: `topic` in URL path
-- **Response**: multipart/x-mixed-replace JPEG stream
+- **Response**: `multipart/x-mixed-replace` JPEG stream
 
-#### 3. Topic Data Endpoint (`/{topic}/data`)
+#### 3. Topic Data Endpoint (`/{topic}/data` or `/data`)
 - **Method**: GET
-- **Purpose**: Frame metadata streaming for specific topic
+- **Purpose**: Frame metadata streaming for a specific topic (or the default topic via `/data`)
 - **Parameters**: `topic` in URL path
-- **Response**: text/event-stream data
+- **Response**: `text/event-stream` data
+
+#### 4. Snapshot Payload Endpoint (`/snapshot-payload` or `/{topic}/snapshot-payload`)
+- **Method**: GET
+- **Purpose**: Retrieve the latest JPEG frame snapshot along with its associated metadata as a single JSON payload.
+- **Prerequisite**: Set `enable_snapshot_payload` to `True` (default is `False`) in the filter configuration or set `FILTER_ENABLE_SNAPSHOT_PAYLOAD=true` in the environment. If disabled, these endpoints will not be registered, and requests will fall back to live stream routes (e.g. for a topic literally named `snapshot-payload`).
+- **Response**: `application/json` payload carrying:
+  - `topic`: The resolved topic name.
+  - `timestamp`: The server epoch time when the snapshot response was generated.
+  - `width` / `height` / `format`: Dimensions and color format of the frame.
+  - `metadata`: The frame's metadata dictionary.
+  - `image`: The base64-encoded JPEG image string.
+
+> [!NOTE]
+> In multi-topic default mode (e.g. bare `/snapshot-payload` request on a multi-topic pipeline), the response returns the combined metadata for all topics, but the image for only the first topic. This is intentional and matches the behavior of the `/data` view.
+
+### Reserved Topic Names
+
+> [!WARNING]
+> The name `snapshot-payload` is a reserved keyword path used by the Web Viewer filter's static snapshot payload endpoint when `enable_snapshot_payload` is enabled.
+> If a pipeline topic is literally named `snapshot-payload`, its bare route (`/snapshot-payload`) is shadowed by the static endpoint.
+> When `enable_snapshot_payload` is disabled (default), no shadowing occurs, and `/snapshot-payload` will correctly stream the topic named `snapshot-payload`.
 
 ### API Examples
 
@@ -336,6 +359,12 @@ curl -N http://localhost:8000/main/data
 
 curl -N http://localhost:8000/camera1/data
 # Response: text/event-stream data
+```
+
+#### Fetch Snapshot Payload (JSON)
+```bash
+# Get the JSON snapshot payload containing both base64 image and metadata
+curl http://localhost:8000/main/snapshot-payload
 ```
 
 ## CORS Configuration
