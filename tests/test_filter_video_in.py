@@ -87,7 +87,12 @@ class TestVideoIn(unittest.TestCase):
             {'source': 'webcam://0', 'topic': 'main', 'options': {'bgr': True}},
             {'source': 'file://SOME_VIDEO_FILE.mp4', 'topic': 'other', 'options': {'sync': True, 'loop': 3}},
             {'source': 'rtsp://RTSP_HOST_ADDRESS:8554/STREAM_NAME', 'topic': 'yet_another', 'options': {'maxsize': '640x480'}}],
-            'outputs': ['tcp://*']})
+            'outputs': ['tcp://*'],
+            'control_port': None,
+            'sdi_url': 'http://localhost:8090',
+            'webvis_url': 'http://localhost:8000',
+            'webvis_topic': 'viz',
+            'replay_controller_class': 'filter_subject_data_in.video_controller:VideoController'})
         ncfg1 = VideoIn.normalize_config(scfg)
         ncfg2 = VideoIn.normalize_config(ncfg1)
 
@@ -506,6 +511,586 @@ class TestVideoIn(unittest.TestCase):
         finally:
             runner.stop()
             queue.close()
+
+
+# ---------------------------------------------------------------------------
+# Seekable-replay unit tests (Review comments 2, 5, 6, 7)
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch
+import importlib
+import sys
+import types
+
+import cv2
+
+from openfilter.filter_runtime.filters import video_in as video_in_mod
+from openfilter.filter_runtime.filters.video_in import VideoReader
+
+
+class _FakeCtrl:
+    """Minimal VideoController stand-in for unit tests."""
+
+    def __init__(self):
+        self._seek = None
+        self._freeze = False
+        self.emitted = []
+
+    def consume_seek(self):
+        v, self._seek = self._seek, None
+        return v
+
+    def should_freeze(self):
+        return self._freeze
+
+    def on_frame_emitted(self, frame_n):
+        self.emitted.append(frame_n)
+
+    def request_seek(self, frame_n):
+        self._seek = frame_n
+
+    def set_paused(self, paused: bool):
+        self._freeze = paused
+
+
+class TestVideoInSeekableReplay(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(TEST_VIDEO_FNM, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            os.unlink(TEST_VIDEO_FNM)
+        except Exception:
+            pass
+
+    def test_env_control_port_filter_alias(self):
+        """FILTER_CONTROL_PORT is accepted (dual-prefix convention)."""
+        keys = (
+            'VIDEO_IN_CONTROL_PORT', 'FILTER_CONTROL_PORT', 'FILTER_VIDEO_CONTROL_PORT',
+            'VIDEO_IN_SDI_URL', 'FILTER_SDI_URL', 'FILTER_VIDEO_SDI_URL',
+            'VIDEO_IN_WEBVIS_URL', 'FILTER_WEBVIS_URL', 'FILTER_VIDEO_WEBVIS_URL',
+            'VIDEO_IN_WEBVIS_TOPIC', 'FILTER_WEBVIS_TOPIC', 'FILTER_VIDEO_WEBVIS_TOPIC',
+        )
+        saved = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            os.environ['FILTER_CONTROL_PORT'] = '9123'
+            os.environ['FILTER_SDI_URL'] = 'http://sdi.example:1'
+            os.environ['FILTER_WEBVIS_URL'] = 'http://webvis.example:2'
+            os.environ['FILTER_WEBVIS_TOPIC'] = 'main'
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}',
+                outputs='tcp://*',
+            ))
+            self.assertEqual(cfg.control_port, 9123)
+            self.assertEqual(cfg.sdi_url, 'http://sdi.example:1')
+            self.assertEqual(cfg.webvis_url, 'http://webvis.example:2')
+            self.assertEqual(cfg.webvis_topic, 'main')
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_env_video_in_takes_precedence_over_filter(self):
+        keys = ('VIDEO_IN_CONTROL_PORT', 'FILTER_CONTROL_PORT')
+        saved = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ['VIDEO_IN_CONTROL_PORT'] = '8001'
+            os.environ['FILTER_CONTROL_PORT'] = '8002'
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}',
+                outputs='tcp://*',
+            ))
+            self.assertEqual(cfg.control_port, 8001)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_missing_controller_package_raises(self):
+        """control_port set with an unresolvable replay_controller_class must fail loudly."""
+        filt = VideoIn.__new__(VideoIn)
+        cfg = VideoIn.normalize_config(dict(
+            id='vidin',
+            sources=f'file://{TEST_VIDEO_FNM}!sync',
+            outputs='tcp://*',
+            control_port=8091,
+            replay_controller_class='totally_bogus_missing_pkg_xyz:Foo',
+        ))
+        with self.assertRaises(RuntimeError) as cm:
+            filt.setup(cfg)
+        self.assertIn('not installed', str(cm.exception))
+        self.assertIn('8091', str(cm.exception))
+        # setup() must release the cv2.VideoCapture handles it already opened
+        # before raising (_release_mvreader_captures), not leak them.
+        for vid in filt.mvreader.videos:
+            self.assertFalse(vid.cap.isOpened())
+
+    def test_missing_controller_default_message_names_filter_subject_data_in(self):
+        """Default replay_controller_class points at filter_subject_data_in by name."""
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=None) as mock_resolve:
+            filt = VideoIn.__new__(VideoIn)
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}!sync',
+                outputs='tcp://*',
+                control_port=8092,
+            ))
+            with self.assertRaises(RuntimeError) as cm:
+                filt.setup(cfg)
+            self.assertIn('filter_subject_data_in', str(cm.exception))
+            mock_resolve.assert_called_once_with(video_in_mod._DEFAULT_REPLAY_CONTROLLER_PATH)
+            for vid in filt.mvreader.videos:
+                self.assertFalse(vid.cap.isOpened())
+
+    def test_start_server_failure_releases_captures(self):
+        """If controller start_server raises, already-opened captures must be released."""
+        FakeVC = MagicMock()
+        instance = MagicMock()
+        instance.start_server.side_effect = RuntimeError('bind failed')
+        FakeVC.return_value = instance
+
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=FakeVC):
+            filt = VideoIn.__new__(VideoIn)
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=f'file://{TEST_VIDEO_FNM}!sync',
+                outputs='tcp://*',
+                control_port=18092,
+            ))
+            with self.assertRaises(RuntimeError) as cm:
+                filt.setup(cfg)
+            self.assertIn('bind failed', str(cm.exception))
+            for vid in filt.mvreader.videos:
+                self.assertFalse(vid.cap.isOpened())
+            self.assertIsNone(getattr(filt, '_replay_ctrl', None))
+
+    def test_resolve_replay_controller_missing_target_returns_none(self):
+        """A dotted path whose target module does not exist resolves to None."""
+        self.assertIsNone(
+            video_in_mod._resolve_replay_controller_class('totally_bogus_missing_pkg_xyz:Foo')
+        )
+
+    def test_resolve_replay_controller_broken_dependency_reraises(self):
+        """A ModuleNotFoundError for something *other* than the target module is not swallowed."""
+        with patch('importlib.import_module') as mock_import:
+            mock_import.side_effect = ModuleNotFoundError("No module named 'some_other_dep'", name='some_other_dep')
+            with self.assertRaises(ModuleNotFoundError):
+                video_in_mod._resolve_replay_controller_class(
+                    'filter_subject_data_in.video_controller:VideoController'
+                )
+
+    def test_resolve_replay_controller_resolves_real_class(self):
+        """The default dotted path resolves to a class satisfying ReplayController.
+
+        Skipped when filter_subject_data_in is not installed (e.g. openfilter CI).
+        """
+        try:
+            importlib.import_module('filter_subject_data_in.video_controller')
+        except ImportError:
+            self.skipTest('filter_subject_data_in not installed')
+
+        cls = video_in_mod._resolve_replay_controller_class(video_in_mod._DEFAULT_REPLAY_CONTROLLER_PATH)
+        self.assertIsNotNone(cls)
+        for method in ('consume_seek', 'should_freeze', 'on_frame_emitted', 'start_server', 'stop_server'):
+            self.assertTrue(hasattr(cls, method), method)
+
+    def test_resolve_replay_controller_resolves_injected_class(self):
+        """Resolver returns the class from an importable dotted path (CI-safe mock)."""
+        class _StubCtrl:
+            def consume_seek(self): return None
+            def should_freeze(self): return False
+            def on_frame_emitted(self, frame_n): pass
+            def start_server(self, *a, **k): pass
+            def stop_server(self): pass
+
+        fake_mod = types.ModuleType('openfilter_test_replay_stub')
+        fake_mod.StubCtrl = _StubCtrl
+        with patch.dict(sys.modules, {'openfilter_test_replay_stub': fake_mod}):
+            cls = video_in_mod._resolve_replay_controller_class(
+                'openfilter_test_replay_stub:StubCtrl'
+            )
+        self.assertIs(cls, _StubCtrl)
+
+    def test_seek_accurate_forward_reads_to_non_iframe_target(self):
+        """_seek_accurate compensates when OpenCV lands before the target."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        # Disable EOF clamp so this unit test can target frame 10 on a mock cap
+        vid._total_frames = 0
+
+        # Replace the whole capture object — cv2.VideoCapture methods are read-only.
+        positions = {'pos': 0}
+        fake_cap = MagicMock()
+
+        def fake_set(prop, value):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                positions['pos'] = max(int(value) - 2, 0)  # undershoot by 2
+
+        def fake_get(prop):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                return float(positions['pos'])
+            return 0.0
+
+        def fake_read():
+            positions['pos'] += 1
+            return True, np.zeros((8, 8, 3), dtype=np.uint8)
+
+        fake_cap.set.side_effect = fake_set
+        fake_cap.get.side_effect = fake_get
+        fake_cap.read.side_effect = fake_read
+        fake_cap.isOpened.return_value = True
+        vid.cap = fake_cap
+
+        actual = vid._seek_accurate(10)
+        self.assertEqual(actual, 10)
+        self.assertEqual(vid._frame_n, 10)
+        vid.stop()
+
+    def test_seek_frame_index_matches_frame_index_after_seek(self):
+        """After a seek, frame_n and seek_frame_index on the first frame must match."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid.start()
+        try:
+            # Drain first frame so _last_replay_img is populated
+            item = None
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+            self.assertIsNotNone(item)
+
+            ctrl.request_seek(1)
+            # Allow the reader thread to process the seek
+            got = None
+            for _ in range(100):
+                got = vid.read(with_tframe=True)
+                if got is not None and got[2].get('seek_reset'):
+                    break
+                sleep(0.02)
+
+            self.assertIsNotNone(got)
+            image, tframe, extras = got
+            self.assertTrue(extras.get('seek_reset'))
+            self.assertEqual(
+                extras['frame_n'],
+                extras['seek_frame_index'],
+                'frame_index and seek_frame_index must agree on the seek_reset frame',
+            )
+        finally:
+            vid.stop()
+
+    def test_freeze_reemit_keeps_frame_n_fixed(self):
+        """Paused freeze re-emits the same frame_n with frame_repeat=True."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid.start()
+        try:
+            # Wait until at least one real frame has been emitted
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+
+            ctrl.set_paused(True)
+            repeats = []
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[2].get('frame_repeat'):
+                    repeats.append(item[2]['frame_n'])
+                if len(repeats) >= 3:
+                    break
+                sleep(0.02)
+
+            self.assertGreaterEqual(len(repeats), 2)
+            # All freeze re-emits must share the same frozen frame_n
+            self.assertEqual(len(set(repeats)), 1, repeats)
+        finally:
+            # stop() must work while still paused (scrub-UI shutdown)
+            vid.stop()
+
+    def test_stop_while_paused_does_not_hang(self):
+        """stop() while should_freeze() is True must join cleanly."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+            ctrl.set_paused(True)
+            # Drain one freeze frame so the reader is parked in the freeze branch
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[2].get('frame_repeat'):
+                    break
+                sleep(0.02)
+        finally:
+            vid.stop()
+        self.assertFalse(vid.thread.is_alive())
+        self.assertEqual(vid.state, 2)
+
+    def test_seek_past_eof_clamps_to_last_frame(self):
+        """Seek target beyond total_frames must clamp, not end the video."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        self.assertGreaterEqual(vid._total_frames, 1)
+        last = vid._total_frames - 1
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+
+            ctrl.request_seek(vid._total_frames + 100)
+            got = None
+            for _ in range(100):
+                got = vid.read(with_tframe=True)
+                if got is not None and got[0] is not None and got[2].get('seek_reset'):
+                    break
+                sleep(0.02)
+
+            self.assertIsNotNone(got)
+            image, _tframe, extras = got
+            self.assertIsNotNone(image)
+            self.assertTrue(extras.get('seek_reset'))
+            self.assertLessEqual(extras['frame_n'], last)
+            self.assertEqual(extras['frame_n'], extras['seek_frame_index'])
+        finally:
+            vid.stop()
+
+    def test_seek_undershoot_landing_on_frame_zero_repositions_cap(self):
+        """EOF after decoding only frame 0 must still call cap.set(0), not skip it."""
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, replay_ctrl=ctrl)
+        vid._total_frames = 0  # disable clamp so target 5 is kept
+
+        positions = {'pos': 0}
+        sets = []
+        fake_cap = MagicMock()
+
+        def fake_set(prop, value):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                sets.append(int(value))
+                # First set (to target 5) undershoots to 0; corrective set lands on 0
+                positions['pos'] = 0 if int(value) == 5 else int(value)
+
+        def fake_get(prop):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                return float(positions['pos'])
+            return 0.0
+
+        reads = {'n': 0}
+
+        def fake_read():
+            # One successful decode at frame 0, then EOF (actual becomes 1, then break)
+            reads['n'] += 1
+            if reads['n'] == 1:
+                positions['pos'] = 1
+                return True, np.zeros((8, 8, 3), dtype=np.uint8)
+            return False, None
+
+        fake_cap.set.side_effect = fake_set
+        fake_cap.get.side_effect = fake_get
+        fake_cap.read.side_effect = fake_read
+        fake_cap.isOpened.return_value = True
+        vid.cap = fake_cap
+
+        landed = vid._seek_accurate(5)
+        self.assertEqual(landed, 0)
+        self.assertEqual(vid._frame_n, 0)
+        # Must include the corrective reposition to frame 0 (not skipped when landed==0)
+        self.assertIn(0, sets)
+        self.assertEqual(sets[-1], 0)
+        vid.stop()
+
+    def test_post_seek_eof_clamp_uses_raw_read_not_read_one(self):
+        """Post-seek EOF clamp must use raw cap.read(), not read_one().
+
+        Using read_one() here deadlocks sync mode (second wait on a cleared
+        sync_evt) and corrupts play-once loop==1 into loop==0 (infinite),
+        which reopens from frame 0 instead of ending/clamping.
+        """
+        ctrl = _FakeCtrl()
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, loop=False, replay_ctrl=ctrl)
+        self.assertEqual(vid.loop, 1)
+        vid.start()
+        try:
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None and item[0] is not None:
+                    break
+                sleep(0.02)
+
+            loop_before = vid.loop
+            # Metadata overstates decodable frames (truncated-file scenario)
+            vid._total_frames = 10
+            last = 9
+            positions = {'pos': 0}
+            reads = {'n': 0}
+
+            fake_cap = MagicMock()
+
+            def fake_set(prop, value):
+                if prop == cv2.CAP_PROP_POS_FRAMES:
+                    positions['pos'] = int(value)
+
+            def fake_get(prop):
+                if prop == cv2.CAP_PROP_POS_FRAMES:
+                    return float(positions['pos'])
+                return 0.0
+
+            def fake_read():
+                reads['n'] += 1
+                # First post-seek decode fails (metadata past real EOF); clamp retry succeeds
+                if reads['n'] == 1:
+                    return False, None
+                positions['pos'] = last + 1
+                return True, np.zeros((8, 8, 3), dtype=np.uint8)
+
+            fake_cap.set.side_effect = fake_set
+            fake_cap.get.side_effect = fake_get
+            fake_cap.read.side_effect = fake_read
+            fake_cap.isOpened.return_value = True
+            vid.cap = fake_cap
+
+            # Forbid read_one until post-seek raw decode has started (reads['n']>0).
+            # After that, the next normal frame may call read_one again.
+            real_read_one = vid.read_one
+
+            def guarded_read_one():
+                if reads['n'] == 0:
+                    raise AssertionError('read_one must not be used for post-seek decode')
+                return real_read_one()
+
+            with patch.object(vid, 'read_one', side_effect=guarded_read_one):
+                ctrl.request_seek(last)
+                got = None
+                for _ in range(100):
+                    got = vid.read(with_tframe=True)
+                    if got is not None and got[0] is not None and got[2].get('seek_reset'):
+                        break
+                    sleep(0.02)
+
+            self.assertIsNotNone(got)
+            image, _tframe, extras = got
+            self.assertIsNotNone(image)
+            self.assertTrue(extras.get('seek_reset'))
+            self.assertEqual(extras['frame_n'], extras['seek_frame_index'])
+            # Play-once counter must not have been flipped to infinite (0)
+            self.assertEqual(vid.loop, loop_before)
+            self.assertGreaterEqual(reads['n'], 2)  # fail once, then clamp retry
+        finally:
+            vid.stop()
+
+    def test_seek_fanout_delivers_to_every_reader(self):
+        """_SeekFanout: each reader observes the same seek once."""
+        inner = _FakeCtrl()
+        fanout = video_in_mod._SeekFanout(inner)
+        v0 = fanout.view(0)
+        v1 = fanout.view(1)
+
+        inner.request_seek(7)
+        self.assertEqual(v0.consume_seek(), 7)
+        self.assertEqual(v1.consume_seek(), 7)
+        self.assertIsNone(v0.consume_seek())
+        self.assertIsNone(v1.consume_seek())
+
+        # A new seek advances the generation for both again
+        inner.request_seek(2)
+        self.assertEqual(v1.consume_seek(), 2)
+        self.assertEqual(v0.consume_seek(), 2)
+
+    def test_read_with_tframe_false_back_compat(self):
+        """read(with_tframe=False) still returns just the image ndarray."""
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True)
+        vid.start()
+        try:
+            img = None
+            for _ in range(50):
+                img = vid.read(with_tframe=False)
+                if img is not None:
+                    break
+                sleep(0.02)
+            self.assertIsInstance(img, np.ndarray)
+            self.assertEqual(len(img.shape), 3)
+        finally:
+            vid.stop()
+
+    def test_read_with_tframe_returns_three_tuple(self):
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True)
+        vid.start()
+        try:
+            item = None
+            for _ in range(50):
+                item = vid.read(with_tframe=True)
+                if item is not None:
+                    break
+                sleep(0.02)
+            self.assertIsInstance(item, tuple)
+            self.assertEqual(len(item), 3)
+            image, tframe, extras = item
+            self.assertIsInstance(image, np.ndarray)
+            self.assertIsInstance(tframe, int)
+            self.assertIsInstance(extras, dict)
+        finally:
+            vid.stop()
+
+    def test_multi_source_shares_controller(self):
+        """All VideoReaders in a VideoIn with control_port share one controller via fanout."""
+        FakeVC = MagicMock()
+        instance = MagicMock()
+        instance.consume_seek.return_value = None
+        instance.should_freeze.return_value = False
+        FakeVC.return_value = instance
+
+        with patch.object(video_in_mod, '_resolve_replay_controller_class', return_value=FakeVC):
+            filt = VideoIn.__new__(VideoIn)
+            cfg = VideoIn.normalize_config(dict(
+                id='vidin',
+                sources=[
+                    f'file://{TEST_VIDEO_FNM}!sync',
+                    f'file://{TEST_VIDEO_FNM}!sync;cam2',
+                ],
+                outputs='tcp://*',
+                control_port=18091,
+            ))
+            try:
+                filt.setup(cfg)
+                videos = filt.mvreader.videos
+                self.assertEqual(len(videos), 2)
+                self.assertIs(filt._replay_ctrl, instance)
+                self.assertIsInstance(videos[0]._replay_ctrl, video_in_mod._SeekFanoutView)
+                self.assertIsInstance(videos[1]._replay_ctrl, video_in_mod._SeekFanoutView)
+                # Same fanout shared state under both views
+                self.assertIs(
+                    videos[0]._replay_ctrl._shared,
+                    videos[1]._replay_ctrl._shared,
+                )
+                instance.start_server.assert_called_once()
+            finally:
+                # Proper shutdown unblocks sync waits and releases captures
+                if getattr(filt, 'mvreader', None) is not None:
+                    filt.shutdown()
+                else:
+                    instance.stop_server()
 
 
 if __name__ == '__main__':

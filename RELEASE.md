@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.1.4 - 2026-07-16
+
 ### Security
 
 - **CVE-2026-40962**: Bumped `opencv-python-headless` from `~=4.13.0` to `~=5.0.0.93` and `av` (PyAV) from `~=16.1.0` to `~=17.1.0`. Both vendor ffmpeg, and both linux x86_64 wheels now bundle ffmpeg 8.1 (`libavcodec.so.62.28.101`), which fixes the ffmpeg MOV/CENC demuxer flaw (fixed upstream in ffmpeg >= 8.1). `av 17.1.0` is the first release that pairs ffmpeg 8.1 with Python 3.10 support (av 18 requires Python >= 3.11); av 16.1.0 and 17.0.0 still bundled the vulnerable ffmpeg 8.0. With both vendored copies remediated, the shared security-scan's default suppression of this CVE is removed in PlainsightAI/gh-actions-public#30.
@@ -11,6 +13,14 @@ OpenFilter Library release notes
 ### Changed
 
 - Refreshed the dependency floors to current releases: `openlineage-python~=1.51.0`, `requests~=2.34.2`, the OpenTelemetry stack to `~=1.44.0` (`semantic-conventions~=0.65b0`, GCP exporters `~=1.12.0a0`), `pydantic~=2.13.4`, `fastapi~=0.139.2`, `uvicorn~=0.51.0`, `python-multipart~=0.0.32`, `google-cloud-storage~=3.13.0`, `google-cloud-monitoring~=2.31.0`, and the `dev` tooling (`setuptools~=83.0.0`, `pytest~=9.1.1`, `build~=1.5.0`, `docker~=7.2.0`, `wheel~=0.47.0`, `jq~=1.12.0`, `pytest-cov~=7.1.0`). `numpy` is deliberately held at `~=2.2.6` (numpy 2.5 requires Python >= 3.12) and `av` is capped at `~=17.1.0` rather than 18 (av 18 requires Python >= 3.11), preserving the Python 3.10/3.11 support OpenFilter still guarantees. No filter code changes were required; the full non-slow test suite passes against the new set.
+
+### Added
+
+- **Opt-in seekable replay API for `VideoIn`**: setting `control_port` wires an HTTP control server (pause/play/step/seek + HTML player) and injects frame-accurate sync metadata (`frame_index`, `frame_repeat`, `seek_reset`, `seek_frame_index`, `seek_ts`) into every emitted `Frame.meta` — the "Replay Sync Meta Spec v1", documented in the `VideoIn` docstring and `docs/design-video-in-seekable-replay.md`. Seeks are I-frame-accurate with forward-read compensation and clamp to the last frame near EOF instead of ending the pipeline; multi-source pipelines share one controller so every camera pauses/seeks together. The concrete controller implementation (e.g. `filter_subject_data_in`'s `VideoController`) is resolved lazily by dotted class path (`replay_controller_class` / `VIDEO_IN_REPLAY_CONTROLLER_CLASS` / `FILTER_REPLAY_CONTROLLER_CLASS`) against the new `ReplayController` Protocol — core never imports a concrete downstream package at module scope. Without `control_port`, `VideoIn` behavior is unchanged.
+
+### Breaking Changes
+
+- **`VideoReader.read(with_tframe=True)` / `MultiVideoReader.read(with_tframe=True)` now return a 3-tuple**: `(image, tframe, extras)` instead of `(image, tframe)`. `extras` is `{}` when no replay controller is attached. Both classes are exported in `__all__`; any external caller doing `img, tframe = reader.read(with_tframe=True)` must add the third element. `with_tframe=False` (the default) is unaffected.
 
 ## v1.1.3 - 2026-07-10
 
