@@ -14,6 +14,7 @@ OpenFilter Library release notes
 
 ### Changed
 
+- **Webvis uvicorn access logging disabled by default**: Changed the default value of the `access_log` configuration parameter (and the `FILTER_ACCESS_LOG` environment variable) to `False` (previously `True`) to prevent verbose uvicorn request logging from cluttering logs during high-frequency client polling of the `/snapshot-payload` endpoints.
 - Refreshed the dependency floors to current releases: `openlineage-python~=1.51.0`, `requests~=2.34.2`, the OpenTelemetry stack to `~=1.44.0` (`semantic-conventions~=0.65b0`, GCP exporters `~=1.12.0a0`), `pydantic~=2.13.4`, `fastapi~=0.139.2`, `uvicorn~=0.51.0`, `python-multipart~=0.0.32`, `google-cloud-storage~=3.13.0`, `google-cloud-monitoring~=2.31.0`, and the `dev` tooling (`setuptools~=83.0.0`, `pytest~=9.1.1`, `build~=1.5.0`, `docker~=7.2.0`, `wheel~=0.47.0`, `jq~=1.12.0`, `pytest-cov~=7.1.0`). `numpy` is deliberately held at `~=2.2.6` (numpy 2.5 requires Python >= 3.12) and `av` is capped at `~=17.1.0` rather than 18 (av 18 requires Python >= 3.11), preserving the Python 3.10/3.11 support OpenFilter still guarantees. No filter code changes were required; the full non-slow test suite passes against the new set.
 
 ## v1.1.3 - 2026-07-10

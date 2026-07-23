@@ -56,6 +56,10 @@ class Webvis(Filter):
         access_log:
             Whether to enable uvicorn access logging globally for Webvis. Default ``False`` (disabled
             to avoid excessive log spam from snapshot/polling endpoints). Also settable via ``FILTER_ACCESS_LOG`` env var.
+
+        enable_snapshot_payload:
+            Whether to enable the GET /snapshot-payload and /{topic}/snapshot-payload REST endpoints.
+            Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
     """
 
     FILTER_TYPE = 'Output'
