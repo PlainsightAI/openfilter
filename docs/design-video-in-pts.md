@@ -45,6 +45,12 @@ Merge plan with `feat/video-in-seekable-replay`:
   level. One name must survive; this PR has no attachment to `src_frame` — if #118 lands first we
   adopt `frame_index` and keep `pts_s`; if this lands first, #118 rebases its `frame_index` onto
   `src_frame` or renames ours. Either way the second-to-merge PR emits a single key.
+- **Landing order (agreed, per review)**: #118 merges first — it owns the extras-dict shape and
+  its design doc, and this PR already adopted its shape and `frame_n` key. This PR then rebases
+  on top, adopting the surviving meta key name (`frame_index`) and routing #118's post-seek
+  compensation read through `_cap_read()` in the same rebase, and lands in the same release
+  cycle so the published Breaking Changes callout appears once. If #118 stalls past a release
+  window, the fallback is the reverse order with the same second-mover obligations.
 
 ## 4. VFR position (stated intent)
 
