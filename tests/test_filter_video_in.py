@@ -8,8 +8,9 @@ from time import sleep
 from openfilter.filter_runtime import Filter
 from openfilter.filter_runtime.test import FiltersToQueue
 from openfilter.filter_runtime.utils import setLogLevelGlobal
-from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig
+from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig, VideoReader
 
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,27 @@ RED_THEN_GREEN_THEN_BLUE_FRAME_MP4 = (
 is_image_very_red   = lambda img: np.mean(img, axis=(0, 1)).dot((0, 0, 255)) >= 0xdfff
 is_image_very_green = lambda img: np.mean(img, axis=(0, 1)).dot((0, 255, 0)) >= 0xdfff
 is_image_very_blue  = lambda img: np.mean(img, axis=(0, 1)).dot((255, 0, 0)) >= 0xdfff
+
+
+class FakeCap:
+    """Minimal cv2.VideoCapture stand-in driving VideoReader._cap_read()'s POS_MSEC
+    fallback branches deterministically (the real backends' POS_MSEC behavior varies,
+    which is the very reason the fallback exists)."""
+
+    def __init__(self, msecs):  # msecs[i] = POS_MSEC reported before reading frame i
+        self.msecs = msecs
+        self.n     = 0
+
+    def get(self, prop):
+        return float(self.n) if prop == cv2.CAP_PROP_POS_FRAMES else self.msecs[self.n]
+
+    def read(self):
+        if self.n >= len(self.msecs):
+            return False, None
+
+        self.n += 1
+
+        return True, np.zeros((2, 2, 3), np.uint8)
 
 
 class TestVideoIn(unittest.TestCase):
@@ -165,6 +187,79 @@ class TestVideoIn(unittest.TestCase):
         finally:
             runner.stop()
             queue.close()
+
+
+    def test_pts_reader_tuple(self):
+        """VideoReader.read(with_tframe=True) returns the 3-tuple (image, tframe,
+        extras) - the extensible extras-dict shape shared with the seekable-replay
+        branch - with extras carrying frame_n / pts_s for file sources."""
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True)
+
+        vid.start()
+
+        try:
+            for expected_frame_n in range(3):
+                image, tframe, extras = (item := vid.read(with_tframe=True))
+
+                self.assertEqual(len(item), 3)
+                self.assertIsInstance(image, np.ndarray)
+                self.assertIsInstance(tframe, int)
+                self.assertIsInstance(extras, dict)
+                self.assertEqual(extras['frame_n'], expected_frame_n)
+                self.assertIsInstance(extras['pts_s'], float)
+                self.assertAlmostEqual(extras['pts_s'], expected_frame_n / 30, delta=1 / 60)
+
+        finally:
+            vid.stop()
+
+
+    def _reader_with_fake_cap(self, msecs, native_fps=None):
+        vid = VideoReader(f'file://{TEST_VIDEO_FNM}')
+
+        vid.cap.release()
+
+        vid.cap        = FakeCap(msecs)
+        vid.native_fps = native_fps
+
+        return vid  # thread never started, nothing to stop()
+
+    def test_pts_pos_msec_fallback(self):
+        """Container reporting no frame rate at all with sane POS_MSEC -> pts_s
+        falls back to POS_MSEC."""
+        vid = self._reader_with_fake_cap(msecs := [0.0, 40.0, 80.0])
+
+        for frame_n, msec in enumerate(msecs):
+            ret, image = vid._cap_read()
+
+            self.assertTrue(ret)
+            self.assertEqual(vid.extras, {'frame_n': frame_n, 'pts_s': msec / 1000})
+
+    def test_pts_pos_msec_untrusted(self):
+        """No reported frame rate and POS_MSEC stuck at 0 past frame 0 (the observed
+        report-zero backend bug) -> pts_s is omitted rather than emitted wrong while
+        frame_n stays present and exact."""
+        vid = self._reader_with_fake_cap([0.0, 0.0, 0.0])
+
+        vid._cap_read()  # frame 0: msec 0 is legitimate
+
+        self.assertEqual(vid.extras, {'frame_n': 0, 'pts_s': 0.0})
+
+        vid._cap_read()
+
+        self.assertEqual(vid.extras, {'frame_n': 1})
+
+    def test_pts_non_file_unchanged(self):
+        """Non-file sources: _cap_read() delegates to cap.read() untouched and extras
+        stays {} - the only source of pts_s / src_frame - so stream/webcam meta cannot
+        gain the keys."""
+        vid = self._reader_with_fake_cap([0.0, 40.0])
+
+        vid.is_file = False
+
+        ret, image = vid._cap_read()
+
+        self.assertTrue(ret)
+        self.assertEqual(vid.extras, {})
 
 
     def test_bgr(self):
