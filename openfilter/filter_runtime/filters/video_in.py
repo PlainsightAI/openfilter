@@ -28,6 +28,13 @@ VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or o
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
 
+# OpenCV's ffmpeg backend reports a sentinel ~1000 fps (the 1 ms MKV/webm container
+# timebase, not a real rate) for some VFR files. Any CAP_PROP_FPS at or above this
+# ceiling - or non-finite - is implausible for real footage and is treated as no
+# reported rate, so pts falls through to the guarded POS_MSEC branch instead of
+# emitting frame_n / 1000 (~1 ms/frame) offsets that are simply wrong.
+FPS_SANE_CEILING  = 1000.0
+
 re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam|s3)://')
 re_video_stream   = re.compile(r'^(rtsp|rtmp|http|https)://')
 
@@ -290,11 +297,16 @@ class VideoReader:
             # but stays exact under the inverse mapping (offset * avg_fps) used
             # to seek by frame, so jump-to-frame round-trips to the same frame -
             # while POS_MSEC on such files hits the bugs above with no way to
-            # tell a true pts from a lie. POS_MSEC is used only for containers
-            # reporting no frame rate at all, and only while it looks sane
+            # tell a true pts from a lie. The CFR path is taken only for a
+            # PLAUSIBLE reported rate: an implausible one (>= FPS_SANE_CEILING or
+            # non-finite - e.g. the ffmpeg-backend ~1000 fps VFR sentinel, the 1 ms
+            # container timebase rather than an average) is not a rate anything
+            # drifts around, so frame_n / native_fps would just be wrong; those
+            # fall through to POS_MSEC like a no-rate container. POS_MSEC is used
+            # only for containers with no usable rate, and only while it looks sane
             # (nonzero past frame 0); otherwise pts_s is omitted and frame_n
             # remains the consumer's only (still exact) position.
-            if self.native_fps:
+            if self.native_fps and self.native_fps < FPS_SANE_CEILING:
                 extras['pts_s'] = frame_n / self.native_fps
             elif pos_msec > 0 or frame_n == 0:
                 extras['pts_s'] = pos_msec / 1000
