@@ -1,9 +1,10 @@
+import importlib
 import logging
 import os
 import re
-from threading import Condition, Event, Thread
+from threading import Condition, Event, Lock, Thread, current_thread
 from time import time_ns, sleep
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import cv2
@@ -17,9 +18,124 @@ except ImportError:
 
 from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, Deque
 
-__all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader']
+__all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader',
+    'ReplayController']
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ReplayController(Protocol):
+    """Structural interface for a seekable-replay controller.
+
+    openfilter core depends only on this Protocol, never on a concrete
+    downstream package — the previous implementation imported
+    ``filter_subject_data_in.video_controller.VideoController`` directly at
+    module scope, which put a hard, undeclared, unpinned dependency on a
+    downstream filter into core (and risked a partial-init circular import
+    the moment that package imported anything from openfilter). Any object
+    that structurally satisfies this Protocol works, whether or not it
+    imports openfilter or subclasses anything here.
+
+    `VideoReader` only calls `consume_seek` / `should_freeze` /
+    `on_frame_emitted` on the frame-production hot path. `VideoIn.setup` /
+    `shutdown` additionally call `start_server` / `stop_server` and, if
+    present, `play` (used to quiesce a paused controller before teardown).
+    The concrete class is resolved lazily by dotted path — see
+    `replay_controller_class` / `_resolve_replay_controller_class` below —
+    so core never names the implementation and the import only happens once
+    `control_port` is actually configured.
+    """
+
+    def consume_seek(self) -> int | None: ...
+    def should_freeze(self) -> bool: ...
+    def on_frame_emitted(self, frame_n: int) -> None: ...
+    def start_server(self, port: int, *, sdi_url: str | None = None, webvis_url: str | None = None,
+        webvis_topic: str | None = None) -> None: ...
+    def stop_server(self) -> None: ...
+
+
+_DEFAULT_REPLAY_CONTROLLER_PATH = 'filter_subject_data_in.video_controller:VideoController'
+
+
+def _resolve_replay_controller_class(dotted_path: str):
+    """Lazily resolve a ``module:Class`` or ``module.Class`` path to a class.
+
+    Returns `None` only when the *target module itself* is not installed —
+    that is the "not installed" case `VideoIn.setup` fails loudly on. Any
+    other `ImportError` (a broken dependency *of* that module, a genuine bug
+    on import, etc.) is re-raised as-is so a broken package is never mistaken
+    for an absent one (the old bare `except ImportError` around the static
+    top-level import could not tell these apart).
+    """
+    module_path, _, cls_name = dotted_path.partition(':')
+
+    if not cls_name:
+        module_path, _, cls_name = dotted_path.rpartition('.')
+
+    try:
+        module = importlib.import_module(module_path)
+    except ModuleNotFoundError as e:
+        missing = e.name or ''
+
+        if missing == module_path or module_path.startswith(missing + '.'):
+            return None  # the target module itself is absent
+
+        raise  # some other module *imported by* module_path is missing/broken
+
+    return getattr(module, cls_name)
+
+
+class _SeekFanout:
+    """Fan a single controller seek out to every VideoReader.
+
+    Controllers typically clear the pending seek on the first ``consume_seek()``
+    call. With N readers sharing one controller, that leaves N-1 cameras
+    unsought. This wrapper records each new target under a generation counter
+    so every reader observes it exactly once.
+    """
+
+    def __init__(self, inner: Any):
+        self.inner = inner
+        self._lock = Lock()
+        self._gen = 0
+        self._target: int | None = None
+        self._last_gen: dict[int, int] = {}
+
+    def view(self, reader_id: int) -> '_SeekFanoutView':
+        return _SeekFanoutView(self, reader_id)
+
+    def consume_for(self, reader_id: int) -> int | None:
+        with self._lock:
+            t = self.inner.consume_seek()
+            if t is not None:
+                self._gen += 1
+                self._target = int(t)
+            last = self._last_gen.get(reader_id, 0)
+            if self._target is not None and last < self._gen:
+                self._last_gen[reader_id] = self._gen
+                return self._target
+            return None
+
+
+class _SeekFanoutView:
+    """Per-reader facade; seek is fanned out, other methods delegate to inner."""
+
+    def __init__(self, shared: _SeekFanout, reader_id: int):
+        self._shared = shared
+        self._reader_id = reader_id
+
+    def consume_seek(self) -> int | None:
+        return self._shared.consume_for(self._reader_id)
+
+    def should_freeze(self) -> bool:
+        return self._shared.inner.should_freeze()
+
+    def on_frame_emitted(self, frame_n: int) -> None:
+        self._shared.inner.on_frame_emitted(frame_n)
+
+    def __getattr__(self, name: str):
+        return getattr(self._shared.inner, name)
 
 VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or os.getenv('FILTER_BGR') or 'true').lower()))
 VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or os.getenv('FILTER_SYNC') or 'false').lower()))
@@ -119,14 +235,15 @@ class VideoReader:
         source:  str,
         cond:    Condition | None = None,
         *,
-        bgr:     bool | None = None,
-        sync:    bool | None = None,
-        loop:    bool | int = False,
-        maxfps:  float | None = None,
-        maxsize: str | None = None,
-        resize:  str | None = None,
-        region:  str | None = None,
+        bgr:        bool | None = None,
+        sync:       bool | None = None,
+        loop:       bool | int = False,
+        maxfps:     float | None = None,
+        maxsize:    str | None = None,
+        resize:     str | None = None,
+        region:     str | None = None,
         expiration: int | None = None,
+        replay_ctrl: Any = None,
     ):
         """Read a single video file, network stream or webcam until the end.
 
@@ -212,7 +329,11 @@ class VideoReader:
         if is_file and not sync:
             self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
 
-        self.fps = fps
+        self.fps              = fps
+        self._replay_ctrl     = replay_ctrl
+        self._frame_n         = 0
+        self._last_replay_img = None
+        self._total_frames    = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if is_file else 0
 
         if fps is None:
             logger.warning(f'video does not have fixed framerate {self.source!r}{"" if maxfps is None else ", maxfps ignored"}')
@@ -257,7 +378,16 @@ class VideoReader:
         self.state = 2
 
         self.stop_evt.set()
-        self.cap.release()
+        # Unblock thread_reader / read_one waiting on sync_evt.wait()
+        if (sync_evt := self.sync_evt) is not None:
+            sync_evt.set()
+        # Wait for the reader thread to leave cap.read() before releasing
+        if self.thread.is_alive() and self.thread is not current_thread():
+            self.thread.join(timeout=2.0)
+        try:
+            self.cap.release()
+        except Exception:
+            pass
 
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
@@ -337,8 +467,49 @@ class VideoReader:
 
         return image
 
+    def _seek_accurate(self, target_frame: int) -> int:
+        """Seek to target_frame with I-frame compensation (reads forward from nearest I-frame).
+
+        Clamps to ``[0, total_frames-1]`` when frame count is known so scrubbing
+        past EOF lands on the last frame instead of ending the pipeline.
+
+        Returns the effective frame index the capture is positioned to decode next
+        (may be < requested target if OpenCV undershoots / hits EOF early).
+        """
+        if self._total_frames > 0:
+            target_frame = max(0, min(int(target_frame), self._total_frames - 1))
+        else:
+            target_frame = max(0, int(target_frame))
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        actual = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        while actual < target_frame:
+            ret, _ = self.cap.read()
+            if not ret:
+                break
+            actual += 1
+
+        if actual < target_frame:
+            # EOF during forward-read — land on the last decodable index.
+            # Always reposition the capture: when the only decoded frame was
+            # index 0 and then EOF hit (landed=0, actual>0), skipping the set
+            # leaves the capture past EOF so the next read ends the pipeline.
+            landed = max(actual - 1, 0)
+            logger.warning(
+                'VideoIn seek: requested/clamped target %s undershot at %s; '
+                'clamping to frame %s',
+                target_frame, actual, landed,
+            )
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, landed)
+            self._frame_n = landed
+            return landed
+
+        self._frame_n = target_frame
+        return target_frame
+
     def thread_reader(self):
-        cond = self.cond
+        cond  = self.cond
+        ctrl  = self._replay_ctrl
 
         if size := (maxsize := self.maxsize) or self.resize:
             width, aspect, height, interp = size
@@ -354,9 +525,107 @@ class VideoReader:
                 cv2.INTER_NEAREST
             )
 
+        _just_seeked       = False
+        _seek_target_frame = None
+
         while True:
-            image  = None if self.stop_evt.is_set() else self.read_one()
-            tframe = time_ns()
+            # ----------------------------------------------------------------
+            # Replay: check for a pending seek command (highest priority)
+            # ----------------------------------------------------------------
+            if ctrl is not None:
+                seek_target = ctrl.consume_seek()
+                if seek_target is not None:
+                    self._seek_accurate(seek_target)
+                    _just_seeked       = True
+                    _seek_target_frame = seek_target
+
+            # ----------------------------------------------------------------
+            # Replay: freeze-frame (paused) – re-emit the last image unchanged
+            # Exception: if a seek just happened, fall through to read() once
+            # so _last_replay_img is updated to the seek-target frame first.
+            # ----------------------------------------------------------------
+            if ctrl is not None and ctrl.should_freeze() and not _just_seeked:
+                if self.stop_evt.is_set():
+                    self.deque.append((None, time_ns(), {}))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    break
+                if self._last_replay_img is not None:
+                    freeze_extras = {'frame_n': self._frame_n, 'frame_repeat': True}
+                    tframe        = time_ns()
+                    self.deque.append((self._last_replay_img, tframe, freeze_extras))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    # Throttle to the natural frame rate to avoid spinning
+                    if (sync_evt := self.sync_evt) is not None:
+                        sync_evt.wait()
+                        sync_evt.clear()
+                    else:
+                        ns = self.ns_per_fps or self.ns_per_maxfps or 40_000_000
+                        sleep(ns / 1_000_000_000)
+                else:
+                    sleep(0.04)
+                continue
+
+            # ----------------------------------------------------------------
+            # Normal read / post-seek decode
+            # ----------------------------------------------------------------
+            # After a seek, decode with raw cap.read() — never read_one().
+            # read_one() on post-seek EOF would (a) decrement play-once loop
+            # 1→0 (infinite) and reopen from frame 0, and (b) a second
+            # read_one() for the EOF clamp would deadlock sync mode because
+            # the first EOF wait() already consumed sync_evt.
+            # Pace with the same sync/fps wait as read_one, then clear so the
+            # next iteration blocks until the consumer pops this seek frame.
+            if _just_seeked and not self.stop_evt.is_set():
+                t = time_ns()
+                if (sync_evt := self.sync_evt) is not None:
+                    sync_evt.wait()
+                    sync_evt.clear()
+                    if (ns_per_maxfps := self.ns_per_maxfps) is not None:
+                        if (tleft := (ns_per_maxfps - ((t := time_ns()) - (tmaxfps := self.tmaxfps)))) > 0:
+                            sleep(tleft / 1_000_000_000)
+                            t = tmaxfps + ns_per_maxfps
+                        self.tmaxfps = t
+                elif self.is_file and (ns_per_fps := self.ns_per_fps) is not None:
+                    if (tleft := (ns_per_fps - (t - (tfps := self.tfps)))) > 0:
+                        sleep(tleft / 1_000_000_000)
+                        t = tfps + ns_per_fps
+                    self.tfps = t
+
+                ret, image = self.cap.read()
+                if not ret or image is None:
+                    image = None
+                    if self._total_frames > 0:
+                        self._seek_accurate(self._total_frames - 1)
+                        ret, image = self.cap.read()
+                        if not ret:
+                            image = None
+                if image is None and self._last_replay_img is not None:
+                    image = self._last_replay_img
+                    tframe = time_ns()
+                    replay_extras = {
+                        'frame_n': self._frame_n,
+                        'seek_reset': True,
+                        'seek_frame_index': self._frame_n,
+                    }
+                    self.deque.append((image, tframe, replay_extras))
+                    if cond is not None:
+                        with cond:
+                            cond.notify_all()
+                    if ctrl is not None:
+                        ctrl.on_frame_emitted(self._frame_n)
+                    _just_seeked = False
+                    _seek_target_frame = None
+                    continue
+                tframe = time_ns()
+            else:
+                image  = None if self.stop_evt.is_set() else self.read_one()
+                tframe = time_ns()
+
+            replay_extras: dict = {}
 
             if image is not None:
                 shape = image.shape
@@ -396,7 +665,34 @@ class VideoReader:
                 elif not self.as_bgr:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            self.deque.append((image, tframe))
+                # ---- replay metadata injection ----
+                if ctrl is not None:
+                    # cap.get(POS_FRAMES) points to the NEXT frame to be read, so -1
+                    frame_n = max(int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1, 0)
+                    self._frame_n         = frame_n
+                    self._last_replay_img = image
+                    replay_extras         = {'frame_n': frame_n}
+                    if _just_seeked:
+                        # Keep frame_index and seek_frame_index identical on the
+                        # first post-seek frame. Prefer the actual decoded position
+                        # when OpenCV undershoots the requested target.
+                        if (
+                            _seek_target_frame is not None
+                            and frame_n != _seek_target_frame
+                        ):
+                            logger.warning(
+                                'VideoIn seek: requested frame %s but decoded '
+                                'position is %s; emitting seek_frame_index=%s '
+                                'to match frame_index',
+                                _seek_target_frame, frame_n, frame_n,
+                            )
+                        replay_extras['seek_reset']       = True
+                        replay_extras['seek_frame_index'] = frame_n
+                        _just_seeked       = False
+                        _seek_target_frame = None
+                    ctrl.on_frame_emitted(frame_n)
+
+            self.deque.append((image, tframe, replay_extras))
 
             if cond is not None:
                 with cond:
@@ -419,13 +715,28 @@ class VideoReader:
     def frame_available(self) -> bool:
         return bool(self.deque)
 
-    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int] | None
+    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, dict] | None
+        """Pop the next available frame.
+
+        BREAKING CHANGE (seekable replay, unreleased): `with_tframe=True` used to
+        return `(image, tframe)`. It now always returns a 3-tuple
+        `(image, tframe, extras)`, where `extras` is `{}` when no replay controller
+        is attached and otherwise carries the Replay Sync Meta Spec v1 keys
+        (`frame_n`, `frame_repeat`, `seek_reset`, `seek_frame_index`). `image` may be
+        `None` on the tuple emitted when the video ends. `VideoReader` /
+        `MultiVideoReader` are exported in `__all__`, so any external caller doing
+        `img, tframe = reader.read(with_tframe=True)` must be updated to
+        `img, tframe, extras = reader.read(with_tframe=True)`.
+
+        `with_tframe=False` is unaffected — it still returns just the image
+        ndarray (or `None`), matching every prior release.
+        """
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
             return None
 
-        if (image_n_tframe := self.deque.popleft()) is None:
+        if (item := self.deque.popleft()) is None:
             self.state = 2
 
             self.cap.release()
@@ -435,7 +746,10 @@ class VideoReader:
         if (sync_evt := self.sync_evt) is not None:
             sync_evt.set()
 
-        return image_n_tframe if with_tframe else image_n_tframe[0]
+        if with_tframe:
+            # item is always (image, tframe, extras) now; extras may be empty dict
+            return item
+        return item[0]
 
     @staticmethod
     def get_info(source: str) -> tuple[int, int, str, float]:  # (height, width, format, fps)
@@ -507,7 +821,7 @@ class MultiVideoReader:
     def frame_available(self) -> bool:
         return all(vid.frame_available for vid in self.videos)
 
-    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int]] | None
+    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int, dict]] | None
         if self.state == 0:
             raise RuntimeError('can not read from videos before they are started')
         elif self.state == 2:
@@ -520,14 +834,17 @@ class MultiVideoReader:
             with cond:
                 cond.wait()
 
-        images = [video.read(with_tframe) for video in videos]
+        items = [video.read(with_tframe) for video in videos]
 
-        if any(image is None for image in images):
+        # item is None when state==2, or (None, tframe, extras) when video ended
+        if any(
+            item is None or (with_tframe and item[0] is None)
+            for item in items
+        ):
             self.stop()
-
             return None
 
-        return images
+        return items
 
 
 # --- CUT HERE ---------------------------------------------------------------------------------------------------------
@@ -565,6 +882,31 @@ class VideoInConfig(FilterConfig):
     maxfps:  float | None
     maxsize: str | None
     resize:  str | None
+
+    # ---- seekable replay control (optional) ----
+    # When control_port is set, VideoIn starts an HTTP replay API (pause/play/seek/step)
+    # via a ReplayController (see the ReplayController Protocol above) and injects
+    # replay sync metadata (frame_index / frame_repeat / seek_*) into every Frame.meta.
+    #
+    # IMPORTANT: only FilterSubjectDataIn with sync_key='sequential' consumes these
+    # signals today. Other sync_key modes (e.g. 'ts') ignore them — see the Replay
+    # Sync Meta Spec in the class docstring.
+    #
+    # Env vars (legacy VIDEO_IN_* takes precedence over FILTER_*):
+    #   VIDEO_IN_CONTROL_PORT             / FILTER_CONTROL_PORT
+    #   VIDEO_IN_SDI_URL                  / FILTER_SDI_URL
+    #   VIDEO_IN_WEBVIS_URL               / FILTER_WEBVIS_URL
+    #   VIDEO_IN_WEBVIS_TOPIC             / FILTER_WEBVIS_TOPIC
+    #   VIDEO_IN_REPLAY_CONTROLLER_CLASS  / FILTER_REPLAY_CONTROLLER_CLASS
+    control_port: int | None
+    sdi_url:      str | None
+    webvis_url:   str | None
+    webvis_topic: str | None
+
+    # Dotted `module:Class` (or `module.Class`) path to the ReplayController
+    # implementation. Defaults to filter_subject_data_in's VideoController, resolved
+    # lazily (only when control_port is set) — core never imports it at module scope.
+    replay_controller_class: str | None
 
 
 class VideoIn(Filter):
@@ -658,12 +1000,16 @@ class VideoIn(Filter):
             per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
 
     Environment variables (FILTER_* or legacy VIDEO_IN_* prefix, legacy takes precedence):
-        FILTER_BGR      / VIDEO_IN_BGR
-        FILTER_SYNC     / VIDEO_IN_SYNC
-        FILTER_LOOP     / VIDEO_IN_LOOP
-        FILTER_MAXFPS   / VIDEO_IN_MAXFPS
-        FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
-        FILTER_RESIZE   / VIDEO_IN_RESIZE
+        FILTER_BGR           / VIDEO_IN_BGR
+        FILTER_SYNC          / VIDEO_IN_SYNC
+        FILTER_LOOP          / VIDEO_IN_LOOP
+        FILTER_MAXFPS        / VIDEO_IN_MAXFPS
+        FILTER_MAXSIZE       / VIDEO_IN_MAXSIZE
+        FILTER_RESIZE        / VIDEO_IN_RESIZE
+        FILTER_CONTROL_PORT  / VIDEO_IN_CONTROL_PORT
+        FILTER_SDI_URL       / VIDEO_IN_SDI_URL
+        FILTER_WEBVIS_URL    / VIDEO_IN_WEBVIS_URL
+        FILTER_WEBVIS_TOPIC  / VIDEO_IN_WEBVIS_TOPIC
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
@@ -677,6 +1023,71 @@ class VideoIn(Filter):
         
         Example S3 usage:
             openfilter run - VideoIn --sources s3://my-bucket/video.mp4!region=us-west-2 - Webvis
+
+    BREAKING CHANGE (seekable replay, unreleased): `VideoReader.read(with_tframe=True)`
+        and `MultiVideoReader.read(with_tframe=True)` now return a 3-tuple
+        `(image, tframe, extras)` instead of `(image, tframe)`. Both classes are
+        exported in `__all__`. `with_tframe=False` (the default) is unaffected.
+        See `VideoReader.read` docstring. All in-repo callers are updated.
+
+    Seekable Replay API (requires a ReplayController implementation, e.g. the
+    filter_subject_data_in package):
+        When `control_port` is set, VideoIn resolves a `ReplayController` (see the
+        `ReplayController` Protocol at module scope) by dotted class path and wires
+        it up as an HTTP server (pause/play/step/seek + HTML player). openfilter
+        core never imports a concrete downstream package at module scope — the
+        controller class is resolved lazily, only when `control_port` is set, via
+        `replay_controller_class` (default points at filter_subject_data_in's
+        `VideoController`, which structurally satisfies `ReplayController`).
+        HTTP/UI lives in that package so VideoIn stays focused on frame production;
+        seek/freeze still run inside VideoReader because they gate which frames
+        enter the deque.
+
+        If `control_port` is set but the target module is not installed, setup()
+        raises RuntimeError (fail loud — the operator explicitly requested
+        controls). If the module *is* installed but fails to import for some other
+        reason (e.g. one of its own dependencies is broken), that underlying error
+        is raised instead of being mistaken for "not installed".
+
+        Frame.meta keys (always present when control_port is active):
+
+            meta['id']                 - monotonic emit counter (pipeline order; NOT file position)
+            meta['ts']                 - wall-clock emit time in seconds (NOT video-relative)
+            meta['frame_index']        - 0-based position in the video file (trust this for sync)
+            meta['total_frames']       - total frames in the video file
+
+        Replay Sync Meta Spec v1 (emitted only when control_port is active):
+
+            meta['frame_repeat']       - True on every re-emitted frozen frame while paused
+            meta['seek_reset']         - True on the first frame after a seek
+            meta['seek_frame_index']   - actual decoded frame index of that seek (always == frame_index
+                                         on the seek_reset frame)
+            meta['seek_ts']            - seek_frame_index / src_fps (seconds)
+
+        Downstream consumers:
+            FilterSubjectDataIn sync_key='sequential' — honors frame_repeat / seek_reset /
+                seek_frame_index (cursor freeze / jump).
+            FilterSubjectDataIn sync_key='ts' (and any other mode) — ignores these signals;
+                do not use interactive seek/pause with those modes if sync must hold.
+            Any third-party filter — may rely on Replay Sync Meta Spec v1 keys above.
+
+        HTTP endpoints (served by VideoController on control_port):
+            POST /pause
+            POST /play
+            POST /step?frames=N
+            POST /seek?frame=N  |  POST /seek?ts=12.345
+            GET  /status
+            GET  /video          (streams the local MP4; single-source only)
+            GET  /player         (HTML5 browser player with scrubber + overlay)
+
+        Config / env vars (VIDEO_IN_* takes precedence over FILTER_*):
+            control_port             / VIDEO_IN_CONTROL_PORT             / FILTER_CONTROL_PORT
+            sdi_url                  / VIDEO_IN_SDI_URL                  / FILTER_SDI_URL
+            webvis_url               / VIDEO_IN_WEBVIS_URL               / FILTER_WEBVIS_URL
+            webvis_topic             / VIDEO_IN_WEBVIS_TOPIC             / FILTER_WEBVIS_TOPIC
+            replay_controller_class  / VIDEO_IN_REPLAY_CONTROLLER_CLASS  / FILTER_REPLAY_CONTROLLER_CLASS
+                Dotted `module:Class` path to an alternate ReplayController
+                implementation. Defaults to filter_subject_data_in's VideoController.
     """
 
     FILTER_TYPE = 'Input'
@@ -693,6 +1104,44 @@ class VideoIn(Filter):
             raise ValueError('must specify at least one source')
         if not config.outputs:
             raise ValueError('must specify at least one output')
+
+        # ---- replay control env var defaults ----
+        # Dual-prefix convention: VIDEO_IN_* (legacy) takes precedence over FILTER_*.
+        # Also accept FILTER_VIDEO_* as a transitional alias.
+        if config.control_port is None:
+            _env = (
+                os.getenv('VIDEO_IN_CONTROL_PORT')
+                or os.getenv('FILTER_CONTROL_PORT')
+                or os.getenv('FILTER_VIDEO_CONTROL_PORT')
+            )
+            config.control_port = int(_env) if _env else None
+        if config.sdi_url is None:
+            config.sdi_url = (
+                os.getenv('VIDEO_IN_SDI_URL')
+                or os.getenv('FILTER_SDI_URL')
+                or os.getenv('FILTER_VIDEO_SDI_URL')
+                or 'http://localhost:8090'
+            )
+        if config.webvis_url is None:
+            config.webvis_url = (
+                os.getenv('VIDEO_IN_WEBVIS_URL')
+                or os.getenv('FILTER_WEBVIS_URL')
+                or os.getenv('FILTER_VIDEO_WEBVIS_URL')
+                or 'http://localhost:8000'
+            )
+        if config.webvis_topic is None:
+            config.webvis_topic = (
+                os.getenv('VIDEO_IN_WEBVIS_TOPIC')
+                or os.getenv('FILTER_WEBVIS_TOPIC')
+                or os.getenv('FILTER_VIDEO_WEBVIS_TOPIC')
+                or 'viz'
+            )
+        if config.replay_controller_class is None:
+            config.replay_controller_class = (
+                os.getenv('VIDEO_IN_REPLAY_CONTROLLER_CLASS')
+                or os.getenv('FILTER_REPLAY_CONTROLLER_CLASS')
+                or _DEFAULT_REPLAY_CONTROLLER_PATH
+            )
 
         for idx, source in enumerate(sources):
             if isinstance(source, dict):
@@ -733,31 +1182,166 @@ class VideoIn(Filter):
             topics.append(source.topic or 'main')
             optionss.append(source.options or {})
 
-        default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
+        default_options  = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
             'maxsize': config.maxsize, 'resize': config.resize}
-        self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
-        self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
-        self.id              = -1  # frame id
+        self.mvreader    = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
+        self.tops_n_vids = tuple(zip(topics, self.mvreader.videos))
+        self.id          = -1  # frame id
         self._camera_connected = 0
+
+        # ---- seekable replay controller (optional) ----
+        self._replay_ctrl = None
+        if config.control_port:
+            controller_path = config.replay_controller_class or _DEFAULT_REPLAY_CONTROLLER_PATH
+
+            try:
+                controller_cls = _resolve_replay_controller_class(controller_path)
+            except Exception as e:
+                self._release_mvreader_captures()
+                raise RuntimeError(
+                    f'VideoIn: control_port={config.control_port} was set but loading the '
+                    f'replay controller {controller_path!r} failed (it looks installed but '
+                    f'broken, not simply missing): {e}'
+                ) from e
+
+            if controller_cls is None:
+                self._release_mvreader_captures()
+                raise RuntimeError(
+                    f'VideoIn: control_port={config.control_port} was set but the replay '
+                    f'controller module for {controller_path!r} is not installed — refusing '
+                    'to start without the requested replay API. Install with: '
+                    'pip install filter-subject-data-in'
+                )
+
+            # Use the first video as the canonical source for the controller
+            primary_vid  = self.mvreader.videos[0]
+            primary_src  = config.sources[0].source
+            local_path   = primary_src.replace('file://', '') if primary_src.startswith('file://') else None
+            if local_path and not os.path.isfile(local_path):
+                local_path = None
+
+            try:
+                ctrl = controller_cls(
+                    total_frames=primary_vid._total_frames,
+                    fps=primary_vid.fps or 30.0,
+                    source=primary_src,
+                    local_path=local_path,
+                )
+                if not isinstance(ctrl, ReplayController):
+                    logger.warning(
+                        'VideoIn: replay controller %r does not fully satisfy the ReplayController '
+                        'protocol (missing method?) — proceeding, but calls may fail at runtime.',
+                        controller_path,
+                    )
+                ctrl.start_server(
+                    config.control_port,
+                    sdi_url=config.sdi_url,
+                    webvis_url=config.webvis_url,
+                    webvis_topic=config.webvis_topic,
+                )
+            except Exception:
+                # controller_cls(...) / start_server(...) sit after MultiVideoReader
+                # already opened captures; release them before propagating so a
+                # failed setup() does not leak file handles (same as the import
+                # fail-loud path above).
+                self._release_mvreader_captures()
+                raise
+
+            self._replay_ctrl = ctrl
+
+            # Fan each seek out to every reader (consume_seek is read-and-clear
+            # on the underlying controller — without this only one camera seeks).
+            fanout = _SeekFanout(ctrl)
+            for i, vid in enumerate(self.mvreader.videos):
+                vid._replay_ctrl = fanout.view(i)
+
+            logger.info(
+                'VideoIn: seekable replay API on port %s  player=http://localhost:%s/player',
+                config.control_port, config.control_port,
+            )
 
         self.mvreader.start()
 
+    def _release_mvreader_captures(self):
+        """Release cv2.VideoCapture handles opened by setup() before raising.
+
+        setup() constructs MultiVideoReader (opening one cv2.VideoCapture per
+        source) before the control_port guard above. If that guard raises,
+        mvreader.start() never runs so shutdown() never runs either — release
+        the already-open captures directly so a failed setup() (e.g. in tests
+        or config validators that call setup() without a full run) does not
+        leak file handles.
+        """
+        mvreader = getattr(self, 'mvreader', None)
+        if mvreader is None:
+            return
+        for vid in mvreader.videos:
+            try:
+                vid.cap.release()
+            except Exception:
+                pass
+
     def shutdown(self):
+        ctrl = getattr(self, '_replay_ctrl', None)
+        if ctrl is not None:
+            # Quiesce freeze/seek before joining reader threads
+            play = getattr(ctrl, 'play', None)
+            if callable(play):
+                try:
+                    play()
+                except Exception:
+                    pass
+            stop_server = getattr(ctrl, 'stop_server', None)
+            if callable(stop_server):
+                try:
+                    stop_server()
+                except Exception:
+                    pass
         self.mvreader.stop()
+        if ctrl is not None:
+            self._replay_ctrl = None
 
     def process(self, frames):
+        ctrl = getattr(self, '_replay_ctrl', None)
+
         def get():
-            if (image_n_tframes := self.mvreader.read(True)) is None:
+            if (items := self.mvreader.read(True)) is None:
                 self._camera_connected = 0
                 self.exit('video ended')
+                return None
 
             self._camera_connected = 1
             self.id = id = self.id + 1
 
-            return {topic: Frame(img,
-                {'meta': {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}},
-                'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
-            ) for (topic, vid), (img, tfrm) in zip(self.tops_n_vids, image_n_tframes)}
+            result = {}
+            for (topic, vid), item in zip(self.tops_n_vids, items):
+                img, tfrm, extras = item  # always (image, tframe, extras) since thread_reader change
+
+                meta = {
+                    'id':      id,
+                    'ts':      tfrm / 1_000_000_000,
+                    'src':     vid.source,
+                    'src_fps': vid.fps,
+                }
+
+                if ctrl is not None and extras:
+                    frame_n = extras.get('frame_n', 0)
+                    meta['frame_index']  = frame_n
+                    meta['total_frames'] = vid._total_frames
+                    if extras.get('frame_repeat'):
+                        meta['frame_repeat'] = True
+                    if extras.get('seek_reset'):
+                        meta['seek_reset']       = True
+                        meta['seek_ts']          = frame_n / (vid.fps or 30.0)
+                        meta['seek_frame_index'] = extras.get('seek_frame_index', frame_n)
+
+                result[topic] = Frame(
+                    img,
+                    {'meta': meta},
+                    'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB',
+                )
+
+            return result
 
         return get
 
