@@ -96,6 +96,28 @@ class TestWebvisConfig(unittest.TestCase):
             normalized = Webvis.normalize_config(config)
             self.assertEqual(normalized.cors_origins, 'https://a.com,https://b.com')
 
+    def test_access_log_default_false(self):
+        config = {'sources': 'tcp://localhost:5550'}
+        normalized = Webvis.normalize_config(config)
+        self.assertFalse(normalized.access_log)
+
+    def test_access_log_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_ACCESS_LOG': 'true'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertTrue(normalized.access_log)
+
+    def test_enable_snapshot_payload_default_false(self):
+        config = {'sources': 'tcp://localhost:5550'}
+        normalized = Webvis.normalize_config(config)
+        self.assertFalse(normalized.enable_snapshot_payload)
+
+    def test_enable_snapshot_payload_from_env_var(self):
+        with patch.dict(os.environ, {'FILTER_ENABLE_SNAPSHOT_PAYLOAD': 'true'}):
+            config = {'sources': 'tcp://localhost:5550'}
+            normalized = Webvis.normalize_config(config)
+            self.assertTrue(normalized.enable_snapshot_payload)
+
 
 class TestWebvisCreateApp(unittest.TestCase):
     """Test the Webvis.create_app() method."""
@@ -106,6 +128,7 @@ class TestWebvisCreateApp(unittest.TestCase):
         webvis.enable_json = False
         webvis.sleep_interval = 1.0
         webvis.current_data = {}
+        webvis.latest_frames = {}
         webvis.configured_topics = set()
         webvis.is_multi_topic_static = False
         return webvis
@@ -419,6 +442,297 @@ class TestWebvisCreateApp(unittest.TestCase):
 
         asyncio.run(run_test())
 
+
+class TestWebvisNewEndpoints(unittest.TestCase):
+    """Test the newly added endpoints: snapshot-payload."""
+
+    def _make_webvis(self, enable_snapshot_payload=True):
+        webvis = object.__new__(Webvis)
+        webvis.streams = {}
+        webvis.enable_json = False
+        webvis.sleep_interval = 1.0
+        webvis.current_data = {}
+        webvis.latest_frames = {}
+        webvis.configured_topics = set()
+        webvis.is_multi_topic_static = False
+        webvis.enable_snapshot_payload = enable_snapshot_payload
+        return webvis
+
+    def test_disabled_by_default(self):
+        # When enable_snapshot_payload is False (default), the routes should not be registered.
+        # We check app.routes directly to avoid making requests that would hit the catch-all stream and hang.
+        webvis = self._make_webvis(enable_snapshot_payload=False)
+        app = webvis.create_app()
+        paths = [r.path for r in app.routes]
+        self.assertNotIn('/snapshot-payload', paths)
+        self.assertNotIn('/{topic:str}/snapshot-payload', paths)
+
+    def test_endpoints_404_when_no_frame(self):
+        from fastapi.testclient import TestClient
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET /snapshot-payload -> 404
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(res.content, b"No frame available")
+
+    def test_endpoints_with_single_topic_frame(self):
+        import numpy as np
+        import base64
+        import json
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        
+        # Create a dummy frame and populate latest_frames / current_data
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(image=image, data={"camera": "main", "detections": []}, format="BGR")
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET /snapshot-payload -> 200, returns JSON
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.headers["content-type"], "application/json")
+        
+        body = res.json()
+        self.assertEqual(body["topic"], "main")
+        self.assertIn("timestamp", body)
+        self.assertEqual(body["width"], 160)
+        self.assertEqual(body["height"], 120)
+        self.assertEqual(body["format"], "BGR")
+        self.assertEqual(body["metadata"], {"camera": "main", "detections": []})
+        
+        # Decode base64 image and check content
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame.bgr.jpg))
+
+    def test_endpoints_with_multi_topic_frames(self):
+        import numpy as np
+        import base64
+        import json
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        webvis.is_multi_topic_static = True
+
+        image_front = np.zeros((100, 150, 3), dtype=np.uint8)
+        frame_front = Frame(image=image_front, data={"camera": "front"}, format="BGR")
+
+        image_back = np.zeros((200, 300, 3), dtype=np.uint8)
+        frame_back = Frame(image=image_back, data={"camera": "back"}, format="BGR")
+
+        webvis.latest_frames = {"front": frame_front, "back": frame_back}
+        webvis.current_data = {"front": frame_front.data, "back": frame_back.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # 1. GET /snapshot-payload (default) -> resolves to 'front' (the first key), returns front's snapshot and combined metadata
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        body = res.json()
+        self.assertEqual(body["topic"], "front")
+        self.assertEqual(body["width"], 150)
+        self.assertEqual(body["height"], 100)
+        self.assertEqual(body["metadata"], {
+            "front": {"camera": "front"},
+            "back": {"camera": "back"}
+        })
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame_front.bgr.jpg))
+
+        # 2. GET /back/snapshot-payload -> returns back's snapshot and back's flat metadata
+        res = client.get('/back/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        body = res.json()
+        self.assertEqual(body["topic"], "back")
+        self.assertEqual(body["width"], 300)
+        self.assertEqual(body["height"], 200)
+        self.assertEqual(body["metadata"], {"camera": "back"})
+        img_bytes = base64.b64decode(body["image"])
+        self.assertEqual(img_bytes, bytes(frame_back.bgr.jpg))
+
+    def test_endpoints_with_special_characters_topic(self):
+        import numpy as np
+        import urllib.parse
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        
+        image = np.zeros((100, 150, 3), dtype=np.uint8)
+        # Topic containing space and carriage return/line feed characters
+        special_topic = "cam_front\r\nspace"
+        frame = Frame(image=image, data={"camera": "special"}, format="BGR")
+
+        webvis.latest_frames = {special_topic: frame}
+        webvis.current_data = {special_topic: frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET snapshot-payload using URL-encoded topic path
+        encoded_path = urllib.parse.quote(special_topic)
+        res = client.get(f'/{encoded_path}/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        body = res.json()
+        self.assertEqual(body["topic"], special_topic)
+
+    def test_endpoints_with_non_json_serializable_metadata(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        
+        # Create a dummy frame and populate latest_frames / current_data with non-JSON-serializable types
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(
+            image=image,
+            data={
+                "camera": "main",
+                "count": np.int64(5),
+                "box": np.array([1, 2, 3]),
+            },
+            format="BGR"
+        )
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # GET /snapshot-payload -> 200, returns JSON with gracefully handled metadata
+        res = client.get('/snapshot-payload')
+        self.assertEqual(res.status_code, 200)
+        
+        body = res.json()
+        self.assertEqual(body["metadata"]["count"], "5")
+        self.assertEqual(body["metadata"]["box"], "[1 2 3]")
+
+    def test_concurrent_process_and_read(self):
+        import numpy as np
+        from threading import Thread, RLock
+        from openfilter.filter_runtime.frame import Frame
+        from fastapi.testclient import TestClient
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        webvis._lock = RLock()
+        webvis.streams = {}
+        webvis.current_data = {}
+        webvis.latest_frames = {}
+        webvis.is_multi_topic_static = False
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        stop_threads = False
+        errors = []
+
+        def writer_thread():
+            try:
+                image = np.zeros((10, 10, 3), dtype=np.uint8)
+                i = 0
+                while not stop_threads:
+                    topic = f"cam_{i % 10}"
+                    frame = Frame(image=image, data={f"key_{i}": i}, format="BGR")
+                    webvis.process({topic: frame})
+                    i += 1
+                    if i % 50 == 0:
+                        with webvis._lock:
+                            webvis.current_data.clear()
+                            webvis.latest_frames.clear()
+            except Exception as e:
+                errors.append(e)
+
+        def reader_thread():
+            try:
+                while not stop_threads:
+                    res2 = client.get('/snapshot-payload')
+                    self.assertIn(res2.status_code, [200, 404])
+            except Exception as e:
+                errors.append(e)
+
+        t1 = Thread(target=writer_thread)
+        t2 = Thread(target=reader_thread)
+
+        t1.start()
+        t2.start()
+
+        # Bounded poll/sleep
+        for _ in range(50):
+            if errors:
+                break
+            sleep(0.01)
+        stop_threads = True
+
+        t1.join()
+        t2.join()
+
+        self.assertEqual(errors, [])
+
+    def test_endpoints_with_failed_jpeg_encoding(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+        from unittest.mock import PropertyMock, patch
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(image=image, data={"camera": "main"}, format="BGR")
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # Patch the .jpg property of the frame's bgr representation to raise RuntimeError
+        with patch.object(frame.bgr.__class__, 'jpg', new_callable=PropertyMock) as mock_jpg:
+            mock_jpg.side_effect = RuntimeError("jpg encoding failed")
+
+            # GET /snapshot-payload -> should return 500
+            res = client.get('/snapshot-payload')
+            self.assertEqual(res.status_code, 500)
+            self.assertEqual(res.content, b"JPEG encoding failed")
+
+    def test_endpoints_with_failed_jpeg_encoding_generic_exception(self):
+        import numpy as np
+        from fastapi.testclient import TestClient
+        from openfilter.filter_runtime.frame import Frame
+        from unittest.mock import PropertyMock, patch
+
+        webvis = self._make_webvis(enable_snapshot_payload=True)
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        frame = Frame(image=image, data={"camera": "main"}, format="BGR")
+        
+        webvis.latest_frames = {"main": frame}
+        webvis.current_data = {"main": frame.data}
+
+        app = webvis.create_app()
+        client = TestClient(app)
+
+        # Patch the .jpg property to raise a non-RuntimeError Exception
+        with patch.object(frame.bgr.__class__, 'jpg', new_callable=PropertyMock) as mock_jpg:
+            mock_jpg.side_effect = Exception("generic opencv or other encoding failure")
+
+            # GET /snapshot-payload -> should return 500
+            res = client.get('/snapshot-payload')
+            self.assertEqual(res.status_code, 500)
+            self.assertEqual(res.content, b"JPEG encoding failed")
 
 if __name__ == '__main__':
     unittest.main()
