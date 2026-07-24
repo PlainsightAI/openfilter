@@ -11,7 +11,7 @@ For **file sources** (`file://`, `s3://`) every emitted frame's `meta` gains:
 | Key | Type | Semantics |
 |---|---|---|
 | `src_frame` | `int` | 0-based source frame index of the delivered frame: `CAP_PROP_POS_FRAMES` sampled immediately **before** the successful `cap.read()`. Exact on every backend. |
-| `pts_s` | `float` | Presentation timestamp in seconds. Primary: `src_frame / container_fps` (nominal CFR timeline). Fallback: `CAP_PROP_POS_MSEC / 1000` only when the container reports no frame rate at all. Omitted when neither is trustworthy (`src_frame` remains present and exact). |
+| `pts_s` | `float` | Presentation timestamp in seconds. Primary: `src_frame / container_fps` (nominal CFR timeline). Fallback: `CAP_PROP_POS_MSEC / 1000` only when the container reports no usable frame rate (none at all, or an implausible `>= FPS_SANE_CEILING` / non-finite sentinel — see §4). Omitted when neither is trustworthy (`src_frame` remains present and exact). |
 
 Stream (`rtsp://` etc.) and webcam sources have no meaningful decoder position: both keys are
 **absent** and the rest of `meta` (`id`, `ts`, `src`, `src_fps`) is byte-for-byte unchanged.
@@ -65,6 +65,13 @@ true pts from a lie at runtime. `POS_MSEC` is therefore used only for containers
 frame rate at all, and only while it looks sane (nonzero past frame 0); otherwise `pts_s` is
 omitted rather than emitted wrong. Consumers needing true per-frame VFR timestamps should demux
 container pts out-of-band (e.g. PyAV); that is out of scope for `VideoIn`.
+
+The CFR path guards one exception the round-trip argument does **not** cover: an *implausible*
+reported rate. OpenCV's ffmpeg backend reports a sentinel `~1000` fps for some VFR mkv/webm files
+— the 1 ms container timebase, not an average of anything — so `frame_n / 1000` (~1 ms/frame) is
+simply wrong rather than a rate consumers can invert. A reported rate at or above a sane ceiling
+(`FPS_SANE_CEILING = 1000`, or non-finite) is therefore treated as *no usable rate* and falls
+through to the same guarded `POS_MSEC` branch as a no-rate container, keeping `src_frame` exact.
 
 ## 5. Back-compat position
 

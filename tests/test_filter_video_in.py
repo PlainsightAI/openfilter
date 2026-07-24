@@ -8,7 +8,7 @@ from time import sleep
 from openfilter.filter_runtime import Filter
 from openfilter.filter_runtime.test import FiltersToQueue
 from openfilter.filter_runtime.utils import setLogLevelGlobal
-from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig, VideoReader
+from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig, VideoReader, FPS_SANE_CEILING
 
 import cv2
 import numpy as np
@@ -247,6 +247,32 @@ class TestVideoIn(unittest.TestCase):
         vid._cap_read()
 
         self.assertEqual(vid.extras, {'frame_n': 1})
+
+    def test_pts_fps_sentinel_falls_through_to_pos_msec(self):
+        """An implausible reported rate (the ffmpeg-backend ~1000 fps VFR sentinel,
+        or non-finite) is not a real rate: it must NOT drive the CFR path (which
+        would emit frame_n / 1000 ~ 1 ms/frame offsets that are wrong) but fall
+        through to the guarded POS_MSEC branch like a no-rate container."""
+        for bad_fps in (FPS_SANE_CEILING, FPS_SANE_CEILING + 500, float('inf'), float('nan')):
+            vid = self._reader_with_fake_cap(msecs := [0.0, 40.0, 80.0], native_fps=bad_fps)
+
+            for frame_n, msec in enumerate(msecs):
+                ret, image = vid._cap_read()
+
+                self.assertTrue(ret)
+                # POS_MSEC (msec/1000), NOT the sentinel CFR value frame_n/bad_fps
+                self.assertEqual(vid.extras, {'frame_n': frame_n, 'pts_s': msec / 1000})
+
+    def test_pts_fps_plausible_uses_cfr(self):
+        """A plausible reported rate (just under the ceiling) still takes the CFR
+        path: pts_s = frame_n / native_fps, POS_MSEC untouched."""
+        vid = self._reader_with_fake_cap([0.0, 999.0, 1234.0], native_fps=(fps := FPS_SANE_CEILING - 1))
+
+        for frame_n in range(3):
+            ret, image = vid._cap_read()
+
+            self.assertTrue(ret)
+            self.assertEqual(vid.extras, {'frame_n': frame_n, 'pts_s': frame_n / fps})
 
     def test_pts_non_file_unchanged(self):
         """Non-file sources: _cap_read() delegates to cap.read() untouched and extras
