@@ -57,6 +57,7 @@ Filter.run_multi([
         host='0.0.0.0',        # Listen on all interfaces
         enable_json=True,      # Subject data in JSON format
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
+        access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
     )),
 ])
@@ -73,6 +74,7 @@ export FILTER_PORT="8000"
 export FILTER_HOST="0.0.0.0"
 export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
+export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
 ```
 
