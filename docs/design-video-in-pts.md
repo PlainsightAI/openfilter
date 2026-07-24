@@ -73,6 +73,13 @@ simply wrong rather than a rate consumers can invert. A reported rate at or abov
 (`FPS_SANE_CEILING = 1000`, or non-finite) is therefore treated as *no usable rate* and falls
 through to the same guarded `POS_MSEC` branch as a no-rate container, keeping `src_frame` exact.
 
+## 4a. Looped sources
+
+With `loop`, the cap is reopened each pass, so `src_frame` / `pts_s` restart at 0 every loop —
+they are the position *within the file*, which is the correct semantics — while `meta['id']` keeps
+counting across passes. A looped timeline is thus non-monotonic in `src_frame`/`pts_s` but
+monotonic in `id`; consumers indexing a looped source must key off `id`, not `src_frame`.
+
 ## 5. Back-compat position
 
 `VideoReader` / `MultiVideoReader` are exported in `__all__` of the published package: the
