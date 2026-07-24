@@ -383,6 +383,41 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_loop_pts_restarts_per_pass(self):
+        """With loop, the cap is reopened each pass so src_frame/pts_s restart at 0
+        every loop (position WITHIN the file), while meta['id'] keeps counting: the
+        looped timeline is non-monotonic in src_frame but monotonic in id."""
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync!loop=2',
+                outputs = 'ipc://test-VideoIn-loop-pts',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-loop-pts',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            metas = []
+
+            while frames := queue.get():
+                metas.append(frames['main'].data['meta'])
+
+            self.assertEqual(len(metas), 6)  # 3-frame clip x 2 passes
+            self.assertEqual([m['src_frame'] for m in metas], [0, 1, 2, 0, 1, 2])  # restarts each pass
+
+            ids = [m['id'] for m in metas]
+            self.assertEqual(ids, sorted(ids))  # monotonic across passes
+            self.assertEqual(len(set(ids)), len(ids))  # strictly increasing, keeps counting
+
+            self.assertEqual([m['pts_s'] for m in metas], [m['pts_s'] for m in metas[:3]] * 2)  # pts restarts too
+
+        finally:
+            runner.stop()
+            queue.close()
+
+
     def test_maxfps(self):  # INCOMPLETE, doesn't test non-sync maxfps
         runner = Filter.Runner([
             (VideoIn, dict(

@@ -724,6 +724,10 @@ class VideoIn(Filter):
                 see VideoReader._cap_read for the VFR position), or CAP_PROP_POS_MSEC when the container reports no
                 frame rate. Omitted when neither is trustworthy - src_frame is then still present and exact.
 
+        With `loop`, the cap is reopened each pass, so src_frame and pts_s restart at 0 every loop (they are the
+        position WITHIN the file) while meta['id'] keeps counting across passes: a looped timeline is non-monotonic
+        in src_frame/pts_s but monotonic in id, so consumers indexing a looped source must key off id, not src_frame.
+
         Stream and webcam sources have no meaningful decoder position: both keys are absent, all other meta unchanged.
 
     Environment variables (FILTER_* or legacy VIDEO_IN_* prefix, legacy takes precedence):
