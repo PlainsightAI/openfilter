@@ -99,7 +99,17 @@ jobs:
 
       - name: Install constraint-check deps
         if: steps.filter.outputs.cascade == 'true'
-        run: pip install --quiet packaging
+        run: pip install --quiet packaging tomlkit mistletoe pytest
+
+      # bump-strategy.sh's rewriters are Python heredocs, driven end-to-end by
+      # tests/test_cascade_bump_strategy.py. That file skips itself when
+      # tomlkit/mistletoe are absent, which is how the unit-test job stayed
+      # green while every one of its RELEASE.md cases was silently skipped.
+      # Run it here, where the deps are installed, so a cascade script change
+      # cannot land with stale assertions.
+      - name: Run cascade bump-strategy tests
+        if: steps.filter.outputs.cascade == 'true'
+        run: pytest tests/test_cascade_bump_strategy.py
 
       - name: shellcheck cascade scripts
         if: steps.filter.outputs.cascade == 'true'
