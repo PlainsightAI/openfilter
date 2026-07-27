@@ -3,13 +3,16 @@
 import logging
 import os
 import unittest
-from time import sleep
+from time import sleep, time
+from unittest.mock import patch
 
 from openfilter.filter_runtime import Filter
 from openfilter.filter_runtime.test import FiltersToQueue
 from openfilter.filter_runtime.utils import setLogLevelGlobal
-from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig
+from openfilter.filter_runtime.filters import video_in
+from openfilter.filter_runtime.filters.video_in import VideoIn, VideoInConfig, VideoReader
 
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -318,6 +321,47 @@ class TestVideoIn(unittest.TestCase):
         finally:
             runner.stop()
             queue.close()
+
+
+    def test_resize_interp(self):
+        """The 'near' / 'lin' / 'cub' suffixes on a size spec must reach cv2.resize as the matching constant.
+
+        The reader is driven in-process rather than through Filter.Runner because the test video is three flat color
+        frames, so the resized pixels are identical whichever interpolation is used and only the constant handed to
+        cv2.resize can tell them apart.
+        """
+
+        real_resize = cv2.resize
+
+        for spec, expected in [('160+80', cv2.INTER_NEAREST), ('160+80near', cv2.INTER_NEAREST),
+                ('160+80lin', cv2.INTER_LINEAR), ('160+80cub', cv2.INTER_CUBIC)]:
+            with self.subTest(resize=spec):
+                captured = []
+
+                def spy(image, dsize, **kwargs):
+                    captured.append(kwargs.get('interpolation'))
+
+                    return real_resize(image, dsize, **kwargs)
+
+                video = VideoReader(f'file://{TEST_VIDEO_FNM}', sync=True, resize=spec)
+
+                with patch.object(video_in.cv2, 'resize', side_effect=spy):
+                    video.start()
+
+                    try:
+                        t = time()
+
+                        while not video.frame_available and time() - t < 10:
+                            sleep(0.01)
+
+                        self.assertTrue(video.frame_available, 'timed out waiting for a frame')
+                        self.assertEqual(video.read().shape, (80, 160, 3))
+
+                    finally:
+                        video.stop()
+
+                self.assertTrue(captured, 'cv2.resize was never called')
+                self.assertEqual(set(captured), {expected})  # the reader thread may buffer more than one frame
 
 
     def test_maxsize(self):
