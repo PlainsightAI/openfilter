@@ -37,7 +37,7 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-grpc~=1.44.0",
   "opentelemetry-exporter-otlp-proto-http~=1.44.0",
   "opentelemetry-proto~=1.44.0",
-  "opentelemetry-resourcedetector-gcp~=1.12.0a0",
+  "opentelemetry-resourcedetector-gcp~=1.14.0",
   "opentelemetry-sdk~=1.44.0",
   "opentelemetry-semantic-conventions~=0.65b0",
 
