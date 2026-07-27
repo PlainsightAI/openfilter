@@ -6,12 +6,14 @@ import multiprocessing as mp
 import os
 import unittest
 from time import time
+from unittest.mock import patch
 
 from openfilter.filter_runtime import Frame
 from openfilter.filter_runtime.test import RunnerContext, FiltersToQueue, QueueToFilters
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.util import Util, UtilConfig
 
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -405,6 +407,88 @@ class TestUtil(unittest.TestCase):
 
             self.assertFalse(qout.get())
             self.assertEqual(runner.wait(), [0, 0, 0])
+
+
+    def test_xforms_resize_interp(self):
+        """The 'near' / 'lin' / 'cub' size suffixes must select the matching cv2 interpolation.
+
+        320x200 -> 640x400 is used because at that size all three interpolations give different pixels, unlike the
+        160x100 downscale used by the other size tests where nearest and bilinear happen to agree exactly.
+        """
+
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs     = 'ipc://test-Q2F',
+                outputs_jpg = False,  # because otherwise colors are not exact
+                queue       = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources     = 'ipc://test-Q2F',
+                outputs     = 'ipc://test-util',
+                outputs_jpg = False,
+                xforms      = 'resize 640x400;tdefault, resize 640x400near;tnear, resize 640x400lin;tlin, resize 640x400cub;tcub',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util',
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            qin.put(dict(tdefault=FRAME, tnear=FRAME, tlin=FRAME, tcub=FRAME))
+            qin.put(False)
+
+            frames  = qout.get()
+            nearest = cv2.resize(IMAGE, (640, 400), interpolation=cv2.INTER_NEAREST)
+            linear  = cv2.resize(IMAGE, (640, 400), interpolation=cv2.INTER_LINEAR)
+            cubic   = cv2.resize(IMAGE, (640, 400), interpolation=cv2.INTER_CUBIC)
+
+            self.assertFalse(np.array_equal(nearest, linear))  # the three references must actually differ here,
+            self.assertFalse(np.array_equal(nearest, cubic))   # otherwise the assertions below prove nothing
+            self.assertFalse(np.array_equal(linear, cubic))
+
+            self.assertTrue(np.array_equal(frames['tdefault'].image, nearest))
+            self.assertTrue(np.array_equal(frames['tnear'].image, nearest))
+            self.assertTrue(np.array_equal(frames['tlin'].image, linear))
+            self.assertTrue(np.array_equal(frames['tcub'].image, cubic))
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
+    def test_xform_size_interp_map(self):
+        """Direct check of the parsed-suffix -> cv2 constant map, without going through a pipeline.
+
+        Mirrors the map the docstrings promise: no suffix and 'near' are nearest, 'lin' is bilinear, 'cub' is cubic.
+
+        A dict xform is not run through the string parser, so its `interp` arrives raw: no upper-casing and no regex to
+        reject a typo. Anything that is not exactly 'N', 'L' or 'C' therefore has to land on the documented nearest
+        default instead of silently picking bilinear.
+        """
+
+        captured    = []
+        real_resize = cv2.resize
+        util_self   = Util.__new__(Util)  # execute_xform_size touches no instance state
+
+        def spy(image, dsize, **kwargs):
+            captured.append(kwargs.get('interpolation'))
+
+            return real_resize(image, dsize, **kwargs)
+
+        for interp, expected in [(None, cv2.INTER_NEAREST), ('N', cv2.INTER_NEAREST), ('L', cv2.INTER_LINEAR),
+                ('C', cv2.INTER_CUBIC), ('n', cv2.INTER_NEAREST), ('near', cv2.INTER_NEAREST),
+                ('nope', cv2.INTER_NEAREST)]:
+            with self.subTest(interp=interp):
+                xform = UtilConfig.XForm(action='resize', width=640, height=400)
+
+                if interp is not None:
+                    xform.interp = interp
+
+                captured.clear()
+
+                with patch('openfilter.filter_runtime.filters.util.cv2.resize', side_effect=spy):
+                    util_self.execute_xform_size(xform, FRAME)
+
+                self.assertEqual(captured, [expected])
 
 
     def test_xforms_maxsize(self):

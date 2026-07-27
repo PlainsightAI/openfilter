@@ -261,6 +261,8 @@ class Util(Filter):
             if (interp := xform.get('interp', 'N')) == 'N' else
             cv2.INTER_CUBIC
             if interp == 'C' else
+            cv2.INTER_LINEAR
+            if interp == 'L' else
             cv2.INTER_NEAREST
         )
 

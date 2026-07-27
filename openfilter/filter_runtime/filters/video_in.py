@@ -351,7 +351,7 @@ class VideoReader:
                 if interp is None or (interp := interp.upper()[:1]) == 'N' else
                 cv2.INTER_CUBIC
                 if interp == 'C' else
-                cv2.INTER_NEAREST
+                cv2.INTER_LINEAR
             )
 
         while True:
