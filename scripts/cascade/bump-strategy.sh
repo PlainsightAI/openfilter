@@ -234,14 +234,15 @@ if changed:
 PY
 done
 
-# 3. RELEASE.md — append `- Bump openfilter to ${OF_VERSION}` under the
-#    Unreleased section's `### Changed` subsection, creating either as
-#    needed. If no Unreleased section exists, inject a fresh `## [Unreleased]`
-#    block immediately before the first released `## v...` header — never
-#    write into a tagged release block. Idempotency check is line-anchored
-#    so 0.1.9 doesn't match 0.1.99.
+# 3. RELEASE.md — append a dependency-bump bullet under the Unreleased
+#    section's `### Changed` subsection, creating either as needed. If no
+#    Unreleased section exists, inject a fresh `## [Unreleased]` block
+#    immediately before the first released `## v...` header — never write into
+#    a tagged release block. Idempotency check is line-anchored so 0.1.9
+#    doesn't match 0.1.99.
 python3 <<'PY'
 import os
+import re
 import sys
 
 import mistletoe
@@ -249,7 +250,29 @@ from mistletoe.block_token import Heading
 
 of_version = os.environ["OF_VERSION"]
 path = "RELEASE.md"
-bullet = f"- Bump openfilter to {of_version}"
+
+# The wording is load-bearing, not cosmetic. changelog-parser-action rejects any
+# bullet matching /^-\s+Bump\s+\S+\s+to\s+\d+(?:\.\d+)+/ once it sits in a dated
+# release section, and check-release-log runs that parser on every pull request
+# to main. So the literal `- Bump openfilter to X.Y.Z` this script used to emit
+# turned into a release-blocker the moment a consumer promoted `[Unreleased]` to
+# a version heading, which each one then had to hand-patch. Naming the
+# dependency keeps the imperative mood of the surrounding entries while putting
+# a word between `Bump` and `to`, so the pattern no longer matches.
+bullet = f"- Bump the openfilter dependency to {of_version}"
+
+# Recognize every phrasing that has reached a consumer changelog: what this
+# script emits now, the literal it emitted before, and the hand-reworded past
+# tense used when repos were patched by hand. Without this a re-run would not
+# see the older shapes and would append a near-duplicate beside them. Anchored
+# at both ends and on the exact version, preserving the 0.1.9-vs-0.1.99
+# guarantee the line-anchored check gave.
+bullet_seen = re.compile(
+    r"^-\s+Bump(?:ed)?\s+(?:the\s+)?openfilter(?:\s+dependency)?\s+to\s+"
+    + re.escape(of_version)
+    + r"\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 def heading_text(node: Heading) -> str:
@@ -296,7 +319,7 @@ if not os.path.exists(path):
 with open(path, "r", encoding="utf-8") as f:
     text = f.read()
 
-if any(line.rstrip() == bullet for line in text.splitlines()):
+if any(bullet_seen.match(line) for line in text.splitlines()):
     print(f"{path}: bump entry already present")
     sys.exit(0)
 
