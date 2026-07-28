@@ -28,6 +28,13 @@ VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or o
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
 
+# OpenCV's ffmpeg backend reports a sentinel ~1000 fps (the 1 ms MKV/webm container
+# timebase, not a real rate) for some VFR files. Any CAP_PROP_FPS at or above this
+# ceiling - or non-finite - is implausible for real footage and is treated as no
+# reported rate, so pts falls through to the guarded POS_MSEC branch instead of
+# emitting frame_n / 1000 (~1 ms/frame) offsets that are simply wrong.
+FPS_SANE_CEILING  = 1000.0
+
 re_video          = re.compile(r'^(rtsp|rtmp|http|https|file|webcam|s3)://')
 re_video_stream   = re.compile(r'^(rtsp|rtmp|http|https)://')
 
@@ -201,6 +208,7 @@ class VideoReader:
                 raise ValueError(f'invalid source {self.source!r}')
 
         self.ssource  = source  # with 'file://' stripped and 'webcam://num' converted to num
+        self.extras   = {}      # decoder position of the last frame read, files only - 'frame_n' (0-based source frame index) and 'pts_s' (presentation timestamp, seconds); same tuple slot and key naming as the seekable-replay extras (PR #118) so the two contracts merge by key union
         self.stop_evt = Event()
         self.deque    = Deque(maxlen=1)
         self.thread   = Thread(target=self.thread_reader, daemon=True)
@@ -208,6 +216,7 @@ class VideoReader:
         if not cap.isOpened():
             raise RuntimeError(f'failed to open video source: {self.source!r}')
         fps           = cap.get(cv2.CAP_PROP_FPS) or None
+        self.native_fps = fps  # container frame rate, kept for pts fallback (self.fps may be overwritten by maxfps)
 
         if is_file and not sync:
             self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
@@ -259,6 +268,51 @@ class VideoReader:
         self.stop_evt.set()
         self.cap.release()
 
+    def _cap_read(self):
+        """cap.read() capturing the decoder position of the frame being read.
+
+        The SINGLE choke point for reads off self.cap: any new read path (e.g. a
+        post-seek re-read) must go through here or its frames silently lose their
+        position. CAP_PROP_POS_MSEC / CAP_PROP_POS_FRAMES refer to the frame about
+        to be decoded, so they are sampled BEFORE the read and committed (into
+        self.extras) only when the read succeeds. This is the frame's presentation
+        timestamp — the video offset jump-to-frame needs — which wall-clock `ts`
+        cannot provide. Files only: stream/webcam positions are not meaningful here."""
+        if not self.is_file:
+            return self.cap.read()
+
+        pos_msec  = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        pos_frame = self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+        ret, image = self.cap.read()
+
+        if ret and image is not None:
+            self.extras = extras = {'frame_n': (frame_n := int(pos_frame))}
+
+            # Primary: frame index over the container frame rate. Exact for CFR
+            # sources and immune to the B-frame reordering and report-zero bugs
+            # POS_MSEC shows on several backends (both reproduced by the repo's
+            # own test clip). This DELIBERATELY treats every fps-reporting source
+            # as CFR: a true-VFR file that reports an average rate gets a nominal
+            # timeline (frame_n / avg_fps) that can drift from the container pts,
+            # but stays exact under the inverse mapping (offset * avg_fps) used
+            # to seek by frame, so jump-to-frame round-trips to the same frame -
+            # while POS_MSEC on such files hits the bugs above with no way to
+            # tell a true pts from a lie. The CFR path is taken only for a
+            # PLAUSIBLE reported rate: an implausible one (>= FPS_SANE_CEILING or
+            # non-finite - e.g. the ffmpeg-backend ~1000 fps VFR sentinel, the 1 ms
+            # container timebase rather than an average) is not a rate anything
+            # drifts around, so frame_n / native_fps would just be wrong; those
+            # fall through to POS_MSEC like a no-rate container. POS_MSEC is used
+            # only for containers with no usable rate, and only while it looks sane
+            # (nonzero past frame 0); otherwise pts_s is omitted and frame_n
+            # remains the consumer's only (still exact) position.
+            if self.native_fps and self.native_fps < FPS_SANE_CEILING:
+                extras['pts_s'] = frame_n / self.native_fps
+            elif pos_msec > 0 or frame_n == 0:
+                extras['pts_s'] = pos_msec / 1000
+
+        return ret, image
+
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
             t = time_ns()
@@ -294,7 +348,7 @@ class VideoReader:
             return True
 
         while True:
-            ret, image = self.cap.read()
+            ret, image = self._cap_read()
 
             if not ret or image is None:
                 if not self.is_file:
@@ -327,7 +381,7 @@ class VideoReader:
 
                     return None
 
-                ret, image = self.cap.read()
+                ret, image = self._cap_read()
 
                 if not ret or image is None:  # no wait() here because if first frame fails then nothing means anything anymore and we might as well just end it
                     return None
@@ -396,7 +450,7 @@ class VideoReader:
                 elif not self.as_bgr:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            self.deque.append((image, tframe))
+            self.deque.append((image, tframe, self.extras))
 
             if cond is not None:
                 with cond:
@@ -419,7 +473,10 @@ class VideoReader:
     def frame_available(self) -> bool:
         return bool(self.deque)
 
-    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int] | None
+    def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, dict] | None
+        # BREAKING CHANGE (unreleased): with_tframe=True returns (image, tframe, extras) instead of (image, tframe);
+        # extras is {} for non-file sources and absorbs future additions without another arity break (same shape as
+        # the seekable-replay branch). with_tframe=False (the default) is unaffected.
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
@@ -507,7 +564,7 @@ class MultiVideoReader:
     def frame_available(self) -> bool:
         return all(vid.frame_available for vid in self.videos)
 
-    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int]] | None
+    def read(self, with_tframe=False):  # -> list[np.ndarray | tuple[np.ndarray, int, dict]] | None
         if self.state == 0:
             raise RuntimeError('can not read from videos before they are started')
         elif self.state == 2:
@@ -657,6 +714,22 @@ class VideoIn(Filter):
             together with `maxsize`, it is one or the other. Set here to apply to all sources or can be set individually
             per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
 
+    Emitted frame meta:
+        Every frame carries meta['id'] (delivery counter, rate depends on the consuming chain), meta['ts'] (wall-clock
+        seconds at read), meta['src'] and meta['src_fps']. File sources (file:// and s3://) additionally carry the
+        decoder position of the delivered frame - the video offset that cannot be reconstructed downstream:
+
+            meta['src_frame'] - 0-based source frame index (CAP_PROP_POS_FRAMES sampled before the read, exact).
+            meta['pts_s']     - presentation timestamp in seconds: src_frame / container fps (nominal CFR timeline;
+                see VideoReader._cap_read for the VFR position), or CAP_PROP_POS_MSEC when the container reports no
+                frame rate. Omitted when neither is trustworthy - src_frame is then still present and exact.
+
+        With `loop`, the cap is reopened each pass, so src_frame and pts_s restart at 0 every loop (they are the
+        position WITHIN the file) while meta['id'] keeps counting across passes: a looped timeline is non-monotonic
+        in src_frame/pts_s but monotonic in id, so consumers indexing a looped source must key off id, not src_frame.
+
+        Stream and webcam sources have no meaningful decoder position: both keys are absent, all other meta unchanged.
+
     Environment variables (FILTER_* or legacy VIDEO_IN_* prefix, legacy takes precedence):
         FILTER_BGR      / VIDEO_IN_BGR
         FILTER_SYNC     / VIDEO_IN_SYNC
@@ -754,10 +827,21 @@ class VideoIn(Filter):
             self._camera_connected = 1
             self.id = id = self.id + 1
 
+            def meta(vid, tfrm, extras):
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}
+
+                if extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
+                    meta['src_frame'] = extras['frame_n']
+
+                    if (pts_s := extras.get('pts_s')) is not None:
+                        meta['pts_s'] = pts_s
+
+                return meta
+
             return {topic: Frame(img,
-                {'meta': {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}},
+                {'meta': meta(vid, tfrm, extras)},
                 'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
-            ) for (topic, vid), (img, tfrm) in zip(self.tops_n_vids, image_n_tframes)}
+            ) for (topic, vid), (img, tfrm, extras) in zip(self.tops_n_vids, image_n_tframes)}
 
         return get
 
