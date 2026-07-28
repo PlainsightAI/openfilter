@@ -90,6 +90,7 @@ jobs:
             cascade:
               - 'scripts/cascade/**'
               - '.github/workflows/cascade-on-tag.yaml'
+              - 'tests/test_cascade_bump_strategy.py'
 
       - name: Set up Python
         if: steps.filter.outputs.cascade == 'true'
@@ -97,16 +98,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install constraint-check deps
+      - name: Install cascade check and test deps
         if: steps.filter.outputs.cascade == 'true'
         run: pip install --quiet packaging tomlkit mistletoe pytest
 
       # bump-strategy.sh's rewriters are Python heredocs, driven end-to-end by
-      # tests/test_cascade_bump_strategy.py. That file skips itself when
-      # tomlkit/mistletoe are absent, which is how the unit-test job stayed
-      # green while every one of its RELEASE.md cases was silently skipped.
-      # Run it here, where the deps are installed, so a cascade script change
-      # cannot land with stale assertions.
+      # tests/test_cascade_bump_strategy.py. tomlkit and mistletoe are declared
+      # in the dev extra, so run-unit-tests exercises that suite too. This job
+      # re-runs it on the cascade path filter, so a cascade script change cannot
+      # land with stale assertions without waiting on the full matrix.
       - name: Run cascade bump-strategy tests
         if: steps.filter.outputs.cascade == 'true'
         run: pytest tests/test_cascade_bump_strategy.py

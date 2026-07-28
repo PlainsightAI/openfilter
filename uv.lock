@@ -889,6 +889,15 @@ wheels = [
 ]
 
 [[package]]
+name = "mistletoe"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/ea/ee6e364d62197e427f1d260500eac659a8855df207a77f74451658d749f3/mistletoe-1.6.0.tar.gz", hash = "sha256:92f066c4720a25fa24bf260e6413702bbff3a5b8a93af314cb6cd8589726a8e1", size = 113730, upload-time = "2026-07-11T14:14:18.593Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/5c/3681c676d79726e3b8b72bc78e83ac472b0c96e3c99b28d72b9470f12170/mistletoe-1.6.0-py3-none-any.whl", hash = "sha256:53f9dfb859e9b2d309915d0f06c3876253d1e24d568d0b728a32679eb4f0a187", size = 55931, upload-time = "2026-07-11T14:14:17.056Z" },
+]
+
+[[package]]
 name = "more-itertools"
 version = "11.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1043,10 +1052,12 @@ dev = [
     { name = "build" },
     { name = "docker" },
     { name = "jq" },
+    { name = "mistletoe" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "pytest-cov" },
     { name = "setuptools" },
+    { name = "tomlkit" },
     { name = "twine" },
     { name = "wheel" },
 ]
@@ -1090,6 +1101,7 @@ requires-dist = [
     { name = "google-cloud-storage", marker = "extra == 'all'", specifier = "~=3.13.0" },
     { name = "google-cloud-storage", marker = "extra == 'image-in'", specifier = "~=3.13.0" },
     { name = "jq", marker = "extra == 'dev'", specifier = "~=1.12.0" },
+    { name = "mistletoe", marker = "extra == 'dev'", specifier = "~=1.6.0" },
     { name = "numpy", specifier = "~=2.2.6" },
     { name = "opencv-python-headless", specifier = "~=5.0.0.93" },
     { name = "openlineage-python", specifier = "~=1.51.0" },
@@ -1118,6 +1130,7 @@ requires-dist = [
     { name = "scarf-sdk", specifier = "~=0.2.1" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "~=83.0.0" },
     { name = "setuptools", marker = "extra == 'mqtt-out'", specifier = "~=83.0.0" },
+    { name = "tomlkit", marker = "extra == 'dev'", specifier = "~=0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "~=6.2.0" },
     { name = "typing-extensions", specifier = ">=4.6" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = "~=0.51.0" },
@@ -1909,6 +1922,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/1e/71dfd96bcc1c775420cb8befe7a9d35f2e5b1309798f009dca17b7708c1e/tomli-2.4.1-cp313-cp313-win_amd64.whl", hash = "sha256:8d65a2fbf9d2f8352685bc1364177ee3923d6baf5e7f43ea4959d7d8bc326a36", size = 108755, upload-time = "2026-03-25T20:21:40.248Z" },
     { url = "https://files.pythonhosted.org/packages/83/7a/d34f422a021d62420b78f5c538e5b102f62bea616d1d75a13f0a88acb04a/tomli-2.4.1-cp313-cp313-win_arm64.whl", hash = "sha256:4b605484e43cdc43f0954ddae319fb75f04cc10dd80d830540060ee7cd0243cd", size = 95265, upload-time = "2026-03-25T20:21:41.219Z" },
     { url = "https://files.pythonhosted.org/packages/7b/61/cceae43728b7de99d9b847560c262873a1f6c98202171fd5ed62640b494b/tomli-2.4.1-py3-none-any.whl", hash = "sha256:0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe", size = 14583, upload-time = "2026-03-25T20:22:03.012Z" },
+]
+
+[[package]]
+name = "tomlkit"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/96/e07752635b98536177fa1f37671c8f3cdde2e724c6bcf6034b2cfb571565/tomlkit-0.15.1.tar.gz", hash = "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97", size = 180129, upload-time = "2026-07-17T01:48:04.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl", hash = "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304", size = 49449, upload-time = "2026-07-17T01:48:05.728Z" },
 ]
 
 [[package]]
