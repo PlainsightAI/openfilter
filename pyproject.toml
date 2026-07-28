@@ -68,6 +68,12 @@ dev = [
   "jq~=1.12.0",
   "pytest-cov~=7.1.0",
   "pytest-benchmark>=5.1.0",
+
+  # Drive the Python rewriters inside scripts/cascade/bump-strategy.sh. Without
+  # them tests/test_cascade_bump_strategy.py skips itself and the unit-test job
+  # goes green over an unexercised suite.
+  "tomlkit~=0.15.1",
+  "mistletoe~=1.6.0",
 ]
 
 mqtt_out = ["paho-mqtt~=2.1.0", "setuptools~=83.0.0"]

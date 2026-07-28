@@ -154,9 +154,11 @@ def test_requirements_non_openfilter_lines_untouched(tmp_path: Path) -> None:
 def test_release_md_idempotency_does_not_match_substring_versions(tmp_path: Path) -> None:
     """Regression for the `bullet in text` substring-match bug.
 
-    `0.1.9` would previously match an existing `- Bump openfilter to 0.1.99`
-    line in RELEASE.md, silently suppressing the new entry. The fix anchors
-    the idempotency check to whole rstripped lines.
+    `0.1.9` would previously match an existing
+    `- Bump the openfilter dependency to 0.1.99` line in RELEASE.md, silently
+    suppressing the new entry. The fix anchors the idempotency check to whole
+    lines — now an end-anchored regex over the accepted bullet wordings, which
+    keeps the same guarantee.
     """
     (tmp_path / "RELEASE.md").write_text(
         "# Changelog\n"
@@ -165,14 +167,14 @@ def test_release_md_idempotency_does_not_match_substring_versions(tmp_path: Path
         "\n"
         "### Changed\n"
         "\n"
-        "- Bump openfilter to 0.1.99\n"
+        "- Bump the openfilter dependency to 0.1.99\n"
     )
     _run(tmp_path, of_version="0.1.9")
     rewritten = (tmp_path / "RELEASE.md").read_text()
     # Both lines must be present — the new 0.1.9 entry was added; the
     # existing 0.1.99 entry was not removed or treated as a duplicate.
-    assert "- Bump openfilter to 0.1.9\n" in rewritten
-    assert "- Bump openfilter to 0.1.99\n" in rewritten
+    assert "- Bump the openfilter dependency to 0.1.9\n" in rewritten
+    assert "- Bump the openfilter dependency to 0.1.99\n" in rewritten
 
 
 # ─────────────────── [Unreleased] anchoring (DT-145 follow-up) ───────────────────
@@ -204,7 +206,7 @@ def test_release_md_creates_unreleased_block_when_only_released_versions_exist(
 
     unreleased_idx = rewritten.index("## [Unreleased]")
     released_idx = rewritten.index("## v0.1.27")
-    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    bump_idx = rewritten.index("- Bump the openfilter dependency to 1.1.0")
 
     # New [Unreleased] block sits before the released v0.1.27 section, and
     # the bump bullet lives inside that new block.
@@ -235,7 +237,7 @@ def test_release_md_uses_existing_bracketed_unreleased_section(tmp_path: Path) -
 
     unreleased_idx = rewritten.index("## [Unreleased]")
     released_idx = rewritten.index("## v1.0.0")
-    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    bump_idx = rewritten.index("- Bump the openfilter dependency to 1.1.0")
     assert unreleased_idx < bump_idx < released_idx
 
 
@@ -275,7 +277,7 @@ def test_release_md_normalizes_legacy_unreleased_header_to_brackets(
 
     unreleased_idx = rewritten.index("## [Unreleased]")
     released_idx = rewritten.index("## v1.0.0")
-    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    bump_idx = rewritten.index("- Bump the openfilter dependency to 1.1.0")
     assert unreleased_idx < bump_idx < released_idx
 
 
@@ -319,7 +321,7 @@ def test_release_md_preamble_bullets_do_not_anchor_insert(tmp_path: Path) -> Non
     rewritten = (tmp_path / "RELEASE.md").read_text()
 
     unreleased_idx = rewritten.index("## [Unreleased]")
-    bump_idx = rewritten.index("- Bump openfilter to 1.1.0")
+    bump_idx = rewritten.index("- Bump the openfilter dependency to 1.1.0")
     assert bump_idx > unreleased_idx, (
         f"bump landed before [Unreleased]; preamble layout broke anchoring:\n{rewritten}"
     )
@@ -346,7 +348,92 @@ def test_release_md_idempotent_when_creating_unreleased_block(tmp_path: Path) ->
     second = (tmp_path / "RELEASE.md").read_text()
     assert first == second
     assert second.count("## [Unreleased]") == 1
-    assert second.count("- Bump openfilter to 1.1.0") == 1
+    assert second.count("- Bump the openfilter dependency to 1.1.0") == 1
+
+
+# Bullet-wording tolerance. The emitted bullet moved from
+# `- Bump openfilter to X.Y.Z` to `- Bump the openfilter dependency to X.Y.Z`
+# because changelog-parser-action rejects the former once a consumer promotes
+# `[Unreleased]` to a dated release heading. Consumer changelogs still carry
+# the old literal, and the repos that were patched by hand carry a past-tense
+# variant with a trailing period, so the idempotency check has to recognize
+# every shape — otherwise the next cascade run appends a near-duplicate bullet
+# right next to the entry that is already there.
+
+
+def test_release_md_idempotency_recognizes_legacy_bullet_wording(tmp_path: Path) -> None:
+    """An existing `- Bump openfilter to X.Y.Z` — the literal this script used
+    to emit — counts as already present, so no bullet in the new wording is
+    appended beside it."""
+    original = (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "### Changed\n"
+        "\n"
+        "- Bump openfilter to 1.1.0\n"
+    )
+    (tmp_path / "RELEASE.md").write_text(original)
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    assert rewritten == original
+    assert "- Bump the openfilter dependency to 1.1.0" not in rewritten
+
+
+def test_release_md_idempotency_recognizes_hand_patched_past_tense_bullet(
+    tmp_path: Path,
+) -> None:
+    """The hand-reworded `- Bumped the openfilter dependency to X.Y.Z.` shape
+    that consumers patched in to get past the parser also counts as already
+    present."""
+    original = (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "### Changed\n"
+        "\n"
+        "- Bumped the openfilter dependency to 1.1.0.\n"
+    )
+    (tmp_path / "RELEASE.md").write_text(original)
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    assert rewritten == original
+    assert "- Bump the openfilter dependency to 1.1.0" not in rewritten
+
+
+@pytest.mark.parametrize(
+    "existing_bullet",
+    [
+        "- Bump the openfilter dependency to 1.1.0\n",
+        "- Bump the openfilter dependency to 1.1.0.\n",
+    ],
+    ids=["no-trailing-period", "trailing-period"],
+)
+def test_release_md_idempotency_tolerates_trailing_period(
+    tmp_path: Path, existing_bullet: str
+) -> None:
+    """A trailing `.` is optional for the idempotency check: the bullet exactly
+    as emitted and the same bullet closed with a period are both recognized, so
+    a re-run over either shape is a no-op."""
+    original = (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        "### Changed\n"
+        "\n"
+        f"{existing_bullet}"
+    )
+    (tmp_path / "RELEASE.md").write_text(original)
+    _run(tmp_path, of_version="1.1.0")
+    rewritten = (tmp_path / "RELEASE.md").read_text()
+
+    assert rewritten == original
+    assert rewritten.count("openfilter dependency to 1.1.0") == 1
 
 
 def test_pyproject_preserves_comments_and_layout(tmp_path: Path) -> None:
