@@ -309,6 +309,12 @@ jobs:
 
   publish-docker-images:
     runs-on: ubuntu-latest
+    # id-token: write for keyless cosign SBOM attestation (below). contents: read
+    # matches the workflow default; the Docker Hub push uses DOCKERHUB_ACCESS_TOKEN,
+    # not GITHUB_TOKEN, so scoping the token here does not affect publishing.
+    permissions:
+      contents: read
+      id-token: write
     needs: [prepare-pypi-publish, publish-to-pypi, wait-for-pypi]
     strategy:
       fail-fast: false
@@ -370,6 +376,27 @@ jobs:
           tags: ${{ steps.prepare-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Supply-chain: attach a signed SPDX SBOM to each built-in image — the same
+      # keyless cosign attestation the shared publish composites add for filters, so the
+      # grype-release-metric daily scanner can re-scan these images from their SBOM (no
+      # pull). openfilter is open source, so the public Sigstore Rekor log is fine.
+      # (syft scans the default-platform image of the multi-arch tag — the amd64 build.)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+      - name: SBOM + keyless attest
+        shell: bash
+        env:
+          IMAGE: ${{ matrix.filter.image }}
+          VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}:${VERSION}"
+          syft "$REF" -o spdx-json=sbom.spdx.json
+          # --type spdxjson sets predicateType https://spdx.dev/Document (what the scanner filters on).
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
 
   # Second-level pipeline-manifest cascade for the built-in filter images.
   # Standalone filter-* repos fire cascade-pipeline-bumps through
