@@ -14,6 +14,16 @@ OpenFilter Library release notes
   SLSA provenance — the SBOM is an opt-in input the workflow never set, so no SBOM was
   actually produced until now. This adds it.
 
+  Verify a published image's SBOM attestation (the signing identity is the release
+  workflow dispatched from `main`, since it creates the tag within the same run):
+
+  ```
+  cosign verify-attestation --type spdxjson \
+    --certificate-identity 'https://github.com/PlainsightAI/openfilter/.github/workflows/create-release.yaml@refs/heads/main' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    plainsightai/openfilter-video-in:<version>
+  ```
+
 ## v1.2.0 - 2026-07-27
 
 ### Added
@@ -161,7 +171,7 @@ This release rolls up the `v0.2.0` declarative-configuration work and the `v0.2.
 
 - **Shared security scan workflow**: Replaced standalone Grype security scan with the shared `PlainsightAI/gh-actions-public` reusable workflow.
 - **GitHub Actions bumped to latest versions**: `actions/checkout` v4→v6, `actions/setup-python` v5→v6, `actions/upload-artifact` v4→v7, `actions/download-artifact` v4.1.3→v8, `docker/setup-buildx-action` v3→v4, `docker/login-action` v3→v4, `docker/build-push-action` v5→v6, `dorny/paths-filter` v3→v4, `mukunku/tag-exists-action` v1.6.0→v1.7.0. Resolves Node.js <24 deprecation warnings.
-- **Docker images now include SLSA provenance** via `docker/build-push-action` v6 defaults (SBOM attestations are added separately by the release workflow's cosign step; see Unreleased).
+- **Docker images now include SLSA provenance** via `docker/build-push-action` v6 defaults (SBOM attestations are added separately starting with the next release; see Unreleased).
 
 ### Fixed
 

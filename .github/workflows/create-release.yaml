@@ -392,7 +392,11 @@ jobs:
       contents: read
       id-token: write
     needs: [prepare-pypi-publish, publish-docker-images]
-    if: needs.prepare-pypi-publish.outputs.already_exists == 'false'
+    # !cancelled() so a single failing publish leg (fail-fast: false leaves the whole
+    # publish-docker-images job at failure) does not skip attesting the images that did
+    # push. The matrix is fail-fast: false, so legs whose image is missing fail on their
+    # own without blocking the rest. already_exists gate keeps this to real releases.
+    if: ${{ !cancelled() && needs.prepare-pypi-publish.outputs.already_exists == 'false' }}
     strategy:
       fail-fast: false
       matrix:
