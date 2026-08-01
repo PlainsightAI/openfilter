@@ -9,8 +9,10 @@ OpenFilter Library release notes
 - **Built-in images now carry a real SBOM attestation.** Each published built-in image
   (video-in/out, image-in/out, mqtt-out, recorder, rest, webvis) gets a signed SPDX SBOM
   attached as a keyless cosign attestation (`--type spdxjson`), in a dedicated
-  `attest-docker-images` job. `docker/build-push-action` defaults only attach SLSA
-  provenance, not an SBOM, so this closes the gap the earlier changelog entries assumed.
+  `attest-docker-images` job. The v0.1.30 and v1.0.0 entries below claimed the images
+  already carried SBOM attestations, but `docker/build-push-action` defaults attach only
+  SLSA provenance — the SBOM is an opt-in input the workflow never set, so no SBOM was
+  actually produced until now. This adds it.
 
 ## v1.2.0 - 2026-07-27
 
