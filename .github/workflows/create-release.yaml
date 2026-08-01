@@ -406,13 +406,20 @@ jobs:
           - plainsightai/openfilter-rest
           - plainsightai/openfilter-webvis
     steps:
+      # cosign-installer and download-syft run in a job holding id-token: write; whoever
+      # controls a mutable tag on either could mint a Fulcio certificate as this repo's
+      # identity, so these two signing actions are pinned by full commit SHA — the
+      # load-bearing exception to floating tags, matching how sast-secrets.yml pins
+      # trufflehog. cosign-release pins the cosign binary (v2 flag spelling); syft-version
+      # pins the SBOM generator so its output can't shift silently.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
         with:
-          # Pin the cosign binary (not the action) to v2.5.2 — the attest flags are v2 spelling.
           cosign-release: v2.5.2
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.50.0
       - name: Login to Docker Hub
         uses: docker/login-action@v4
         with:
