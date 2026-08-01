@@ -309,6 +309,12 @@ jobs:
 
   publish-docker-images:
     runs-on: ubuntu-latest
+    # contents: read matches the workflow default; the Docker Hub push uses
+    # DOCKERHUB_ACCESS_TOKEN, not GITHUB_TOKEN. SBOM attestation runs in the separate
+    # attest-docker-images job (which holds id-token: write), so a Sigstore failure
+    # there cannot gate cascade-pipeline-bumps, which only needs the push here.
+    permissions:
+      contents: read
     needs: [prepare-pypi-publish, publish-to-pypi, wait-for-pypi]
     strategy:
       fail-fast: false
@@ -370,6 +376,79 @@ jobs:
           tags: ${{ steps.prepare-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Supply-chain: attach a signed SPDX SBOM to each built-in image — the same keyless
+  # cosign attestation the shared publish composites add for filters, so the
+  # grype-release-metric daily scanner can re-scan these images from their SBOM (no pull).
+  # openfilter is open source, so the public Sigstore Rekor log is fine.
+  #
+  # Deliberately a SEPARATE job from publish-docker-images: it runs after the push but
+  # cascade-pipeline-bumps needs only publish-docker-images, so a transient Sigstore/Fulcio
+  # failure here surfaces as a red attest job WITHOUT skipping the version-bump cascade for
+  # images that published fine.
+  attest-docker-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    needs: [prepare-pypi-publish, publish-docker-images]
+    # !cancelled() so a single failing publish leg (fail-fast: false leaves the whole
+    # publish-docker-images job at failure) does not skip attesting the images that did
+    # push. But require it not to be 'skipped' — if publish-docker-images was skipped
+    # outright (e.g. an upstream wait-for-pypi timeout), nothing was pushed and every leg
+    # here would fail on a non-existent tag; that stays a clean skip. The matrix is
+    # fail-fast: false, so legs whose image is missing fail on their own without blocking
+    # the rest. already_exists gate keeps this to real releases.
+    if: ${{ !cancelled() && needs.publish-docker-images.result != 'skipped' && needs.prepare-pypi-publish.outputs.already_exists == 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - plainsightai/openfilter-video-in
+          - plainsightai/openfilter-video-out
+          - plainsightai/openfilter-image-in
+          - plainsightai/openfilter-image-out
+          - plainsightai/openfilter-mqtt-out
+          - plainsightai/openfilter-recorder
+          - plainsightai/openfilter-rest
+          - plainsightai/openfilter-webvis
+    steps:
+      # cosign-installer and download-syft run in a job holding id-token: write; whoever
+      # controls a mutable tag on either could mint a Fulcio certificate as this repo's
+      # identity, so these two signing actions are pinned by full commit SHA — the
+      # load-bearing exception to floating tags, matching how sast-secrets.yml pins
+      # trufflehog. cosign-release pins the cosign binary (v2 flag spelling); syft-version
+      # pins the SBOM generator so its output can't shift silently.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        with:
+          cosign-release: v2.5.2
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.50.0
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: plainsightai
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+      - name: SBOM + keyless attest
+        shell: bash
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}:${VERSION}"
+          # These images build linux/amd64,linux/arm64. syft catalogs one platform of a
+          # manifest-list, so attest one SBOM per platform to the index digest; the scanner
+          # reads every spdxjson attestation on the ref.
+          for plat in linux/amd64 linux/arm64; do
+            sbom="sbom.$(echo "$plat" | tr '/' '-').spdx.json"
+            syft "$REF" --platform "$plat" -o spdx-json="$sbom"
+            # --type spdxjson sets predicateType https://spdx.dev/Document (scanner filter).
+            cosign attest --yes --type spdxjson --predicate "$sbom" "$REF"
+          done
 
   # Second-level pipeline-manifest cascade for the built-in filter images.
   # Standalone filter-* repos fire cascade-pipeline-bumps through

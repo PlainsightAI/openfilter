@@ -2,6 +2,28 @@
 
 OpenFilter Library release notes
 
+## [Unreleased]
+
+### Security
+
+- **Built-in images now carry a real SBOM attestation.** Each published built-in image
+  (video-in/out, image-in/out, mqtt-out, recorder, rest, webvis) gets a signed SPDX SBOM
+  attached as a keyless cosign attestation (`--type spdxjson`), in a dedicated
+  `attest-docker-images` job. The v0.1.30 and v1.0.0 entries below claimed the images
+  already carried SBOM attestations, but `docker/build-push-action` defaults attach only
+  SLSA provenance — the SBOM is an opt-in input the workflow never set, so no SBOM was
+  actually produced until now. This adds it.
+
+  Verify a published image's SBOM attestation (the signing identity is the release
+  workflow dispatched from `main`, since it creates the tag within the same run):
+
+  ```
+  cosign verify-attestation --type spdxjson \
+    --certificate-identity 'https://github.com/PlainsightAI/openfilter/.github/workflows/create-release.yaml@refs/heads/main' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    plainsightai/openfilter-video-in:<version>
+  ```
+
 ## v1.2.0 - 2026-07-27
 
 ### Added
@@ -77,7 +99,7 @@ Two runtime improvements teams have been asking for, landed underneath the compa
 ### Production-Grade Engineering
 
 - **First-class observability**: per-filter OpenTelemetry distributed tracing (#79), OpenLineage events (v0.1.5), per-frame timing metrics, and a turn-key Grafana stack (v0.1.21–22). Wall-clock latency dashboards separate `process` time from ZMQ and queue overhead.
-- **Supply-chain hygiene**: SLSA provenance and SBOM attestations on every Docker image; token auth and CORS for HTTP-exposed filters (v0.1.30).
+- **Supply-chain hygiene**: SLSA provenance on every Docker image; token auth and CORS for HTTP-exposed filters (v0.1.30).
 - **GPU and deployment ergonomics**: framework-agnostic GPU detection via `ctypes` (v0.1.28); GKE-compatible `LD_LIBRARY_PATH` injection (v0.1.26), so CUDA-dependent images deploy without per-cluster fixups.
 - **Filter library refresh**: new `ImageIn` / `ImageOut` filters for still-image pipelines (#21, #29); `VideoIn` moved off `vidgear` to `cv2` / PyAV (#66, #67) for stability against odd-codec sources.
 
@@ -149,7 +171,7 @@ This release rolls up the `v0.2.0` declarative-configuration work and the `v0.2.
 
 - **Shared security scan workflow**: Replaced standalone Grype security scan with the shared `PlainsightAI/gh-actions-public` reusable workflow.
 - **GitHub Actions bumped to latest versions**: `actions/checkout` v4→v6, `actions/setup-python` v5→v6, `actions/upload-artifact` v4→v7, `actions/download-artifact` v4.1.3→v8, `docker/setup-buildx-action` v3→v4, `docker/login-action` v3→v4, `docker/build-push-action` v5→v6, `dorny/paths-filter` v3→v4, `mukunku/tag-exists-action` v1.6.0→v1.7.0. Resolves Node.js <24 deprecation warnings.
-- **Docker images now include SLSA provenance and SBOM attestations** via `docker/build-push-action` v6 defaults.
+- **Docker images now include SLSA provenance** via `docker/build-push-action` v6 defaults (SBOM attestations are added separately starting with the next release; see Unreleased).
 
 ### Fixed
 
