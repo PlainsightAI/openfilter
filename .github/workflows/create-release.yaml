@@ -394,9 +394,12 @@ jobs:
     needs: [prepare-pypi-publish, publish-docker-images]
     # !cancelled() so a single failing publish leg (fail-fast: false leaves the whole
     # publish-docker-images job at failure) does not skip attesting the images that did
-    # push. The matrix is fail-fast: false, so legs whose image is missing fail on their
-    # own without blocking the rest. already_exists gate keeps this to real releases.
-    if: ${{ !cancelled() && needs.prepare-pypi-publish.outputs.already_exists == 'false' }}
+    # push. But require it not to be 'skipped' — if publish-docker-images was skipped
+    # outright (e.g. an upstream wait-for-pypi timeout), nothing was pushed and every leg
+    # here would fail on a non-existent tag; that stays a clean skip. The matrix is
+    # fail-fast: false, so legs whose image is missing fail on their own without blocking
+    # the rest. already_exists gate keeps this to real releases.
+    if: ${{ !cancelled() && needs.publish-docker-images.result != 'skipped' && needs.prepare-pypi-publish.outputs.already_exists == 'false' }}
     strategy:
       fail-fast: false
       matrix:
