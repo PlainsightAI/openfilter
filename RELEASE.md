@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.2.1 - 2026-08-04
+
 ### Security
 
 - **Built-in images now carry a real SBOM attestation.** Each published built-in image
