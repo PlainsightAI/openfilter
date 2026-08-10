@@ -10,10 +10,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 FROM plainsightai/openfilter-base:py3.13
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libxcb1 libxcb-shm0 libxcb-render0 libx11-6 libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
-
 USER appuser
 
 COPY --from=builder /usr/local /usr/local
