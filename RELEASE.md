@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.2.2 - 2026-08-10
+
 ### Security
 
 - **Built-in images now build on the shared `openfilter-base`.** Each built-in image
