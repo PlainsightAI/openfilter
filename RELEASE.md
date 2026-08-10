@@ -4,6 +4,18 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Security
+
+- **Built-in images now build on the shared `openfilter-base`.** Each built-in image
+  (video-in/out, image-in/out, mqtt-out, recorder, rest, webvis) now derives from
+  `plainsightai/openfilter-base:py3.13` — a `python:3.13-slim` with all outstanding
+  Debian security patches applied (`apt upgrade`), rebuilt weekly — instead of a bare
+  pinned `python:3.13-slim`, so their OS-layer packages (openssl, gnutls, …) stay
+  patched. The images also drop system libraries they never used: the X11/GL libs
+  (`libxcb1`, `libxcb-shm0`, `libxcb-render0`, `libx11-6`, `libgl1`, `libglib2.0-0`),
+  since openfilter uses `opencv-python-headless`; and the `ffmpeg` apt package, since
+  video I/O uses the ffmpeg bundled in OpenCV and PyAV. Smaller images, fewer CVEs.
+
 ## v1.2.1 - 2026-08-04
 
 ### Security
