@@ -10,9 +10,10 @@
 # so the OS stays current.
 #
 # Deliberately MINIMAL: no system libraries are installed here. Each filter installs only
-# the libraries IT needs (e.g. ffmpeg + libGL for video filters, libzbar0 for QR) in its
-# own Dockerfile, so the shared base stays small and no filter inherits a library — and its
-# CVEs — it never uses.
+# the libraries IT actually needs (e.g. libzbar0 for QR decoding) in its own Dockerfile, so
+# the shared base stays small and no filter inherits a library — and its CVEs — it never
+# uses. (The built-in video filters need nothing extra: OpenCV is headless and PyAV bundles
+# its own ffmpeg, so no system ffmpeg/libGL/X11 is required.)
 #
 # Published per supported Python version: plainsightai/openfilter-base:py3.10 .. py3.13
 # (openfilter's requires-python is >=3.10,<3.14). Consumers pick the tag for their version:
