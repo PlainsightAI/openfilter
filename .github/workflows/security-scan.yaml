@@ -13,3 +13,6 @@ jobs:
     uses: PlainsightAI/gh-actions-public/.github/workflows/security-scan.yaml@main
     with:
       filter_name: openfilter
+      # Override the shared workflow's default (3.10-3.13) so Grype scans the
+      # 3.14 dependency tree too — openfilter's requires-python is >=3.10,<3.15.
+      python_versions: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
