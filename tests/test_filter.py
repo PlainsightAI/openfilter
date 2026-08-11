@@ -394,8 +394,15 @@ class TestFilterOld(unittest.TestCase):
 
 
     def test_topo_balance_step(self):
+        # outputs_required makes the source block until all three workers are
+        # connected before it sends anything. Without it, outputs_balance rotates
+        # only over the channels connected so far, so a worker that connects late
+        # shifts the rotation and lands two consecutive frames on the same worker
+        # (the assertIsNot below). start_sleep=0.1 hid this under 'fork' (fast
+        # child startup), but Python 3.14 defaults multiprocessing to the slower
+        # 'forkserver' on Linux, which widened the race into a frequent flake.
         runner = Filter.Runner([
-            (FilterFromQueue, dict(id='src', outputs='tcp://*:5550, tcp://*:5552, tcp://*:5554', outputs_balance=True, queue=(qout := Queue()), start_sleep=0.1)),
+            (FilterFromQueue, dict(id='src', outputs='tcp://*:5550, tcp://*:5552, tcp://*:5554', outputs_balance=True, outputs_required='worker1, worker2, worker3', queue=(qout := Queue()), start_sleep=0.1)),
             (MyFilter,        dict(id='worker1', sources='tcp://localhost:5550', outputs='tcp://*:5560', queue=(qworker1 := Queue()))),
             (MyFilter,        dict(id='worker2', sources='tcp://localhost:5552', outputs='tcp://*:5562', queue=(qworker2 := Queue()))),
             (MyFilter,        dict(id='worker3', sources='tcp://localhost:5554', outputs='tcp://*:5564', queue=(qworker3 := Queue()))),
