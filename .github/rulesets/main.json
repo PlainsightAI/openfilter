@@ -33,10 +33,12 @@
           { "context": "run-unit-tests (3.11)" },
           { "context": "run-unit-tests (3.12)" },
           { "context": "run-unit-tests (3.13)" },
+          { "context": "run-unit-tests (3.14)" },
           { "context": "security-scan / grype (3.10)" },
           { "context": "security-scan / grype (3.11)" },
           { "context": "security-scan / grype (3.12)" },
           { "context": "security-scan / grype (3.13)" },
+          { "context": "security-scan / grype (3.14)" },
           { "context": "cascade-pr-checks" },
           { "context": "check-release-log" }
         ]

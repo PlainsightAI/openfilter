@@ -62,7 +62,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Verify README.pypi.md is in sync with README.md
         run: make check-pypi-readme
@@ -96,7 +96,7 @@ jobs:
         if: steps.filter.outputs.cascade == 'true'
         uses: actions/setup-python@v7
         with:
-          python-version: '3.11'
+          python-version: '3.14'
 
       - name: Install cascade check and test deps
         if: steps.filter.outputs.cascade == 'true'

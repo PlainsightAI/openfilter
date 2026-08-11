@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -142,7 +142,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install dependencies
         run: pip install build twine
@@ -229,7 +229,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install dependencies
         run: pip install twine
@@ -289,9 +289,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Wait for package availability on PyPI
+        # 3.14 is the newest supported interpreter, so the --dry-run resolve below
+        # doubles as a check that the just-published version installs on it.
         env:
           PACKAGE_NAME: ${{ needs.prepare-pypi-publish.outputs.package_name }}
           VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}

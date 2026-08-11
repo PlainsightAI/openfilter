@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 # Build openfilter from local source for Docker-based pipeline testing.
 # Build context must be the repo root: docker build -f Dockerfile ../..
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential python3-dev && rm -rf /var/lib/apt/lists/*
@@ -10,7 +10,7 @@ COPY . /src
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir "/src[all]"
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
