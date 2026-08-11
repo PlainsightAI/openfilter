@@ -13,7 +13,10 @@ OpenFilter Library release notes
   3.10–3.13 stay on `numpy~=2.2.6` (unchanged), and 3.14 pulls `numpy>=2.3.2,<3`. Every
   other compiled dependency already ships 3.14 wheels (opencv/av via stable-ABI `abi3`
   wheels, pyzmq, psutil, pydantic-core, grpcio, protobuf). The shared `openfilter-base`
-  image is now also published as `plainsightai/openfilter-base:py3.14`.
+  image is now also published as `plainsightai/openfilter-base:py3.14`, the release gate
+  (`create-release`) runs the suite on 3.14, and the built-in filter images
+  (video-in/out, image-in/out, mqtt-out, recorder, rest, webvis) now build on
+  `python:3.14-slim` / `openfilter-base:py3.14`. The example projects widen to `<3.15` too.
 
 ## v1.2.2 - 2026-08-10
 
