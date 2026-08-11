@@ -289,9 +289,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Wait for package availability on PyPI
+        # 3.14 is the newest supported interpreter, so the --dry-run resolve below
+        # doubles as a check that the just-published version installs on it.
         env:
           PACKAGE_NAME: ${{ needs.prepare-pypi-publish.outputs.package_name }}
           VERSION: ${{ needs.prepare-pypi-publish.outputs.package_version }}
