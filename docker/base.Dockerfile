@@ -15,8 +15,8 @@
 # uses. (The built-in video filters need nothing extra: OpenCV is headless and PyAV bundles
 # its own ffmpeg, so no system ffmpeg/libGL/X11 is required.)
 #
-# Published per supported Python version: plainsightai/openfilter-base:py3.10 .. py3.13
-# (openfilter's requires-python is >=3.10,<3.14). Consumers pick the tag for their version:
+# Published per supported Python version: plainsightai/openfilter-base:py3.10 .. py3.14
+# (openfilter's requires-python is >=3.10,<3.15). Consumers pick the tag for their version:
 #   FROM plainsightai/openfilter-base:py3.11
 ARG PYTHON_VERSION=3.11
 FROM python:${PYTHON_VERSION}-slim
