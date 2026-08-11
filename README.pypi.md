@@ -48,7 +48,7 @@ Jump to:
 
 ## Requirements
 
-- Python 3.10 or newer (tested on 3.10, 3.11, 3.12, and 3.13)
+- Python 3.10 or newer (tested on 3.10, 3.11, 3.12, 3.13, and 3.14)
 
 ---
 

@@ -4,6 +4,17 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Added
+
+- **Python 3.14 support.** `requires-python` widens to `>=3.10,<3.15` and the unit-test
+  matrix now includes 3.14, alongside the existing 3.10–3.13. numpy is the only dependency
+  that needed a change: 2.2.x is the last line with Python 3.10 wheels, while cp314 wheels
+  only exist in numpy 2.3+ (which requires 3.11), so the pin is split by interpreter —
+  3.10–3.13 stay on `numpy~=2.2.6` (unchanged), and 3.14 pulls `numpy>=2.3.2,<3`. Every
+  other compiled dependency already ships 3.14 wheels (opencv/av via stable-ABI `abi3`
+  wheels, pyzmq, psutil, pydantic-core, grpcio, protobuf). The shared `openfilter-base`
+  image is now also published as `plainsightai/openfilter-base:py3.14`.
+
 ## v1.2.2 - 2026-08-10
 
 ### Security

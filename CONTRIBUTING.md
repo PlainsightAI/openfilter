@@ -356,7 +356,7 @@ To publish a new version:
 
 From there the workflow runs on its own:
 
-- Runs the unit tests across Python 3.10, 3.11, 3.12, and 3.13.
+- Runs the unit tests across Python 3.10, 3.11, 3.12, 3.13, and 3.14.
 - Verifies that the `VERSION` file matches the version declared in `RELEASE.md`.
 - Creates the git tag and the GitHub Release.
 - Builds the Python wheel and publishes it to [PyPI](https://pypi.org/project/openfilter/).
