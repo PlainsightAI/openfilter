@@ -49,13 +49,22 @@ def resolve_override_source_uri(config) -> str | None:
     ``FILTER_OVERRIDE_SOURCE_URI_FILE`` — used when the value is only known at claim
     time and is written into the shared volume for the filter to pick up.
     """
-    if (uri := config.override_source_uri):
+    if config is None:
+        return None
+
+    def _get(key):  # robust for adict, a plain dict, or an arbitrary config object
+        return config.get(key) if hasattr(config, 'get') else getattr(config, key, None)
+
+    if (uri := _get('override_source_uri')):
         return str(uri)
 
-    if (path := config.override_source_uri_file):
+    if (path := _get('override_source_uri_file')):
         try:
-            with open(path) as f:
-                return f.read().strip() or None
+            # A source URI is small (well under 1KB); cap the read so a misconfigured
+            # or unbounded file/device stream can't exhaust memory. encoding is explicit
+            # to avoid locale-dependent decode failures across environments.
+            with open(path, encoding='utf-8') as f:
+                return f.read(4096).strip() or None
         except OSError as exc:
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} could not be read: {exc}')

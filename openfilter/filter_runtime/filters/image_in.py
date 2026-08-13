@@ -383,7 +383,11 @@ class ImageIn(Filter):
                 if 'Contents' in page:
                     for obj in page['Contents']:
                         key = obj['Key']
-                        if is_image_file(key) and matches_pattern(key, options.pattern or self.config.pattern):
+                        # An exact key match (not a directory prefix) is a single explicit
+                        # object; skip the image-extension gate for it, mirroring the local
+                        # single-file case. Directory-prefix listings keep the gate.
+                        is_exact_object = key == prefix
+                        if (is_exact_object or is_image_file(key)) and matches_pattern(key, options.pattern or self.config.pattern):
                             images.append(f"s3://{bucket}/{key}")
 
             return sorted(images)
@@ -407,7 +411,9 @@ class ImageIn(Filter):
             
             images = []
             for blob in bucket.list_blobs(prefix=prefix):
-                if is_image_file(blob.name) and matches_pattern(blob.name, options.pattern or self.config.pattern):
+                # Exact key match = single explicit object; skip the extension gate for it
+                # (mirrors the local single-file case), keep it for directory prefixes.
+                if (blob.name == prefix or is_image_file(blob.name)) and matches_pattern(blob.name, options.pattern or self.config.pattern):
                     images.append(f"gs://{bucket.name}/{blob.name}")
                             
             return sorted(images)

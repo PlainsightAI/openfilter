@@ -44,6 +44,35 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
+    def test_plain_dict_config(self):
+        # Must work for a plain dict, not only adict (no AttributeError).
+        self.assertEqual(
+            resolve_override_source_uri({'override_source_uri': 's3://bucket/x.png'}),
+            's3://bucket/x.png',
+        )
+        self.assertIsNone(resolve_override_source_uri({}))
+
+    def test_none_config(self):
+        self.assertIsNone(resolve_override_source_uri(None))
+
+    def test_object_config_without_get(self):
+        # Arbitrary config object exposing attributes but no .get().
+        class Cfg:
+            override_source_uri = 's3://bucket/from-attr.png'
+        self.assertEqual(resolve_override_source_uri(Cfg()), 's3://bucket/from-attr.png')
+
+    def test_bounded_read_ignores_trailing_garbage(self):
+        # A pathological huge file: only the capped prefix is read; the URI (short,
+        # first token) is still returned and the read is bounded.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'big.source_uri')
+            with open(path, 'w') as f:
+                f.write('s3://bucket/real.mp4')
+                f.write('x' * (1 << 20))  # 1 MiB of junk after the URI on the same line
+            got = resolve_override_source_uri(adict(override_source_uri_file=path))
+            self.assertTrue(got.startswith('s3://bucket/real.mp4'))
+            self.assertLessEqual(len(got), 4096)
+
 
 if __name__ == '__main__':
     unittest.main()
