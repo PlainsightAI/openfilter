@@ -150,6 +150,30 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_override_source_uri_meta(self):
+        """FILTER_OVERRIDE_SOURCE_URI replaces meta['src'] with the logical source URI while
+        VideoIn still opens the physical file (VideoIn is already extension-agnostic)."""
+        override = 's3://my-bucket/nested/original-video.mp4'
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync',
+                outputs = 'ipc://test-VideoIn-ovr',
+                override_source_uri = override,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-ovr',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            frame = queue.get()['main']
+            self.assertEqual(frame.data['meta']['src'], override)
+        finally:
+            runner.stop()
+            queue.close()
+
+
     def test_pts(self):
         """File sources stamp the source position in seconds (src_seconds) and the
         0-based source frame index (src_frame) into each frame's meta, so

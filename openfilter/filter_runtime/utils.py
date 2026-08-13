@@ -17,7 +17,7 @@ from typing import Any, Callable
 from numpy import generic as np_generic, ndarray as np_ndarray
 
 __all__ = [
-    'JSONLiteral', 'JSONType', 'json_getval', 'json_sanitize',
+    'JSONLiteral', 'JSONType', 'json_getval', 'json_sanitize', 'resolve_override_source_uri',
     'sanitize_filename', 'sanitize_pathname', 'simpledeepcopy', 'dict_without',
     'split_commas_maybe', 'rndstr', 'sizestr', 'secstr', 'timestr',
     'parse_time_interval', 'parse_date_and_or_time',
@@ -38,6 +38,29 @@ def json_getval(val: str) -> JSONType:
         return json_loads(val)
     except Exception:
         return val
+
+
+def resolve_override_source_uri(config) -> str | None:
+    """Logical source URI an input filter should report as ``meta['src']``, or None.
+
+    Set by an orchestrator to preserve per-file identity when the physical input path
+    is generic (e.g. a batch claimer downloads every object to ``/ws/input``). Prefers
+    ``FILTER_OVERRIDE_SOURCE_URI`` (direct value); otherwise reads the file named by
+    ``FILTER_OVERRIDE_SOURCE_URI_FILE`` — used when the value is only known at claim
+    time and is written into the shared volume for the filter to pick up.
+    """
+    if (uri := config.override_source_uri):
+        return str(uri)
+
+    if (path := config.override_source_uri_file):
+        try:
+            with open(path) as f:
+                return f.read().strip() or None
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} could not be read: {exc}')
+
+    return None
 
 def json_sanitize(val: Any, loose=False) -> JSONType:
     """Sanitize for json.dumps() compatible, two levels, `loose` will convert datetime to iso text and dataclasses for

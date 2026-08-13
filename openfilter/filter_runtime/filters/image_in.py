@@ -24,7 +24,7 @@ except ImportError:
     HAS_GCS = False
 
 from openfilter.filter_runtime.filter import Filter, Frame, FilterConfig
-from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without, adict
+from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without, resolve_override_source_uri, adict
 
 __all__ = ['ImageInConfig', 'ImageIn']
 
@@ -118,6 +118,12 @@ class ImageInConfig(FilterConfig):
     pattern: str | None
     poll_interval: float | None
     maxfps: float | None
+
+    # Logical source URI to report as meta['src'] instead of the physical path (set by an
+    # orchestrator; see resolve_override_source_uri). FILTER_OVERRIDE_SOURCE_URI is the
+    # direct value, FILTER_OVERRIDE_SOURCE_URI_FILE a file to read it from.
+    override_source_uri: str | None
+    override_source_uri_file: str | None
     
 
 class ImageIn(Filter):
@@ -200,6 +206,10 @@ class ImageIn(Filter):
         FILTER_RECURSIVE      / IMAGE_IN_RECURSIVE
         FILTER_POLL_INTERVAL  / IMAGE_IN_POLL_INTERVAL
         FILTER_MAXFPS         / IMAGE_IN_MAXFPS
+        FILTER_OVERRIDE_SOURCE_URI       - logical source URI reported as each frame's meta['src']
+                                           (see `override_source_uri`).
+        FILTER_OVERRIDE_SOURCE_URI_FILE  - path to a file whose contents are that URI (used when
+                                           the value is only known at runtime by an orchestrator).
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
@@ -259,6 +269,7 @@ class ImageIn(Filter):
     def setup(self, config):
         """Initialize the filter with sources and start polling thread."""
         self.config = config
+        self.override_source_uri = resolve_override_source_uri(config)
         self.frame_id = -1
         self.queues = {}                # topic -> list[path]
         self.processed = {}             # topic -> set[path]
@@ -338,7 +349,13 @@ class ImageIn(Filter):
 
         images = []
         if os.path.isfile(path):
-            if is_image_file(path) and matches_pattern(path, options.pattern or self.config.pattern):
+            # A single explicit file was named by the caller — there is nothing to filter,
+            # so skip the image-extension gate (which exists only to keep non-images out of
+            # directory listings) and let _load_image validate by decoding. This lets a
+            # generic/extensionless path (e.g. a batch claimer's /ws/input) be processed;
+            # the override_source_uri carries the real name. Directory/S3/GCS listing below
+            # keeps the extension gate.
+            if matches_pattern(path, options.pattern or self.config.pattern):
                 images.append(path)
         else:
             # Directory
@@ -426,7 +443,10 @@ class ImageIn(Filter):
                 arr = np.frombuffer(data, np.uint8)
                 return cv2.imdecode(arr, cv2.IMREAD_COLOR)
             else:
-                return cv2.imread(path)
+                img = cv2.imread(path)
+                if img is None:
+                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                return img
         except Exception as e:
             logger.error(f"Failed to load image {path}: {e}")
             return None
@@ -507,7 +527,7 @@ class ImageIn(Filter):
                     self.frame_id += 1
                     meta = {
                         'id': self.frame_id,
-                        'src': path,
+                        'src': self.override_source_uri or path,
                         'ts': time()
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')

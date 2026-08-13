@@ -181,6 +181,72 @@ class TestImageIn(unittest.TestCase):
             runner.stop()
             queue.close()
 
+    def _write_bytes_image(self, name, color, text):
+        """Write a PNG-encoded image to a file whose name has no image extension."""
+        ok, buf = cv2.imencode('.png', create_test_image(color=color, text=text))
+        self.assertTrue(ok)
+        path = os.path.join(self.test_dir, name)
+        with open(path, 'wb') as f:
+            f.write(buf.tobytes())
+        return path
+
+    def test_single_file_no_extension(self):
+        """A single explicit file with a non-image / missing extension must still be
+        processed. The extension gate applies only to directory listings; for a single
+        named file the caller chose it. This is the batch-claimer case where the media is
+        downloaded to a generic /ws/input path."""
+        generic_path = self._write_bytes_image('input', color=(0, 0, 255), text="NoExt")  # no extension
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{generic_path}',
+                outputs='ipc://test-ImageIn-noext',
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-noext',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame for a single extensionless file")
+            frame = result['main']
+            self.assertIsNotNone(frame.image)
+            self.assertEqual(frame.data['meta']['src'], generic_path)  # no override -> physical path
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_override_source_uri_meta(self):
+        """FILTER_OVERRIDE_SOURCE_URI replaces meta['src'] with the logical source URI, so
+        downstream (event-sink -> BigQuery) can attribute the record to its real source file
+        even though ImageIn read a generic local path."""
+        generic_path = self._write_bytes_image('input_ovr', color=(0, 255, 0), text="Ovr")
+        override = 's3://my-bucket/nested/path/original-image.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{generic_path}',
+                outputs='ipc://test-ImageIn-ovr',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame")
+            self.assertEqual(result['main'].data['meta']['src'], override)
+        finally:
+            runner.stop()
+            queue.close()
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
