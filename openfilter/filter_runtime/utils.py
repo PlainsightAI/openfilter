@@ -65,7 +65,9 @@ def resolve_override_source_uri(config) -> str | None:
             # to avoid locale-dependent decode failures across environments.
             with open(path, encoding='utf-8') as f:
                 return f.read(4096).strip() or None
-        except OSError as exc:
+        # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
+        # OSError, so a bad override file degrades to None instead of crashing setup.
+        except (OSError, ValueError) as exc:
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} could not be read: {exc}')
 

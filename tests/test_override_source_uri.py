@@ -44,6 +44,16 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
+    def test_invalid_utf8_file_returns_none(self):
+        # A file with invalid UTF-8 must degrade to None (UnicodeDecodeError is a
+        # ValueError), not crash the filter's setup.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'bad.source_uri')
+            with open(path, 'wb') as f:
+                f.write(b'\xff\xfe not valid utf-8 \x80\x81')
+            cfg = adict(override_source_uri_file=path)
+            self.assertIsNone(resolve_override_source_uri(cfg))
+
     def test_plain_dict_config(self):
         # Must work for a plain dict, not only adict (no AttributeError).
         self.assertEqual(
