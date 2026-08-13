@@ -44,6 +44,12 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
+    def test_path_traversal_rejected(self):
+        self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file='/ws/../etc/passwd')))
+
+    def test_relative_path_rejected(self):
+        self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file='relative/input.source_uri')))
+
     def test_invalid_utf8_file_returns_none(self):
         # A file with invalid UTF-8 must degrade to None (UnicodeDecodeError is a
         # ValueError), not crash the filter's setup.

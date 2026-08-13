@@ -386,7 +386,9 @@ class ImageIn(Filter):
                         # An exact key match (not a directory prefix) is a single explicit
                         # object; skip the image-extension gate for it, mirroring the local
                         # single-file case. Directory-prefix listings keep the gate.
-                        is_exact_object = key == prefix
+                        # `not endswith('/')` excludes the 0-byte directory-marker object
+                        # S3/GCS return for a prefix (named exactly `prefix/`); decoding it fails.
+                        is_exact_object = key == prefix and not key.endswith('/')
                         if (is_exact_object or is_image_file(key)) and matches_pattern(key, options.pattern or self.config.pattern):
                             images.append(f"s3://{bucket}/{key}")
 
@@ -413,7 +415,9 @@ class ImageIn(Filter):
             for blob in bucket.list_blobs(prefix=prefix):
                 # Exact key match = single explicit object; skip the extension gate for it
                 # (mirrors the local single-file case), keep it for directory prefixes.
-                if (blob.name == prefix or is_image_file(blob.name)) and matches_pattern(blob.name, options.pattern or self.config.pattern):
+                # `not endswith('/')` excludes the 0-byte directory-marker object.
+                is_exact_object = blob.name == prefix and not blob.name.endswith('/')
+                if (is_exact_object or is_image_file(blob.name)) and matches_pattern(blob.name, options.pattern or self.config.pattern):
                     images.append(f"gs://{bucket.name}/{blob.name}")
                             
             return sorted(images)
@@ -433,7 +437,10 @@ class ImageIn(Filter):
                 response = s3_client.get_object(Bucket=bucket, Key=key)
                 data = response['Body'].read()
                 arr = np.frombuffer(data, np.uint8)
-                return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                return img
             elif path.startswith("gs://"):
                 if not HAS_GCS:
                     logger.error("google-cloud-storage is required for GCS support")
@@ -447,7 +454,10 @@ class ImageIn(Filter):
                 blob = bucket.blob(key)
                 data = blob.download_as_bytes()
                 arr = np.frombuffer(data, np.uint8)
-                return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                return img
             else:
                 img = cv2.imread(path)
                 if img is None:

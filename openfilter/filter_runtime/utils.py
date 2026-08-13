@@ -59,6 +59,13 @@ def resolve_override_source_uri(config) -> str | None:
         return str(uri)
 
     if (path := _get('override_source_uri_file')):
+        # Defense-in-depth on the orchestrator-provided path: reject traversal and require an
+        # absolute path, so a misconfigured env can't turn this into an arbitrary-file read
+        # whose contents would ride downstream in meta['src'].
+        if '..' in path or not path.startswith('/'):
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
+            return None
         try:
             # A source URI is small (well under 1KB); cap the read so a misconfigured
             # or unbounded file/device stream can't exhaust memory. encoding is explicit
