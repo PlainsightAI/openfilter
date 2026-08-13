@@ -311,7 +311,19 @@ class ImageIn(Filter):
 
         # Load initial images
         self._load_initial_images()
-        
+
+        # The override identifies a SINGLE logical object (the orchestrator's batch claimer
+        # downloads one file to a generic path and records its real URI). Applying one override
+        # to every frame would mislabel each image of a directory/glob/multi-source input with
+        # the same meta['src'], so only honor it when at most one image resolved; otherwise fall
+        # back to the real per-image path and warn once about the misconfiguration.
+        total_images = sum(len(q) for q in self.queues.values())
+        self._apply_override = bool(self.override_source_uri) and total_images <= 1
+        if self.override_source_uri and not self._apply_override:
+            logger.warning(
+                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this ImageIn resolved {total_images} images; "
+                "the override identifies a single object, so meta['src'] will report each image's real path instead")
+
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
         self.poll_thread.start()
@@ -461,7 +473,10 @@ class ImageIn(Filter):
             else:
                 img = cv2.imread(path)
                 if img is None:
-                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                    # imread returns None both for an unreadable/corrupt file and for one that
+                    # no longer exists (e.g. deleted/renamed between listing and load), so the
+                    # message covers all three rather than asserting a corrupt format.
+                    logger.warning(f"Could not read image {path} (missing, unrecognized, or corrupt format); skipping")
                 return img
         except Exception as e:
             logger.error(f"Failed to load image {path}: {e}")
@@ -543,7 +558,7 @@ class ImageIn(Filter):
                     self.frame_id += 1
                     meta = {
                         'id': self.frame_id,
-                        'src': self.override_source_uri or path,
+                        'src': self.override_source_uri if self._apply_override else path,
                         'ts': time()
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')

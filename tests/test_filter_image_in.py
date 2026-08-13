@@ -247,6 +247,41 @@ class TestImageIn(unittest.TestCase):
             runner.stop()
             queue.close()
 
+    def test_override_ignored_for_multiple_images(self):
+        """A global override identifies ONE object; when ImageIn resolves multiple images
+        (a directory), the override must be ignored so each frame keeps its real per-image
+        path in meta['src'] — otherwise every image would be mislabeled with the same src."""
+        override = 's3://my-bucket/should-not-be-used.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}',
+                outputs='ipc://test-ImageIn-ovr-multi',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr-multi',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            seen = []
+            for _ in range(3):
+                result = queue.get()
+                if result is False:
+                    break
+                seen.append(result['main'].data['meta']['src'])
+            self.assertEqual(len(seen), 3, "expected three frames for the three-image directory")
+            for src in seen:
+                self.assertNotEqual(src, override, "override must not be applied to a multi-image source")
+                self.assertTrue(os.path.isfile(src), f"meta['src'] should be a real image path, got {src!r}")
+            # Each frame must carry its own distinct real file, not one repeated override.
+            self.assertEqual(len(set(seen)), 3)
+        finally:
+            runner.stop()
+            queue.close()
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
