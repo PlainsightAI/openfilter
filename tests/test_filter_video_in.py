@@ -207,6 +207,41 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_extensionless_file_decodes(self):
+        """The batch claimer downloads to a generic extension-less path (/ws/input), so VideoIn
+        must decode a file with no extension: is_video_file keys on the file:// scheme (not the
+        extension) and cv2.VideoCapture/FFmpeg probes the container from the bytes. This proves
+        the /ws/input default is safe for VideoIn, not just image-in (PLAT-1499)."""
+        noext = 'test_video_noext'  # deliberately no extension
+        with open(noext, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{noext}!sync',
+                outputs = 'ipc://test-VideoIn-noext',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-noext',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            result = queue.get()
+            if not result:
+                self.fail("VideoIn produced no frame for an extension-less file")
+            frame = result['main']
+            self.assertIsNotNone(frame.image, "VideoIn must decode the extension-less file by content")
+        finally:
+            runner.stop()
+            queue.close()
+            try:
+                os.unlink(noext)
+            except Exception:
+                pass
+
+
     def test_pts(self):
         """File sources stamp the source position in seconds (src_seconds) and the
         0-based source frame index (src_frame) into each frame's meta, so
