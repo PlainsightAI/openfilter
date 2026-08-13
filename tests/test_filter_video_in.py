@@ -174,6 +174,39 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_override_ignored_for_multiple_sources(self):
+        """A global override identifies ONE source; with multiple VideoIn sources it must be
+        ignored so each frame keeps its real per-source meta['src'] — otherwise every source
+        would be mislabeled with the same URI (mirrors the ImageIn guard, PLAT-1498)."""
+        override = 's3://my-bucket/should-not-be-used.mp4'
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync;main, file://{TEST_VIDEO_FNM}!sync;other',
+                outputs = 'ipc://test-VideoIn-ovr-multi',
+                override_source_uri = override,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-ovr-multi',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            srcs = []
+            for _ in range(6):
+                result = queue.get()
+                if not result:
+                    break
+                for frame in result.values():
+                    srcs.append(frame.data['meta']['src'])
+            self.assertTrue(srcs, "expected at least one frame")
+            for src in srcs:
+                self.assertNotEqual(src, override, "override must not be applied to a multi-source VideoIn")
+        finally:
+            runner.stop()
+            queue.close()
+
+
     def test_pts(self):
         """File sources stamp the source position in seconds (src_seconds) and the
         0-based source frame index (src_frame) into each frame's meta, so

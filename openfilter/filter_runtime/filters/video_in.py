@@ -827,6 +827,17 @@ class VideoIn(Filter):
         self._camera_connected = 0
         self.override_source_uri = resolve_override_source_uri(config)
 
+        # The override identifies a SINGLE logical source (an orchestrator's batch claimer
+        # downloads one file and records its real URI). With multiple videos, applying one
+        # override to every frame would mislabel each with the same meta['src'], so only honor
+        # it for a single source; otherwise fall back to each video's real source and warn once.
+        # Mirrors the ImageIn guard (PLAT-1498).
+        self._apply_override = bool(self.override_source_uri) and len(self.mvreader.videos) <= 1
+        if self.override_source_uri and not self._apply_override:
+            logger.warning(
+                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this VideoIn has {len(self.mvreader.videos)} sources; "
+                "the override identifies a single source, so meta['src'] will report each video's real source instead")
+
         self.mvreader.start()
 
     def shutdown(self):
@@ -842,7 +853,7 @@ class VideoIn(Filter):
             self.id = id = self.id + 1
 
             def meta(vid, tfrm, extras):
-                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri or vid.source, 'src_fps': vid.fps}
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else vid.source, 'src_fps': vid.fps}
 
                 if extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
                     meta['src_frame'] = extras['frame_n']
