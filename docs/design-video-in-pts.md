@@ -45,10 +45,10 @@ Merge plan with `feat/video-in-seekable-replay`:
   `self.cap`, and its docstring marks it as such. #118's post-seek path currently calls raw
   `cap.read()` for forward-read compensation; whichever PR merges second must route that read
   through `_cap_read()` (compensation frames are discarded, so the cost is nil, and the first
-  *delivered* post-seek frame then carries correct `pts_s`/`src_frame`).
+  *delivered* post-seek frame then carries correct `src_seconds`/`src_frame`).
 - **Meta naming**: `src_frame` (this PR) and `frame_index` (#118) are the same value at meta
   level. One name must survive; this PR has no attachment to `src_frame` — if #118 lands first we
-  adopt `frame_index` and keep `pts_s`; if this lands first, #118 rebases its `frame_index` onto
+  adopt `frame_index` and keep `src_seconds`; if this lands first, #118 rebases its `frame_index` onto
   `src_frame` or renames ours. Either way the second-to-merge PR emits a single key.
 - **Landing order (agreed, per review)**: #118 merges first — it owns the extras-dict shape and
   its design doc, and this PR already adopted its shape and `frame_n` key. This PR then rebases
@@ -67,7 +67,7 @@ same frame, which is the contract's purpose. Switching such files to `POS_MSEC` 
 upgrade: `POS_MSEC` exhibits B-frame presentation reordering and reports 0 on several
 container/backend combos (both reproduced by the repo's own test clip), with no way to tell a
 true pts from a lie at runtime. `POS_MSEC` is therefore used only for containers reporting no
-frame rate at all, and only while it looks sane (nonzero past frame 0); otherwise `pts_s` is
+frame rate at all, and only while it looks sane (nonzero past frame 0); otherwise `src_seconds` is
 omitted rather than emitted wrong. Consumers needing true per-frame VFR timestamps should demux
 container pts out-of-band (e.g. PyAV); that is out of scope for `VideoIn`.
 
