@@ -719,14 +719,15 @@ class VideoIn(Filter):
         seconds at read), meta['src'] and meta['src_fps']. File sources (file:// and s3://) additionally carry the
         decoder position of the delivered frame - the video offset that cannot be reconstructed downstream:
 
-            meta['src_frame'] - 0-based source frame index (CAP_PROP_POS_FRAMES sampled before the read, exact).
-            meta['pts_s']     - presentation timestamp in seconds: src_frame / container fps (nominal CFR timeline;
-                see VideoReader._cap_read for the VFR position), or CAP_PROP_POS_MSEC when the container reports no
-                frame rate. Omitted when neither is trustworthy - src_frame is then still present and exact.
+            meta['src_frame']   - 0-based source frame index (CAP_PROP_POS_FRAMES sampled before the read, exact).
+            meta['src_seconds'] - the frame's position WITHIN the source, in seconds: src_frame / container fps
+                (nominal CFR timeline; see VideoReader._cap_read for the VFR position), or CAP_PROP_POS_MSEC when the
+                container reports no frame rate. This is a source offset, not the wall-clock meta['ts'] nor the raw
+                container PTS. Omitted when neither is trustworthy - src_frame is then still present and exact.
 
-        With `loop`, the cap is reopened each pass, so src_frame and pts_s restart at 0 every loop (they are the
+        With `loop`, the cap is reopened each pass, so src_frame and src_seconds restart at 0 every loop (they are the
         position WITHIN the file) while meta['id'] keeps counting across passes: a looped timeline is non-monotonic
-        in src_frame/pts_s but monotonic in id, so consumers indexing a looped source must key off id, not src_frame.
+        in src_frame/src_seconds but monotonic in id, so consumers indexing a looped source must key off id, not src_frame.
 
         Stream and webcam sources have no meaningful decoder position: both keys are absent, all other meta unchanged.
 
@@ -834,7 +835,7 @@ class VideoIn(Filter):
                     meta['src_frame'] = extras['frame_n']
 
                     if (pts_s := extras.get('pts_s')) is not None:
-                        meta['pts_s'] = pts_s
+                        meta['src_seconds'] = pts_s
 
                 return meta
 

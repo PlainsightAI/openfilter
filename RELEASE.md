@@ -18,6 +18,17 @@ OpenFilter Library release notes
   (video-in/out, image-in/out, mqtt-out, recorder, rest, webvis) now build on
   `python:3.14-slim` / `openfilter-base:py3.14`. The example projects widen to `<3.15` too.
 
+### Changed
+
+- **`VideoIn` frame meta: `pts_s` renamed to `src_seconds` (#128 follow-up).** The file-source
+  meta key introduced in v1.2.0 is renamed to name what it actually is: the frame's position
+  *within the source*, in seconds — a source offset, not the raw container PTS (in the CFR path it
+  is `src_frame / fps`, a nominal timeline) and not the wall-clock `meta['ts']`. This lands now
+  because v1.2.0 is days old and no consumer reads the key yet, so the honest name costs nothing.
+  `src_frame` is unchanged, and the reader-level `VideoReader` / `extras` dict still carries the
+  decoder value under `pts_s` (a codec term at that layer); only the emitted frame-meta field
+  changed. Consumers reading `meta['pts_s']` must switch to `meta['src_seconds']`.
+
 ## v1.2.2 - 2026-08-10
 
 ### Security
