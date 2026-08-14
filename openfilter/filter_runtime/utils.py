@@ -48,6 +48,13 @@ def resolve_override_source_uri(config: Any) -> str | None:
     ``FILTER_OVERRIDE_SOURCE_URI`` (direct value); otherwise reads the file named by
     ``FILTER_OVERRIDE_SOURCE_URI_FILE`` — used when the value is only known at claim
     time and is written into the shared volume for the filter to pick up.
+
+    SECURITY — trust boundary: ``FILTER_OVERRIDE_SOURCE_URI_FILE`` is read from disk and its
+    contents are surfaced downstream in ``meta['src']``. This helper only guarantees the path is
+    absolute and traversal-free; it does NOT restrict which absolute file may be read. Any
+    deployment that lets untrusted tenants set this env var MUST enforce its own sandbox root
+    (e.g. the batch controller constrains it under ``/ws/``), or an absolute path such as
+    ``/etc/passwd`` would be read and leaked.
     """
     if config is None:
         return None
