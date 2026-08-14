@@ -314,21 +314,46 @@ class ImageIn(Filter):
 
         # The override identifies a SINGLE logical object (the orchestrator's batch claimer
         # downloads one file to a generic path and records its real URI). Applying one override
-        # to every frame would mislabel each image of a directory/glob/multi-source input with
-        # the same meta['src'], so only honor it when at most one image resolved; otherwise fall
-        # back to the real per-image path and warn once about the misconfiguration.
-        total_images = sum(len(q) for q in self.queues.values())
-        self._apply_override = bool(self.override_source_uri) and total_images <= 1
+        # to every frame would mislabel each image of a directory/glob/multi-source input with the
+        # same meta['src'], so only honor it when the config resolves to a single explicit object.
+        # This is decided from the CONFIG, not a dynamic image count — a watched directory that
+        # merely starts with <=1 image would otherwise slip the override onto later polled images.
+        self._apply_override = bool(self.override_source_uri) and self._override_source_is_single_object(config)
         if self.override_source_uri and not self._apply_override:
             logger.warning(
-                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this ImageIn resolved {total_images} images; "
-                "the override identifies a single object, so meta['src'] will report each image's real path instead")
+                "FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this ImageIn source is not a single explicit object "
+                "(directory, glob, or multiple sources); the override identifies one object, so meta['src'] will "
+                "report each image's real path instead")
 
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
         self.poll_thread.start()
         
         logger.info(f"ImageIn initialized with {len(config.sources)} sources")
+
+    def _override_source_is_single_object(self, config) -> bool:
+        """True only when the config resolves to exactly one explicit object — a single local
+        file or an exact S3/GCS object, not a directory, glob, or multiple sources. Gates
+        _apply_override (PLAT-1498) off the CONFIG rather than a dynamic image count, so a watched
+        directory that happens to start with <=1 image can't slip the override onto later polled
+        images."""
+        if len(config.sources) != 1:
+            return False
+        source = config.sources[0]
+        if source.options.recursive or config.recursive:
+            return False
+        uri = source.source
+        glob_chars = ('*', '?', '[')
+        if uri.startswith('file://'):
+            path = uri[7:]
+            return os.path.isfile(path) and not any(c in path for c in glob_chars)
+        if uri.startswith('s3://') or uri.startswith('gs://'):
+            # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
+            # a bare bucket or a prefix is a directory-style listing.
+            rest = uri.split('://', 1)[1].split('/', 1)
+            key = rest[1] if len(rest) > 1 else ''
+            return bool(key) and not key.endswith('/') and not any(c in key for c in glob_chars)
+        return False
 
     def _load_initial_images(self):
         """Load initial images from all sources into queues."""

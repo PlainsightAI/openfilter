@@ -282,6 +282,38 @@ class TestImageIn(unittest.TestCase):
             runner.stop()
             queue.close()
 
+    def test_override_ignored_for_single_image_directory(self):
+        """The override applies only when the *config* names a single explicit object, not by a
+        dynamic image count: a directory holding exactly one image is still a directory (it can
+        grow via polling), so the override must be ignored and meta['src'] keeps the real path."""
+        one_dir = tempfile.mkdtemp(prefix="test_image_in_one_")
+        self.addCleanup(shutil.rmtree, one_dir, ignore_errors=True)
+        create_test_images(one_dir, 1)  # a directory with a single image
+        override = 's3://my-bucket/should-not-be-used.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{one_dir}',
+                outputs='ipc://test-ImageIn-ovr-onedir',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr-onedir',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame for the single-image directory")
+            src = result['main'].data['meta']['src']
+            self.assertNotEqual(src, override, "override must not be applied to a directory source, even with one image")
+            self.assertTrue(os.path.isfile(src), f"meta['src'] should be the real image path, got {src!r}")
+        finally:
+            runner.stop()
+            queue.close()
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([

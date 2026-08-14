@@ -59,19 +59,23 @@ def resolve_override_source_uri(config) -> str | None:
         return str(uri)
 
     if (path := _get('override_source_uri_file')):
+        path = str(path)  # a non-str value (e.g. an int from config parsing) must not crash setup
         # Defense-in-depth on the orchestrator-provided path: reject traversal and require an
         # absolute path, so a misconfigured env can't turn this into an arbitrary-file read
-        # whose contents would ride downstream in meta['src'].
+        # whose contents would ride downstream in meta['src']. openfilter is a general framework
+        # and can't assume a specific sandbox root — the orchestrator that sets this env var owns
+        # the sandbox (e.g. the batch controller constrains it under /ws/, PLAT-1499).
         if '..' in path or not path.startswith('/'):
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
             return None
         try:
-            # A source URI is small (well under 1KB); cap the read so a misconfigured
-            # or unbounded file/device stream can't exhaust memory. encoding is explicit
-            # to avoid locale-dependent decode failures across environments.
+            # A source URI is small (well under 1KB) and lives on the first line; read only that
+            # line, capped, so trailing lines/garbage can't ride along and an unbounded
+            # file/device stream can't exhaust memory. encoding is explicit to avoid
+            # locale-dependent decode failures across environments.
             with open(path, encoding='utf-8') as f:
-                return f.read(4096).strip() or None
+                return f.readline(4096).strip() or None
         # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
         # OSError, so a bad override file degrades to None instead of crashing setup.
         except (OSError, ValueError) as exc:
