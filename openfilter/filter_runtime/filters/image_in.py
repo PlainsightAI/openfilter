@@ -334,7 +334,7 @@ class ImageIn(Filter):
     def _override_source_is_single_object(self, config) -> bool:
         """True only when the config resolves to exactly one explicit object — a single local
         file or an exact S3/GCS object, not a directory, glob, or multiple sources. Gates
-        _apply_override (PLAT-1498) off the CONFIG rather than a dynamic image count, so a watched
+        _apply_override off the CONFIG rather than a dynamic image count, so a watched
         directory that happens to start with <=1 image can't slip the override onto later polled
         images."""
         if len(config.sources) != 1:

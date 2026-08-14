@@ -12,7 +12,7 @@ OpenFilter Library release notes
   input filters report that value as each frame's `meta['src']` instead of the physical
   input path. This lets an orchestrator keep per-file attribution when the media is
   downloaded to a generic path (e.g. a batch claimer's `/ws/input`) — the identity travels
-  as metadata rather than in the filename. See PLAT-1498.
+  as metadata rather than in the filename.
 
 ### Fixed
 
@@ -22,7 +22,7 @@ OpenFilter Library release notes
   non-image or missing extension (e.g. a batch claimer's `/ws/input`) was silently skipped
   and produced no frames. Single explicit files are now accepted and validated by decoding
   (`cv2.imread`), which also logs a warning on an undecodable file; directory and S3/GCS
-  listing keep the extension gate. See PLAT-1498.
+  listing keep the extension gate.
 
 - **Python 3.14 support.** `requires-python` widens to `>=3.10,<3.15` and the unit-test
   matrix now includes 3.14, alongside the existing 3.10–3.13. numpy is the only dependency

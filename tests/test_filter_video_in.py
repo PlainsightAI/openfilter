@@ -177,7 +177,7 @@ class TestVideoIn(unittest.TestCase):
     def test_override_ignored_for_multiple_sources(self):
         """A global override identifies ONE source; with multiple VideoIn sources it must be
         ignored so each frame keeps its real per-source meta['src'] — otherwise every source
-        would be mislabeled with the same URI (mirrors the ImageIn guard, PLAT-1498)."""
+        would be mislabeled with the same URI (mirrors the ImageIn guard)."""
         override = 's3://my-bucket/should-not-be-used.mp4'
         runner = Filter.Runner([
             (VideoIn, dict(
@@ -211,7 +211,7 @@ class TestVideoIn(unittest.TestCase):
         """The batch claimer downloads to a generic extension-less path (/ws/input), so VideoIn
         must decode a file with no extension: is_video_file keys on the file:// scheme (not the
         extension) and cv2.VideoCapture/FFmpeg probes the container from the bytes. This proves
-        the /ws/input default is safe for VideoIn, not just image-in (PLAT-1499)."""
+        the /ws/input default is safe for VideoIn, not just image-in."""
         noext = 'test_video_noext'  # deliberately no extension
         with open(noext, 'wb') as f:
             f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)

@@ -221,7 +221,7 @@ class TestImageIn(unittest.TestCase):
 
     def test_override_source_uri_meta(self):
         """FILTER_OVERRIDE_SOURCE_URI replaces meta['src'] with the logical source URI, so
-        downstream (event-sink -> BigQuery) can attribute the record to its real source file
+        downstream event storage can attribute the record to its real source file
         even though ImageIn read a generic local path."""
         generic_path = self._write_bytes_image('input_ovr', color=(0, 255, 0), text="Ovr")
         override = 's3://my-bucket/nested/path/original-image.png'

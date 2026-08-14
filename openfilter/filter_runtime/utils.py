@@ -71,7 +71,7 @@ def resolve_override_source_uri(config: Any) -> str | None:
         # absolute path, so a misconfigured env can't turn this into an arbitrary-file read
         # whose contents would ride downstream in meta['src']. openfilter is a general framework
         # and can't assume a specific sandbox root — the orchestrator that sets this env var owns
-        # the sandbox (e.g. the batch controller constrains it under /ws/, PLAT-1499).
+        # the sandbox (e.g. an orchestrator constrains it under a known sandbox root).
         #
         # TRUST BOUNDARY (multi-tenant LFI): this library only guarantees "absolute path, no
         # traversal". An absolute path here (e.g. /etc/passwd) IS read and surfaced in meta['src'],
@@ -80,6 +80,13 @@ def resolve_override_source_uri(config: Any) -> str | None:
         if '..' in path or not os.path.isabs(path):
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
+            return None
+        if not os.path.isfile(path):
+            # Require a regular file: opening a FIFO/named pipe or a special device (e.g.
+            # /dev/stdin) would block the setup thread indefinitely. os.path.isfile is False for
+            # those (and for a missing file), so we reject rather than risk hanging.
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: not a regular file')
             return None
         try:
             # A source URI is small (well under 1KB) and lives on the first line; read only that

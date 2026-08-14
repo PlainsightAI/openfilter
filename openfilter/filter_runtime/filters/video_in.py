@@ -831,7 +831,7 @@ class VideoIn(Filter):
         # downloads one file and records its real URI). With multiple videos, applying one
         # override to every frame would mislabel each with the same meta['src'], so only honor
         # it for a single source; otherwise fall back to each video's real source and warn once.
-        # Mirrors the ImageIn guard (PLAT-1498).
+        # Mirrors the ImageIn guard.
         self._apply_override = bool(self.override_source_uri) and len(self.mvreader.videos) <= 1
         if self.override_source_uri and not self._apply_override:
             logger.warning(

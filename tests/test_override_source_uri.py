@@ -44,6 +44,16 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'requires os.mkfifo (POSIX)')
+    def test_fifo_rejected(self):
+        # A FIFO/named pipe must be rejected without being opened — reading it would block the
+        # setup thread indefinitely. It is absolute and has no '..', so only the regular-file
+        # check can reject it.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'pipe.source_uri')
+            os.mkfifo(path)
+            self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file=path)))
+
     def test_path_traversal_rejected(self):
         self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file='/ws/../etc/passwd')))
 
