@@ -342,16 +342,15 @@ class ImageIn(Filter):
         source = config.sources[0]
         if source.options.recursive or config.recursive:
             return False
-        uri = source.source
+        parsed = urlparse(source.source)
         glob_chars = ('*', '?', '[')
-        if uri.startswith('file://'):
-            path = uri[7:]
+        if parsed.scheme == 'file':
+            path = parsed.path
             return os.path.isfile(path) and not any(c in path for c in glob_chars)
-        if uri.startswith('s3://') or uri.startswith('gs://'):
+        if parsed.scheme in ('s3', 'gs'):
             # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
             # a bare bucket or a prefix is a directory-style listing.
-            rest = uri.split('://', 1)[1].split('/', 1)
-            key = rest[1] if len(rest) > 1 else ''
+            key = parsed.path.lstrip('/')
             return bool(key) and not key.endswith('/') and not any(c in key for c in glob_chars)
         return False
 

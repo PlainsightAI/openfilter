@@ -20,7 +20,7 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
     def test_file_value(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'input.source_uri')
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write('s3://bucket/path/from-file.mp4\n')  # trailing newline must be stripped
             cfg = adict(override_source_uri_file=path)
             self.assertEqual(resolve_override_source_uri(cfg), 's3://bucket/path/from-file.mp4')
@@ -28,7 +28,7 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
     def test_direct_value_wins_over_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'input.source_uri')
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write('s3://bucket/from-file')
             cfg = adict(override_source_uri='s3://bucket/direct', override_source_uri_file=path)
             self.assertEqual(resolve_override_source_uri(cfg), 's3://bucket/direct')
@@ -40,7 +40,7 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
     def test_empty_file_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'empty')
-            open(path, 'w').close()
+            open(path, 'w', encoding='utf-8').close()
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
@@ -82,7 +82,7 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
         # first token) is still returned and the read is bounded.
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'big.source_uri')
-            with open(path, 'w') as f:
+            with open(path, 'w', encoding='utf-8') as f:
                 f.write('s3://bucket/real.mp4')
                 f.write('x' * (1 << 20))  # 1 MiB of junk after the URI on the same line
             got = resolve_override_source_uri(adict(override_source_uri_file=path))

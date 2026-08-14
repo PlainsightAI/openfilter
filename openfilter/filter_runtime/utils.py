@@ -65,7 +65,7 @@ def resolve_override_source_uri(config) -> str | None:
         # whose contents would ride downstream in meta['src']. openfilter is a general framework
         # and can't assume a specific sandbox root — the orchestrator that sets this env var owns
         # the sandbox (e.g. the batch controller constrains it under /ws/, PLAT-1499).
-        if '..' in path or not path.startswith('/'):
+        if '..' in path or not os.path.isabs(path):
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
             return None
