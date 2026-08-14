@@ -325,6 +325,10 @@ class ImageIn(Filter):
                 "(directory, glob, or multiple sources); the override identifies one object, so meta['src'] will "
                 "report each image's real path instead")
 
+        # Paths already warned about failing to decode, so a mis-pointed single explicit file under
+        # a loop (re-queued every frame) logs once instead of flooding at the send-callback rate.
+        self._decode_warned = set()
+
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
         self.poll_thread.start()
@@ -349,7 +353,13 @@ class ImageIn(Filter):
             # as netloc (file://rel/img.png -> path='/img.png'), and this must match how
             # _list_local_images extracts the path (source.source[7:]).
             path = uri[7:]
-            return os.path.isfile(path) and not any(c in path for c in glob_chars)
+            # Decide from the URI shape, not existence — ImageIn is a polling filter that tolerates
+            # a source arriving after setup() (the batch claimer downloads to it as an init step),
+            # so requiring the file to exist here would silently disable the override for the whole
+            # run. Mirrors the s3/gs shape check below: a trailing slash or an already-existing
+            # directory is a listing; anything else is a single object. os.path.isdir is only True
+            # when the path exists AND is a directory, so a not-yet-written file still qualifies.
+            return not path.endswith('/') and not os.path.isdir(path) and not any(c in path for c in glob_chars)
         if uri.startswith('s3://') or uri.startswith('gs://'):
             # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
             # a bare bucket or a prefix is a directory-style listing. urlparse is correct here —
@@ -465,6 +475,12 @@ class ImageIn(Filter):
             logger.error(f"Failed to list GCS images from {gs_uri}: {e}")
             return []
 
+    def _warn_decode_failure(self, path: str, message: str) -> None:
+        """Log a decode failure once per path, so a looping mis-pointed source can't flood the log."""
+        if path not in self._decode_warned:
+            self._decode_warned.add(path)
+            logger.warning(message)
+
     def _load_image(self, path: str) -> Optional[np.ndarray]:
         """Load image from path (local or cloud)."""
         try:
@@ -479,7 +495,7 @@ class ImageIn(Filter):
                 arr = np.frombuffer(data, np.uint8)
                 img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is None:
-                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                    self._warn_decode_failure(path, f"Could not decode image {path} (unrecognized or corrupt format); skipping")
                 return img
             elif path.startswith("gs://"):
                 if not HAS_GCS:
@@ -496,7 +512,7 @@ class ImageIn(Filter):
                 arr = np.frombuffer(data, np.uint8)
                 img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is None:
-                    logger.warning(f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                    self._warn_decode_failure(path, f"Could not decode image {path} (unrecognized or corrupt format); skipping")
                 return img
             else:
                 img = cv2.imread(path)
@@ -504,7 +520,7 @@ class ImageIn(Filter):
                     # imread returns None both for an unreadable/corrupt file and for one that
                     # no longer exists (e.g. deleted/renamed between listing and load), so the
                     # message covers all three rather than asserting a corrupt format.
-                    logger.warning(f"Could not read image {path} (missing, unrecognized, or corrupt format); skipping")
+                    self._warn_decode_failure(path, f"Could not read image {path} (missing, unrecognized, or corrupt format); skipping")
                 return img
         except Exception as e:
             logger.error(f"Failed to load image {path}: {e}")

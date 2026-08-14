@@ -87,17 +87,24 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             override_source_uri = 's3://bucket/from-attr.png'
         self.assertEqual(resolve_override_source_uri(Cfg()), 's3://bucket/from-attr.png')
 
-    def test_bounded_read_ignores_trailing_garbage(self):
-        # A pathological huge file: only the capped prefix is read; the URI (short,
-        # first token) is still returned and the read is bounded.
+    def test_over_length_first_line_rejected(self):
+        # A pathological first line (URI + 1 MiB of junk on the same line) exceeds the cap and is
+        # rejected outright — a truncated/contaminated URI must not ride into meta['src'].
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'big.source_uri')
             with open(path, 'w', encoding='utf-8') as f:
                 f.write('s3://bucket/real.mp4')
                 f.write('x' * (1 << 20))  # 1 MiB of junk after the URI on the same line
-            got = resolve_override_source_uri(adict(override_source_uri_file=path))
-            self.assertTrue(got.startswith('s3://bucket/real.mp4'))
-            self.assertLessEqual(len(got), 4096)
+            self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file=path)))
+
+    def test_trailing_lines_ignored(self):
+        # Only the first line is read; junk on later lines never rides into meta['src'].
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'multi.source_uri')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('s3://bucket/real.mp4\nignored second line\nmore junk\n')
+            self.assertEqual(
+                resolve_override_source_uri(adict(override_source_uri_file=path)), 's3://bucket/real.mp4')
 
 
 if __name__ == '__main__':

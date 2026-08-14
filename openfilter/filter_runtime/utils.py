@@ -81,20 +81,32 @@ def resolve_override_source_uri(config: Any) -> str | None:
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
             return None
+        if not os.path.exists(path):
+            # Missing: a wrong path, or the orchestrator hasn't written it yet (the documented
+            # "value only known at claim time" case). Degrade to None rather than crash setup.
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} does not exist (not written yet?); skipping override')
+            return None
         if not os.path.isfile(path):
-            # Require a regular file: opening a FIFO/named pipe or a special device (e.g.
-            # /dev/stdin) would block the setup thread indefinitely. os.path.isfile is False for
-            # those (and for a missing file), so we reject rather than risk hanging.
+            # Exists but is not a regular file: opening a FIFO/named pipe or a special device
+            # (e.g. /dev/stdin) would block the setup thread indefinitely, so reject it.
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: not a regular file')
             return None
         try:
-            # A source URI is small (well under 1KB) and lives on the first line; read only that
-            # line, capped, so trailing lines/garbage can't ride along and an unbounded
-            # file/device stream can't exhaust memory. encoding is explicit to avoid
-            # locale-dependent decode failures across environments.
+            # A source URI is small (well under 1KB) and lives on the first line; read that line
+            # capped so an unbounded file/device stream can't exhaust memory. A first line over the
+            # cap is treated as corrupt and rejected (fail loudly) rather than silently truncated —
+            # a wrong meta['src'] is worse than none. Trailing LINES are ignored (readline stops at
+            # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
+            # to avoid locale-dependent decode failures across environments.
             with open(path, encoding='utf-8') as f:
-                return f.readline(4096).strip() or None
+                line = f.readline(4097)  # cap + 1 so an over-length first line is detectable
+            if len(line) > 4096:
+                logging.getLogger(__name__).warning(
+                    f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 bytes')
+                return None
+            return line.strip() or None
         # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
         # OSError, so a bad override file degrades to None instead of crashing setup.
         except (OSError, ValueError) as exc:

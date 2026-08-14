@@ -14,16 +14,6 @@ OpenFilter Library release notes
   downloaded to a generic path (e.g. a batch claimer's `/ws/input`) — the identity travels
   as metadata rather than in the filename.
 
-### Fixed
-
-- **`ImageIn` now processes a single explicit file regardless of its extension.** The
-  image-extension gate (`jpg/png/…`) only ever needed to filter non-images out of
-  *directory* listings, but it was also applied to a single named file, so a file with a
-  non-image or missing extension (e.g. a batch claimer's `/ws/input`) was silently skipped
-  and produced no frames. Single explicit files are now accepted and validated by decoding
-  (`cv2.imread`), which also logs a warning on an undecodable file; directory and S3/GCS
-  listing keep the extension gate.
-
 - **Python 3.14 support.** `requires-python` widens to `>=3.10,<3.15` and the unit-test
   matrix now includes 3.14, alongside the existing 3.10–3.13. numpy is the only dependency
   that needed a change: 2.2.x is the last line with Python 3.10 wheels, while cp314 wheels
@@ -46,6 +36,16 @@ OpenFilter Library release notes
   `src_frame` is unchanged, and the reader-level `VideoReader` / `extras` dict still carries the
   decoder value under `pts_s` (a codec term at that layer); only the emitted frame-meta field
   changed. Consumers reading `meta['pts_s']` must switch to `meta['src_seconds']`.
+
+### Fixed
+
+- **`ImageIn` now processes a single explicit file regardless of its extension.** The
+  image-extension gate (`jpg/png/…`) only ever needed to filter non-images out of
+  *directory* listings, but it was also applied to a single named file, so a file with a
+  non-image or missing extension (e.g. a batch claimer's `/ws/input`) was silently skipped
+  and produced no frames. Single explicit files are now accepted and validated by decoding
+  (`cv2.imread`), which also logs a warning on an undecodable file; directory and S3/GCS
+  listing keep the extension gate.
 
 ## v1.2.2 - 2026-08-10
 

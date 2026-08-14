@@ -335,6 +335,20 @@ class TestImageIn(unittest.TestCase):
         self.assertTrue(detect(cfg('file://sub/input')), "a relative file:// to a real file is a single object")
         self.assertFalse(detect(cfg('file://sub')), "a relative directory is not a single object")
 
+    def test_single_object_detection_nonexistent_file(self):
+        """Regression: ImageIn is a polling filter, so a single file:// source that doesn't exist
+        yet (the claimer downloads it as an init step) must still be treated as a single object —
+        deciding from URI shape, not existence, so the override isn't silently disabled for the run."""
+        detect = ImageIn.__new__(ImageIn)._override_source_is_single_object
+
+        def cfg(src):
+            return ImageIn.normalize_config(dict(id='x', sources=src, outputs='ipc://x'))
+
+        self.assertTrue(detect(cfg('file:///nonexistent/ws/input')), "a not-yet-written single file is a single object")
+        self.assertFalse(detect(cfg('file:///nonexistent/dir/')), "a trailing-slash path is a directory listing")
+        self.assertFalse(detect(cfg('file:///nonexistent/*.png')), "a glob is not a single object")
+        self.assertFalse(detect(cfg(f'file://{self.test_dir}')), "an existing directory is not a single object")
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
