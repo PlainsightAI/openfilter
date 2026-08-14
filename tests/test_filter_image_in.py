@@ -314,6 +314,27 @@ class TestImageIn(unittest.TestCase):
             runner.stop()
             queue.close()
 
+    def test_single_object_detection_relative_file(self):
+        """Regression: a relative file:// path must be recognized as a single object. urlparse
+        would misparse its first path segment as the netloc (file://sub/x -> path='/x'); the
+        single-object check slices 'file://' off directly, matching how _list_local_images
+        extracts the path. Exercised in-process (no subprocess) to isolate the config-shape logic."""
+        prev_cwd = os.getcwd()
+        tmp = tempfile.mkdtemp(prefix="test_image_in_rel_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.addCleanup(os.chdir, prev_cwd)
+        os.chdir(tmp)
+        os.makedirs('sub')
+        open(os.path.join('sub', 'input'), 'wb').close()  # a real file at a relative path
+
+        detect = ImageIn.__new__(ImageIn)._override_source_is_single_object
+
+        def cfg(src):
+            return ImageIn.normalize_config(dict(id='x', sources=src, outputs='ipc://x'))
+
+        self.assertTrue(detect(cfg('file://sub/input')), "a relative file:// to a real file is a single object")
+        self.assertFalse(detect(cfg('file://sub')), "a relative directory is not a single object")
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
