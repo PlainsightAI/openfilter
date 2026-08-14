@@ -40,7 +40,7 @@ def json_getval(val: str) -> JSONType:
         return val
 
 
-def resolve_override_source_uri(config) -> str | None:
+def resolve_override_source_uri(config: Any) -> str | None:
     """Logical source URI an input filter should report as ``meta['src']``, or None.
 
     Set by an orchestrator to preserve per-file identity when the physical input path
@@ -65,6 +65,11 @@ def resolve_override_source_uri(config) -> str | None:
         # whose contents would ride downstream in meta['src']. openfilter is a general framework
         # and can't assume a specific sandbox root — the orchestrator that sets this env var owns
         # the sandbox (e.g. the batch controller constrains it under /ws/, PLAT-1499).
+        #
+        # TRUST BOUNDARY (multi-tenant LFI): this library only guarantees "absolute path, no
+        # traversal". An absolute path here (e.g. /etc/passwd) IS read and surfaced in meta['src'],
+        # so any deployment that lets untrusted tenants set FILTER_OVERRIDE_SOURCE_URI_FILE MUST
+        # enforce its own sandbox root — do not weaken this check assuming the caller is trusted.
         if '..' in path or not os.path.isabs(path):
             logging.getLogger(__name__).warning(
                 f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')

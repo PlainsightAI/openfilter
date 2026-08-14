@@ -342,15 +342,19 @@ class ImageIn(Filter):
         source = config.sources[0]
         if source.options.recursive or config.recursive:
             return False
-        parsed = urlparse(source.source)
+        uri = source.source
         glob_chars = ('*', '?', '[')
-        if parsed.scheme == 'file':
-            path = parsed.path
+        if uri.startswith('file://'):
+            # Slice rather than urlparse: urlparse treats a relative file:// path's first segment
+            # as netloc (file://rel/img.png -> path='/img.png'), and this must match how
+            # _list_local_images extracts the path (source.source[7:]).
+            path = uri[7:]
             return os.path.isfile(path) and not any(c in path for c in glob_chars)
-        if parsed.scheme in ('s3', 'gs'):
+        if uri.startswith('s3://') or uri.startswith('gs://'):
             # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
-            # a bare bucket or a prefix is a directory-style listing.
-            key = parsed.path.lstrip('/')
+            # a bare bucket or a prefix is a directory-style listing. urlparse is correct here —
+            # the bucket is the netloc and the key the path (mirrors parse_s3_uri/parse_gcs_uri).
+            key = urlparse(uri).path.lstrip('/')
             return bool(key) and not key.endswith('/') and not any(c in key for c in glob_chars)
         return False
 
