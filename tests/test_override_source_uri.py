@@ -147,6 +147,26 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
                 f.write('a' * 4097 + '\n')
             self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file=path)))
 
+    def test_bom_stripped_from_file(self):
+        # A UTF-8 BOM prefix (some writers/editors/OSes add one) must be stripped, not ride into
+        # meta['src'] as an invisible ﻿. utf-8-sig handles it at decode time; str.strip() would
+        # not, since ﻿ is not ASCII whitespace.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'bom.source_uri')
+            with open(path, 'wb') as f:
+                f.write('﻿s3://bucket/real.mp4\n'.encode('utf-8'))  # UTF-8 BOM + URI
+            self.assertEqual(
+                resolve_override_source_uri(adict(override_source_uri_file=path)), 's3://bucket/real.mp4')
+
+    def test_direct_value_stripped_and_cleaned(self):
+        # The direct value gets the same cleaning as the file path: surrounding whitespace/newline
+        # and embedded NULs removed; empty after cleaning degrades to None.
+        self.assertEqual(
+            resolve_override_source_uri(adict(override_source_uri='  s3://bucket/x.png\n  ')), 's3://bucket/x.png')
+        self.assertEqual(
+            resolve_override_source_uri(adict(override_source_uri='s3://b/\x00na\x00me.png')), 's3://b/name.png')
+        self.assertIsNone(resolve_override_source_uri(adict(override_source_uri='   ')))
+
     def test_trailing_lines_ignored(self):
         # Only the first line is read; junk on later lines never rides into meta['src'].
         with tempfile.TemporaryDirectory() as d:

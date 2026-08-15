@@ -63,7 +63,10 @@ def resolve_override_source_uri(config: Any) -> str | None:
         return config.get(key) if hasattr(config, 'get') else getattr(config, key, None)
 
     if (uri := _get('override_source_uri')):
-        return str(uri)
+        # Clean the direct value the same way as the file-read path: strip surrounding
+        # whitespace/newline and drop embedded NULs, so a malformed env/config value can't
+        # contaminate meta['src']. Empty after cleaning degrades to None.
+        return str(uri).strip().replace('\x00', '') or None
 
     if (path := _get('override_source_uri_file')):
         path = str(path)  # a non-str value (e.g. an int from config parsing) must not crash setup
@@ -99,8 +102,10 @@ def resolve_override_source_uri(config: Any) -> str | None:
             # cap is treated as corrupt and rejected (fail loudly) rather than silently truncated —
             # a wrong meta['src'] is worse than none. Trailing LINES are ignored (readline stops at
             # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
-            # to avoid locale-dependent decode failures across environments.
-            with open(path, encoding='utf-8') as f:
+            # to avoid locale-dependent decode failures across environments. utf-8-sig strips a
+            # leading BOM if the writer added one (﻿ isn't ASCII whitespace, so .strip() below
+            # wouldn't remove it and it would ride into meta['src']); it is a no-op when absent.
+            with open(path, encoding='utf-8-sig') as f:
                 # Text mode counts characters, not bytes. Read the 4096-char cap + up to 2 for a
                 # trailing CR/LF, so a full-length first line is detectable AND a 4096-char URI
                 # that happens to end with a newline isn't spuriously rejected for the newline.
