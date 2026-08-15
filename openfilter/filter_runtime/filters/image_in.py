@@ -39,6 +39,10 @@ IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or os.
 # Image file extensions
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif', 'webp'}
 
+# Upper bound on the per-path decode-failure dedup set, so a long-running poll over an unbounded
+# stream of distinct corrupt files can't grow it without limit (see ImageIn._warn_decode_failure).
+DECODE_WARNED_MAX = 10000
+
 def is_image_file(path: str) -> bool:
     """Check if file is an image based on extension."""
     ext = path.lower().rsplit(".", 1)[-1]
@@ -340,7 +344,14 @@ class ImageIn(Filter):
         file or an exact S3/GCS object, not a directory, glob, or multiple sources. Gates
         _apply_override off the CONFIG rather than a dynamic image count, so a watched
         directory that happens to start with <=1 image can't slip the override onto later polled
-        images."""
+        images.
+
+        Because the decision is made from the URI shape (not existence, so a not-yet-written source
+        still qualifies), a directory that does NOT exist at setup and lacks a trailing slash is
+        classified as a single object here. A directory source that may not exist at setup should
+        therefore carry a trailing slash (or set recursive) so it is correctly treated as a listing.
+        As a backstop, _list_images disables the override at runtime once a source resolves to an
+        existing directory or to more than one object, so a mis-shaped path self-corrects."""
         if len(config.sources) != 1:
             return False
         source = config.sources[0]
@@ -392,18 +403,21 @@ class ImageIn(Filter):
             raise ValueError(f'Unsupported source scheme: {source.source}')
 
         # _apply_override was decided statically from the config URI shape (so a watched directory
-        # that momentarily holds <=1 image can't slip the override onto later polls). If a listing
-        # pass ever resolves to MORE than one object, that static guess was wrong — a not-yet-
-        # existing path turned out to be a directory, or a cloud key turned out to be a shared
-        # prefix (e.g. s3://b/img also matching img-1.png) — and stamping every match with the same
-        # override URI would mislabel them. Disable the override (logged once, since the flag then
-        # stays False) rather than emit wrong attribution. This only ever DISABLES, so it cannot
+        # that momentarily holds <=1 image can't slip the override onto later polls). Re-check it
+        # against what the listing actually resolved to, and disable if the static guess was wrong:
+        #   - more than one object — a shared cloud prefix (e.g. s3://b/img also matching img-1.png)
+        #     or a directory — so stamping every match with the same override URI would mislabel them; or
+        #   - a local file:// path that is now an EXISTING DIRECTORY, even one holding a single file:
+        #     a not-yet-existing path later created as a directory would otherwise stamp its first
+        #     frame with the override before a second file trips the >1 check.
+        # Disabling is logged once (the flag then stays False). This only ever DISABLES, so it can't
         # reintroduce the watched-directory race the static gate avoids.
-        if self._apply_override and len(images) > 1:
+        local_dir = source.source.startswith('file://') and os.path.isdir(source.source[7:])
+        if self._apply_override and (len(images) > 1 or local_dir):
             logger.warning(
                 f"override_source_uri is set for a single object, but source {source.source!r} "
-                f"resolved to {len(images)} images; disabling the override so they are not all "
-                "mislabeled with the same meta['src'].")
+                f"resolved to a directory or multiple images ({len(images)}); disabling the override "
+                "so frames are not mislabeled with the same meta['src'].")
             self._apply_override = False
 
         return images
@@ -493,8 +507,15 @@ class ImageIn(Filter):
             return []
 
     def _warn_decode_failure(self, path: str, message: str) -> None:
-        """Log a decode failure once per path, so a looping mis-pointed source can't flood the log."""
+        """Log a decode failure once per path, so a looping mis-pointed source can't flood the log.
+
+        Bounded to DECODE_WARNED_MAX distinct paths so a long-running directory poll over an
+        unbounded stream of different corrupt/unreadable files can't grow the dedup set without
+        limit. On overflow an arbitrary path is evicted; the worst case is that path warning once
+        more later, which is harmless."""
         if path not in self._decode_warned:
+            if len(self._decode_warned) >= DECODE_WARNED_MAX:
+                self._decode_warned.pop()
             self._decode_warned.add(path)
             logger.warning(message)
 

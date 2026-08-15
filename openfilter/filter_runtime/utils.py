@@ -101,14 +101,19 @@ def resolve_override_source_uri(config: Any) -> str | None:
             # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
             # to avoid locale-dependent decode failures across environments.
             with open(path, encoding='utf-8') as f:
-                line = f.readline(4097)  # text mode: reads at most 4097 characters (cap + 1, so an over-length first line is detectable)
-            if len(line) > 4096:
+                # Text mode counts characters, not bytes. Read the 4096-char cap + up to 2 for a
+                # trailing CR/LF, so a full-length first line is detectable AND a 4096-char URI
+                # that happens to end with a newline isn't spuriously rejected for the newline.
+                line = f.readline(4098)
+            # Strip surrounding whitespace/newline and embedded NULs (a NUL survives UTF-8 decoding,
+            # so a corrupt/binary sidecar could otherwise ride \x00 into meta['src']) BEFORE the
+            # length check, so the cap applies to the URI payload regardless of a trailing newline.
+            uri = line.strip().replace('\x00', '')
+            if len(uri) > 4096:
                 logging.getLogger(__name__).warning(
                     f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 characters')
                 return None
-            # Strip embedded NULs too: a NUL survives UTF-8 decoding, so a corrupt/binary sidecar
-            # could otherwise ride \x00 into meta['src'] and glitch downstream consumers.
-            return line.strip().replace('\x00', '') or None
+            return uri or None
         # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
         # OSError, so a bad override file degrades to None instead of crashing setup.
         except (OSError, ValueError) as exc:

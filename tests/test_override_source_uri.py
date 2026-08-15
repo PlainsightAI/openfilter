@@ -127,6 +127,26 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
                 f.write(value + '\n')
             self.assertEqual(resolve_override_source_uri(adict(override_source_uri_file=path)), value)
 
+    def test_exactly_max_length_with_newline_accepted(self):
+        # A 4096-character URI followed by a trailing newline must be accepted: the cap applies to
+        # the payload, not the newline (regression for an off-by-one where readline's char count
+        # included the '\n' and rejected a full-length URI only because it ended with a newline).
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'maxlen.source_uri')
+            value = 's3://bucket/' + 'a' * (4096 - len('s3://bucket/'))  # exactly 4096 chars
+            self.assertEqual(len(value), 4096)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(value + '\n')
+            self.assertEqual(resolve_override_source_uri(adict(override_source_uri_file=path)), value)
+
+    def test_over_max_length_rejected(self):
+        # 4097 characters of payload is over the cap -> rejected.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'over.source_uri')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('a' * 4097 + '\n')
+            self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file=path)))
+
     def test_trailing_lines_ignored(self):
         # Only the first line is read; junk on later lines never rides into meta['src'].
         with tempfile.TemporaryDirectory() as d:

@@ -400,6 +400,36 @@ class TestImageIn(unittest.TestCase):
         self.assertEqual(len(images), 3)
         self.assertFalse(filt._apply_override, "override must be disabled when a cloud prefix matches multiple objects")
 
+    def test_list_images_disables_override_when_local_resolves_to_single_file_directory(self):
+        """A file:// source that resolves to an existing directory disables the override even with a
+        single image, so a not-yet-existing path later created as a directory can't stamp its first
+        frame with the override before a second file trips the >1 check."""
+        one_dir = tempfile.mkdtemp(prefix="test_image_in_onedir_")
+        self.addCleanup(shutil.rmtree, one_dir, ignore_errors=True)
+        create_test_images(one_dir, 1)  # a directory holding exactly one image
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True  # statically assumed a single object (path didn't exist at setup)
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{one_dir}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 1)
+        self.assertFalse(filt._apply_override, "an existing directory (even with one image) must disable the override")
+
+    def test_decode_warned_set_is_bounded(self):
+        """The per-path decode-failure dedup set must stay bounded so a long-running poll over an
+        unbounded stream of distinct corrupt files can't leak memory."""
+        from openfilter.filter_runtime.filters.image_in import DECODE_WARNED_MAX
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._decode_warned = set()
+        for i in range(DECODE_WARNED_MAX + 500):
+            filt._warn_decode_failure(f"/tmp/corrupt_{i}.png", "decode failed")
+
+        self.assertLessEqual(len(filt._decode_warned), DECODE_WARNED_MAX,
+                             "the decode-warning dedup set must stay bounded")
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
