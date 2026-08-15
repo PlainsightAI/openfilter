@@ -348,6 +348,7 @@ class TestImageIn(unittest.TestCase):
         self.assertFalse(detect(cfg('file:///nonexistent/dir/')), "a trailing-slash path is a directory listing")
         self.assertFalse(detect(cfg('file:///nonexistent/*.png')), "a glob is not a single object")
         self.assertFalse(detect(cfg(f'file://{self.test_dir}')), "an existing directory is not a single object")
+        self.assertFalse(detect(cfg('file://')), "an empty file:// path is not a single object")
 
     def test_list_images_disables_override_when_local_resolves_to_multiple(self):
         """Safety net: _apply_override is decided from the config URI shape at setup, but if a

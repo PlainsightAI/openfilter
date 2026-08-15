@@ -359,7 +359,7 @@ class ImageIn(Filter):
             # run. Mirrors the s3/gs shape check below: a trailing slash or an already-existing
             # directory is a listing; anything else is a single object. os.path.isdir is only True
             # when the path exists AND is a directory, so a not-yet-written file still qualifies.
-            return not path.endswith('/') and not os.path.isdir(path) and not any(c in path for c in glob_chars)
+            return bool(path) and not path.endswith('/') and not os.path.isdir(path) and not any(c in path for c in glob_chars)
         if uri.startswith('s3://') or uri.startswith('gs://'):
             # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
             # a bare bucket or a prefix is a directory-style listing. urlparse is correct here —

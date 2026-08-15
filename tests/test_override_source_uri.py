@@ -116,6 +116,17 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
                 f.write('x' * (1 << 20))  # 1 MiB of junk after the URI on the same line
             self.assertIsNone(resolve_override_source_uri(adict(override_source_uri_file=path)))
 
+    def test_multibyte_first_line_under_char_cap_accepted(self):
+        # The cap is 4096 CHARACTERS, not bytes: a first line of multi-byte characters that is
+        # under the char cap but over 4096 bytes must still be accepted (guards the
+        # characters-vs-bytes distinction in the cap check and its message).
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'multibyte.source_uri')
+            value = 'é' * 3000  # 3000 chars (< 4096) but 6000 bytes (> 4096) in UTF-8
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(value + '\n')
+            self.assertEqual(resolve_override_source_uri(adict(override_source_uri_file=path)), value)
+
     def test_trailing_lines_ignored(self):
         # Only the first line is read; junk on later lines never rides into meta['src'].
         with tempfile.TemporaryDirectory() as d:

@@ -101,10 +101,10 @@ def resolve_override_source_uri(config: Any) -> str | None:
             # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
             # to avoid locale-dependent decode failures across environments.
             with open(path, encoding='utf-8') as f:
-                line = f.readline(4097)  # cap + 1 so an over-length first line is detectable
+                line = f.readline(4097)  # text mode: reads at most 4097 characters (cap + 1, so an over-length first line is detectable)
             if len(line) > 4096:
                 logging.getLogger(__name__).warning(
-                    f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 bytes')
+                    f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 characters')
                 return None
             # Strip embedded NULs too: a NUL survives UTF-8 decoding, so a corrupt/binary sidecar
             # could otherwise ride \x00 into meta['src'] and glitch downstream consumers.
