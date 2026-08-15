@@ -151,7 +151,7 @@ class TestVideoIn(unittest.TestCase):
 
 
     def test_pts(self):
-        """File sources stamp the decoder presentation timestamp (pts_s) and the
+        """File sources stamp the source position in seconds (src_seconds) and the
         0-based source frame index (src_frame) into each frame's meta, so
         downstream consumers get the video offset without guessing it from the
         frame counter and an assumed frame rate (`ts` is wall-clock, not video
@@ -176,7 +176,7 @@ class TestVideoIn(unittest.TestCase):
             self.assertEqual(len(metas), 3)
             self.assertEqual([m['src_frame'] for m in metas], [0, 1, 2])
 
-            ptss = [m['pts_s'] for m in metas]
+            ptss = [m['src_seconds'] for m in metas]
 
             for pts in ptss:
                 self.assertIsInstance(pts, float)
@@ -278,7 +278,7 @@ class TestVideoIn(unittest.TestCase):
 
     def test_pts_non_file_unchanged(self):
         """Non-file sources: _cap_read() delegates to cap.read() untouched and extras
-        stays {} - the only source of pts_s / src_frame - so stream/webcam meta cannot
+        stays {} - the only source of src_seconds / src_frame - so stream/webcam meta cannot
         gain the keys."""
         vid = self._reader_with_fake_cap([0.0, 40.0])
 
@@ -386,7 +386,7 @@ class TestVideoIn(unittest.TestCase):
 
 
     def test_loop_pts_restarts_per_pass(self):
-        """With loop, the cap is reopened each pass so src_frame/pts_s restart at 0
+        """With loop, the cap is reopened each pass so src_frame/src_seconds restart at 0
         every loop (position WITHIN the file), while meta['id'] keeps counting: the
         looped timeline is non-monotonic in src_frame but monotonic in id."""
         runner = Filter.Runner([
@@ -413,7 +413,7 @@ class TestVideoIn(unittest.TestCase):
             self.assertEqual(ids, sorted(ids))  # monotonic across passes
             self.assertEqual(len(set(ids)), len(ids))  # strictly increasing, keeps counting
 
-            self.assertEqual([m['pts_s'] for m in metas], [m['pts_s'] for m in metas[:3]] * 2)  # pts restarts too
+            self.assertEqual([m['src_seconds'] for m in metas], [m['src_seconds'] for m in metas[:3]] * 2)  # src_seconds restarts too
 
         finally:
             runner.stop()

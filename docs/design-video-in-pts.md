@@ -1,8 +1,8 @@
-# Design Note: Decoder pts_s / src_frame in `VideoIn` Frame Meta
+# Design Note: `src_seconds` / `src_frame` in `VideoIn` Frame Meta
 
-Status: proposed with PR #128. Prior art: the CPD hybrid-RAG specs (internal-chicagopd PR 2,
-spec 01) establish that jump-to-frame requires a decoder-derived video offset; this note records
-how that need lands on openfilter core's public surface.
+Status: proposed with PR #128. Prior art established that jump-to-frame requires a
+decoder-derived video offset; this note records how that need lands on openfilter core's
+public surface.
 
 ## 1. The frame-meta contract
 
@@ -11,10 +11,15 @@ For **file sources** (`file://`, `s3://`) every emitted frame's `meta` gains:
 | Key | Type | Semantics |
 |---|---|---|
 | `src_frame` | `int` | 0-based source frame index of the delivered frame: `CAP_PROP_POS_FRAMES` sampled immediately **before** the successful `cap.read()`. Exact on every backend. |
-| `pts_s` | `float` | Presentation timestamp in seconds. Primary: `src_frame / container_fps` (nominal CFR timeline). Fallback: `CAP_PROP_POS_MSEC / 1000` only when the container reports no usable frame rate (none at all, or an implausible `>= FPS_SANE_CEILING` / non-finite sentinel — see §4). Omitted when neither is trustworthy (`src_frame` remains present and exact). |
+| `src_seconds` | `float` | The frame's position **within the source**, in seconds. Primary: `src_frame / container_fps` (nominal CFR timeline). Fallback: `CAP_PROP_POS_MSEC / 1000` only when the container reports no usable frame rate (none at all, or an implausible `>= FPS_SANE_CEILING` / non-finite sentinel — see §4). Omitted when neither is trustworthy (`src_frame` remains present and exact). This is a source offset — not the wall-clock `meta['ts']`, and not the raw container PTS (in the CFR path it is `src_frame / fps`, a nominal timeline). |
 
 Stream (`rtsp://` etc.) and webcam sources have no meaningful decoder position: both keys are
 **absent** and the rest of `meta` (`id`, `ts`, `src`, `src_fps`) is byte-for-byte unchanged.
+
+> **Layering note.** At the `VideoReader` / `extras` level this value is carried under the key
+> `pts_s` (the decoder-derived seconds, see §3–§4); the emitted **frame meta** field is
+> `src_seconds`. This mirrors the boundary rename `extras['frame_n']` → `meta['src_frame']`:
+> the reader uses codec terms, the public meta uses source-position terms.
 
 ## 2. Core vs. companion filter
 
@@ -40,10 +45,10 @@ Merge plan with `feat/video-in-seekable-replay`:
   `self.cap`, and its docstring marks it as such. #118's post-seek path currently calls raw
   `cap.read()` for forward-read compensation; whichever PR merges second must route that read
   through `_cap_read()` (compensation frames are discarded, so the cost is nil, and the first
-  *delivered* post-seek frame then carries correct `pts_s`/`src_frame`).
+  *delivered* post-seek frame then carries correct `src_seconds`/`src_frame`).
 - **Meta naming**: `src_frame` (this PR) and `frame_index` (#118) are the same value at meta
   level. One name must survive; this PR has no attachment to `src_frame` — if #118 lands first we
-  adopt `frame_index` and keep `pts_s`; if this lands first, #118 rebases its `frame_index` onto
+  adopt `frame_index` and keep `src_seconds`; if this lands first, #118 rebases its `frame_index` onto
   `src_frame` or renames ours. Either way the second-to-merge PR emits a single key.
 - **Landing order (agreed, per review)**: #118 merges first — it owns the extras-dict shape and
   its design doc, and this PR already adopted its shape and `frame_n` key. This PR then rebases
@@ -62,7 +67,7 @@ same frame, which is the contract's purpose. Switching such files to `POS_MSEC` 
 upgrade: `POS_MSEC` exhibits B-frame presentation reordering and reports 0 on several
 container/backend combos (both reproduced by the repo's own test clip), with no way to tell a
 true pts from a lie at runtime. `POS_MSEC` is therefore used only for containers reporting no
-frame rate at all, and only while it looks sane (nonzero past frame 0); otherwise `pts_s` is
+frame rate at all, and only while it looks sane (nonzero past frame 0); otherwise `src_seconds` is
 omitted rather than emitted wrong. Consumers needing true per-frame VFR timestamps should demux
 container pts out-of-band (e.g. PyAV); that is out of scope for `VideoIn`.
 
@@ -75,9 +80,9 @@ through to the same guarded `POS_MSEC` branch as a no-rate container, keeping `s
 
 ## 4a. Looped sources
 
-With `loop`, the cap is reopened each pass, so `src_frame` / `pts_s` restart at 0 every loop —
+With `loop`, the cap is reopened each pass, so `src_frame` / `src_seconds` restart at 0 every loop —
 they are the position *within the file*, which is the correct semantics — while `meta['id']` keeps
-counting across passes. A looped timeline is thus non-monotonic in `src_frame`/`pts_s` but
+counting across passes. A looped timeline is thus non-monotonic in `src_frame`/`src_seconds` but
 monotonic in `id`; consumers indexing a looped source must key off `id`, not `src_frame`.
 
 ## 5. Back-compat position
