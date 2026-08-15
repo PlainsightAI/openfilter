@@ -383,13 +383,30 @@ class ImageIn(Filter):
     def _list_images(self, source) -> List[str]:
         """List image files from the given source."""
         if source.source.startswith('file://'):
-            return self._list_local_images(source.source[7:], source.options)
+            images = self._list_local_images(source.source[7:], source.options)
         elif source.source.startswith('s3://'):
-            return self._list_s3_images(source.source, source.options)
+            images = self._list_s3_images(source.source, source.options)
         elif source.source.startswith('gs://'):
-            return self._list_gcs_images(source.source, source.options)
+            images = self._list_gcs_images(source.source, source.options)
         else:
             raise ValueError(f'Unsupported source scheme: {source.source}')
+
+        # _apply_override was decided statically from the config URI shape (so a watched directory
+        # that momentarily holds <=1 image can't slip the override onto later polls). If a listing
+        # pass ever resolves to MORE than one object, that static guess was wrong — a not-yet-
+        # existing path turned out to be a directory, or a cloud key turned out to be a shared
+        # prefix (e.g. s3://b/img also matching img-1.png) — and stamping every match with the same
+        # override URI would mislabel them. Disable the override (logged once, since the flag then
+        # stays False) rather than emit wrong attribution. This only ever DISABLES, so it cannot
+        # reintroduce the watched-directory race the static gate avoids.
+        if self._apply_override and len(images) > 1:
+            logger.warning(
+                f"override_source_uri is set for a single object, but source {source.source!r} "
+                f"resolved to {len(images)} images; disabling the override so they are not all "
+                "mislabeled with the same meta['src'].")
+            self._apply_override = False
+
+        return images
 
     def _list_local_images(self, path: str, options) -> List[str]:
         """List image files from local filesystem."""

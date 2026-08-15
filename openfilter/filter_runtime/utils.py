@@ -106,7 +106,9 @@ def resolve_override_source_uri(config: Any) -> str | None:
                 logging.getLogger(__name__).warning(
                     f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 bytes')
                 return None
-            return line.strip() or None
+            # Strip embedded NULs too: a NUL survives UTF-8 decoding, so a corrupt/binary sidecar
+            # could otherwise ride \x00 into meta['src'] and glitch downstream consumers.
+            return line.strip().replace('\x00', '') or None
         # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
         # OSError, so a bad override file degrades to None instead of crashing setup.
         except (OSError, ValueError) as exc:

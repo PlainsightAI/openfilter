@@ -70,6 +70,25 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
             cfg = adict(override_source_uri_file=path)
             self.assertIsNone(resolve_override_source_uri(cfg))
 
+    def test_null_bytes_stripped(self):
+        # A NUL byte is valid UTF-8 and survives decoding, so a corrupt/binary sidecar could
+        # otherwise carry \x00 into meta['src']. Embedded NULs must be stripped out.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'nul.source_uri')
+            with open(path, 'wb') as f:
+                f.write(b's3://bucket/\x00na\x00me.png\n')
+            cfg = adict(override_source_uri_file=path)
+            self.assertEqual(resolve_override_source_uri(cfg), 's3://bucket/name.png')
+
+    def test_all_null_bytes_returns_none(self):
+        # A first line that is only NULs strips to empty -> None, not ''.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'nuls.source_uri')
+            with open(path, 'wb') as f:
+                f.write(b'\x00\x00\x00')
+            cfg = adict(override_source_uri_file=path)
+            self.assertIsNone(resolve_override_source_uri(cfg))
+
     def test_plain_dict_config(self):
         # Must work for a plain dict, not only adict (no AttributeError).
         self.assertEqual(

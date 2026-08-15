@@ -349,6 +349,56 @@ class TestImageIn(unittest.TestCase):
         self.assertFalse(detect(cfg('file:///nonexistent/*.png')), "a glob is not a single object")
         self.assertFalse(detect(cfg(f'file://{self.test_dir}')), "an existing directory is not a single object")
 
+    def test_list_images_disables_override_when_local_resolves_to_multiple(self):
+        """Safety net: _apply_override is decided from the config URI shape at setup, but if a
+        listing pass later resolves to >1 object (a path that turned out to be a directory),
+        stamping every match with the same override URI would mislabel them — so _list_images
+        disables the override. Only ever disables, so it can't reintroduce the watched-dir race."""
+        multi_dir = tempfile.mkdtemp(prefix="test_image_in_multi_")
+        self.addCleanup(shutil.rmtree, multi_dir, ignore_errors=True)
+        create_test_images(multi_dir, 2)
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True  # statically assumed a single object
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{multi_dir}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 2)
+        self.assertFalse(filt._apply_override, "override must be disabled once the source resolves to >1 object")
+
+    def test_list_images_keeps_override_for_single_object(self):
+        """The safety net only ever disables on >1 object: a genuine single file keeps the
+        override enabled (guards against over-eager disabling)."""
+        one = self._write_bytes_image('input_single_guard', color=(0, 0, 255), text="One")
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{one}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 1)
+        self.assertTrue(filt._apply_override, "a single-object source must keep the override enabled")
+
+    def test_list_images_disables_override_when_cloud_prefix_matches_multiple(self):
+        """A cloud key with no trailing slash/glob is classified single, but S3/GCS listing is
+        prefix-based, so a shared prefix (s3://bucket/img also matching img-1.png) resolves to
+        multiple objects. The disable dispatch fires for the cloud scheme too (the lister is
+        stubbed here to isolate the safety net from boto3)."""
+        from unittest import mock
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True
+        filt.config = ImageIn.normalize_config(dict(id='x', sources='s3://bucket/img', outputs='ipc://x'))
+
+        with mock.patch.object(filt, '_list_s3_images',
+                               return_value=['s3://bucket/img', 's3://bucket/img-1.png', 's3://bucket/img-2.png']):
+            images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 3)
+        self.assertFalse(filt._apply_override, "override must be disabled when a cloud prefix matches multiple objects")
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([
