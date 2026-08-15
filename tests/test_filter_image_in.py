@@ -417,18 +417,24 @@ class TestImageIn(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertFalse(filt._apply_override, "an existing directory (even with one image) must disable the override")
 
-    def test_decode_warned_set_is_bounded(self):
-        """The per-path decode-failure dedup set must stay bounded so a long-running poll over an
-        unbounded stream of distinct corrupt files can't leak memory."""
+    def test_decode_warned_set_is_bounded_fifo(self):
+        """The per-path decode-failure dedup set stays bounded (so a long-running poll over an
+        unbounded stream of distinct corrupt files can't leak memory) and evicts FIFO: the oldest
+        paths go first, so recently-warned paths stay deduped."""
         from openfilter.filter_runtime.filters.image_in import DECODE_WARNED_MAX
 
         filt = ImageIn.__new__(ImageIn)
-        filt._decode_warned = set()
-        for i in range(DECODE_WARNED_MAX + 500):
+        filt._decode_warned = {}
+        overflow = 500
+        for i in range(DECODE_WARNED_MAX + overflow):
             filt._warn_decode_failure(f"/tmp/corrupt_{i}.png", "decode failed")
 
         self.assertLessEqual(len(filt._decode_warned), DECODE_WARNED_MAX,
                              "the decode-warning dedup set must stay bounded")
+        # FIFO: the first `overflow` paths were evicted; the most recent one is retained.
+        self.assertNotIn("/tmp/corrupt_0.png", filt._decode_warned, "oldest path must be evicted first")
+        self.assertIn(f"/tmp/corrupt_{DECODE_WARNED_MAX + overflow - 1}.png", filt._decode_warned,
+                      "the most recently warned path must be retained")
 
     def test_loop(self):
         """Test looping functionality."""

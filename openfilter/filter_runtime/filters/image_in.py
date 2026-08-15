@@ -331,7 +331,9 @@ class ImageIn(Filter):
 
         # Paths already warned about failing to decode, so a mis-pointed single explicit file under
         # a loop (re-queued every frame) logs once instead of flooding at the send-callback rate.
-        self._decode_warned = set()
+        # Insertion-ordered dict (path -> True) so the bounded-size eviction in _warn_decode_failure
+        # is FIFO (oldest first), not arbitrary.
+        self._decode_warned = {}
 
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
@@ -511,12 +513,12 @@ class ImageIn(Filter):
 
         Bounded to DECODE_WARNED_MAX distinct paths so a long-running directory poll over an
         unbounded stream of different corrupt/unreadable files can't grow the dedup set without
-        limit. On overflow an arbitrary path is evicted; the worst case is that path warning once
-        more later, which is harmless."""
+        limit. `_decode_warned` is an insertion-ordered dict so overflow evicts the OLDEST path
+        (FIFO), keeping recently-warned paths deduped; an evicted path may warn once more, harmless."""
         if path not in self._decode_warned:
             if len(self._decode_warned) >= DECODE_WARNED_MAX:
-                self._decode_warned.pop()
-            self._decode_warned.add(path)
+                del self._decode_warned[next(iter(self._decode_warned))]  # FIFO: evict oldest-inserted
+            self._decode_warned[path] = True
             logger.warning(message)
 
     def _load_image(self, path: str) -> Optional[np.ndarray]:
