@@ -215,6 +215,7 @@ class TestVideoIn(unittest.TestCase):
         noext = 'test_video_noext'  # deliberately no extension
         with open(noext, 'wb') as f:
             f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        self.addCleanup(os.unlink, noext)  # resilient even if Filter.Runner construction raises
 
         runner = Filter.Runner([
             (VideoIn, dict(
@@ -236,10 +237,6 @@ class TestVideoIn(unittest.TestCase):
         finally:
             runner.stop()
             queue.close()
-            try:
-                os.unlink(noext)
-            except Exception:
-                pass
 
 
     def test_pts(self):
