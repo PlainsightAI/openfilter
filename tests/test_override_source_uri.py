@@ -149,12 +149,12 @@ class TestResolveOverrideSourceURI(unittest.TestCase):
 
     def test_bom_stripped_from_file(self):
         # A UTF-8 BOM prefix (some writers/editors/OSes add one) must be stripped, not ride into
-        # meta['src'] as an invisible ﻿. utf-8-sig handles it at decode time; str.strip() would
-        # not, since ﻿ is not ASCII whitespace.
+        # meta['src'] as an invisible U+FEFF. utf-8-sig handles it at decode time; str.strip() would
+        # not, since U+FEFF is not ASCII whitespace.
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'bom.source_uri')
             with open(path, 'wb') as f:
-                f.write('﻿s3://bucket/real.mp4\n'.encode('utf-8'))  # UTF-8 BOM + URI
+                f.write('s3://bucket/real.mp4\n'.encode('utf-8-sig'))  # utf-8-sig prepends the BOM bytes
             self.assertEqual(
                 resolve_override_source_uri(adict(override_source_uri_file=path)), 's3://bucket/real.mp4')
 
