@@ -436,6 +436,31 @@ class TestImageIn(unittest.TestCase):
         self.assertIn(f"/tmp/corrupt_{DECODE_WARNED_MAX + overflow - 1}.png", filt._decode_warned,
                       "the most recently warned path must be retained")
 
+    def test_setup_loads_initial_images_without_attribute_error(self):
+        """Regression (init ordering): setup() must initialize self._apply_override and
+        self._decode_warned BEFORE calling _load_initial_images(), which reaches _list_images /
+        _load_image and reads both. Otherwise the initial load raises AttributeError, which
+        _load_initial_images' own try/except swallows (logging a spurious error), and the queue
+        stays empty until the first poll."""
+        class _InertPollImageIn(ImageIn):
+            def _poll_loop(self):  # keep the poll thread inert so the test only exercises setup()
+                self.stop_event.wait()
+
+        filt = _InertPollImageIn.__new__(_InertPollImageIn)
+        cfg = ImageIn.normalize_config(dict(id='x', sources=f'file://{self.test_dir}', outputs='ipc://x'))
+        try:
+            filt.setup(cfg)
+            # self.test_dir holds several images; the initial load must have queued them. On the
+            # ordering bug _load_initial_images AttributeErrors and skips, leaving the queue empty.
+            self.assertGreater(len(filt.queues.get('main', [])), 0,
+                               "setup() must load initial images (empty queue => _load_initial_images was skipped)")
+            self.assertTrue(hasattr(filt, '_apply_override'))
+            self.assertTrue(hasattr(filt, '_decode_warned'))
+        finally:
+            filt.stop_event.set()
+            if getattr(filt, 'poll_thread', None):
+                filt.poll_thread.join(timeout=2)
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([

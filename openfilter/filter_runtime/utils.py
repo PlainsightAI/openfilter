@@ -103,7 +103,7 @@ def resolve_override_source_uri(config: Any) -> str | None:
             # a wrong meta['src'] is worse than none. Trailing LINES are ignored (readline stops at
             # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
             # to avoid locale-dependent decode failures across environments. utf-8-sig strips a
-            # leading BOM if the writer added one (﻿ isn't ASCII whitespace, so .strip() below
+            # leading BOM if the writer added one (U+FEFF isn't ASCII whitespace, so .strip() below
             # wouldn't remove it and it would ride into meta['src']); it is a no-op when absent.
             with open(path, encoding='utf-8-sig') as f:
                 # Text mode counts characters, not bytes. Read the 4096-char cap + up to 2 for a

@@ -313,9 +313,6 @@ class ImageIn(Filter):
             if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
                 self._finite_loop_topics.add(topic)
 
-        # Load initial images
-        self._load_initial_images()
-
         # The override identifies a SINGLE logical object (the orchestrator's batch claimer
         # downloads one file to a generic path and records its real URI). Applying one override
         # to every frame would mislabel each image of a directory/glob/multi-source input with the
@@ -334,6 +331,12 @@ class ImageIn(Filter):
         # Insertion-ordered dict (path -> True) so the bounded-size eviction in _warn_decode_failure
         # is FIFO (oldest first), not arbitrary.
         self._decode_warned = {}
+
+        # Load initial images LAST: _load_initial_images() reaches _list_images / _load_image, which
+        # read self._apply_override and self._decode_warned — so those must be initialized above
+        # first, or the initial load raises AttributeError, gets swallowed by _load_initial_images'
+        # own try/except (logging a spurious error), and is silently skipped until the first poll.
+        self._load_initial_images()
 
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
