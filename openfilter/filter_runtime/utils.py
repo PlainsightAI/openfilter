@@ -17,7 +17,7 @@ from typing import Any, Callable
 from numpy import generic as np_generic, ndarray as np_ndarray
 
 __all__ = [
-    'JSONLiteral', 'JSONType', 'json_getval', 'json_sanitize',
+    'JSONLiteral', 'JSONType', 'json_getval', 'json_sanitize', 'resolve_override_source_uri',
     'sanitize_filename', 'sanitize_pathname', 'simpledeepcopy', 'dict_without',
     'split_commas_maybe', 'rndstr', 'sizestr', 'secstr', 'timestr',
     'parse_time_interval', 'parse_date_and_or_time',
@@ -38,6 +38,94 @@ def json_getval(val: str) -> JSONType:
         return json_loads(val)
     except Exception:
         return val
+
+
+def resolve_override_source_uri(config: Any) -> str | None:
+    """Logical source URI an input filter should report as ``meta['src']``, or None.
+
+    Set by an orchestrator to preserve per-file identity when the physical input path
+    is generic (e.g. a batch claimer downloads every object to ``/ws/input``). Prefers
+    ``FILTER_OVERRIDE_SOURCE_URI`` (direct value); otherwise reads the file named by
+    ``FILTER_OVERRIDE_SOURCE_URI_FILE`` — used when the value is only known at claim
+    time and is written into the shared volume for the filter to pick up.
+
+    SECURITY — trust boundary: ``FILTER_OVERRIDE_SOURCE_URI_FILE`` is read from disk and its
+    contents are surfaced downstream in ``meta['src']``. This helper only guarantees the path is
+    absolute and traversal-free; it does NOT restrict which absolute file may be read. Any
+    deployment that lets untrusted tenants set this env var MUST enforce its own sandbox root
+    (e.g. the batch controller constrains it under ``/ws/``), or an absolute path such as
+    ``/etc/passwd`` would be read and leaked.
+    """
+    if config is None:
+        return None
+
+    def _get(key):  # robust for adict, a plain dict, or an arbitrary config object
+        return config.get(key) if hasattr(config, 'get') else getattr(config, key, None)
+
+    if (uri := _get('override_source_uri')):
+        # Clean the direct value the same way as the file-read path: strip surrounding
+        # whitespace/newline and drop embedded NULs, so a malformed env/config value can't
+        # contaminate meta['src']. Empty after cleaning degrades to None.
+        return str(uri).strip().replace('\x00', '') or None
+
+    if (path := _get('override_source_uri_file')):
+        path = str(path)  # a non-str value (e.g. an int from config parsing) must not crash setup
+        # Defense-in-depth on the orchestrator-provided path: reject traversal and require an
+        # absolute path, so a misconfigured env can't turn this into an arbitrary-file read
+        # whose contents would ride downstream in meta['src']. openfilter is a general framework
+        # and can't assume a specific sandbox root — the orchestrator that sets this env var owns
+        # the sandbox (e.g. an orchestrator constrains it under a known sandbox root).
+        #
+        # TRUST BOUNDARY (multi-tenant LFI): this library only guarantees "absolute path, no
+        # traversal". An absolute path here (e.g. /etc/passwd) IS read and surfaced in meta['src'],
+        # so any deployment that lets untrusted tenants set FILTER_OVERRIDE_SOURCE_URI_FILE MUST
+        # enforce its own sandbox root — do not weaken this check assuming the caller is trusted.
+        if '..' in path or not os.path.isabs(path):
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: must be an absolute path without ".."')
+            return None
+        if not os.path.exists(path):
+            # Missing: a wrong path, or the orchestrator hasn't written it yet (the documented
+            # "value only known at claim time" case). Degrade to None rather than crash setup.
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} does not exist (not written yet?); skipping override')
+            return None
+        if not os.path.isfile(path):
+            # Exists but is not a regular file: opening a FIFO/named pipe or a special device
+            # (e.g. /dev/stdin) would block the setup thread indefinitely, so reject it.
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: not a regular file')
+            return None
+        try:
+            # A source URI is small (well under 1KB) and lives on the first line; read that line
+            # capped so an unbounded file/device stream can't exhaust memory. A first line over the
+            # cap is treated as corrupt and rejected (fail loudly) rather than silently truncated —
+            # a wrong meta['src'] is worse than none. Trailing LINES are ignored (readline stops at
+            # the first newline); the claimer writes exactly the URI + newline. encoding is explicit
+            # to avoid locale-dependent decode failures across environments. utf-8-sig strips a
+            # leading BOM if the writer added one (U+FEFF isn't ASCII whitespace, so .strip() below
+            # wouldn't remove it and it would ride into meta['src']); it is a no-op when absent.
+            with open(path, encoding='utf-8-sig') as f:
+                # Text mode counts characters, not bytes. Read the 4096-char cap + up to 2 for a
+                # trailing CR/LF, so a full-length first line is detectable AND a 4096-char URI
+                # that happens to end with a newline isn't spuriously rejected for the newline.
+                line = f.readline(4098)
+            # Strip surrounding whitespace/newline and embedded NULs (a NUL survives UTF-8 decoding,
+            # so a corrupt/binary sidecar could otherwise ride \x00 into meta['src']) BEFORE the
+            # length check, so the cap applies to the URI payload regardless of a trailing newline.
+            uri = line.strip().replace('\x00', '')
+            if len(uri) > 4096:
+                logging.getLogger(__name__).warning(
+                    f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} rejected: first line exceeds 4096 characters')
+                return None
+            return uri or None
+        # ValueError catches UnicodeDecodeError (invalid UTF-8 in the file) alongside
+        # OSError, so a bad override file degrades to None instead of crashing setup.
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                f'FILTER_OVERRIDE_SOURCE_URI_FILE {path!r} could not be read: {exc}')
+
+    return None
 
 def json_sanitize(val: Any, loose=False) -> JSONType:
     """Sanitize for json.dumps() compatible, two levels, `loose` will convert datetime to iso text and dataclasses for

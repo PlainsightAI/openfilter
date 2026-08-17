@@ -24,7 +24,7 @@ except ImportError:
     HAS_GCS = False
 
 from openfilter.filter_runtime.filter import Filter, Frame, FilterConfig
-from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without, adict
+from openfilter.filter_runtime.utils import json_getval, split_commas_maybe, dict_without, resolve_override_source_uri, adict
 
 __all__ = ['ImageInConfig', 'ImageIn']
 
@@ -38,6 +38,10 @@ IMAGE_IN_MAXFPS = None if (_ := json_getval((os.getenv('IMAGE_IN_MAXFPS') or os.
 
 # Image file extensions
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif', 'webp'}
+
+# Upper bound on the per-path decode-failure dedup set, so a long-running poll over an unbounded
+# stream of distinct corrupt files can't grow it without limit (see ImageIn._warn_decode_failure).
+DECODE_WARNED_MAX = 10000
 
 def is_image_file(path: str) -> bool:
     """Check if file is an image based on extension."""
@@ -118,6 +122,12 @@ class ImageInConfig(FilterConfig):
     pattern: str | None
     poll_interval: float | None
     maxfps: float | None
+
+    # Logical source URI to report as meta['src'] instead of the physical path (set by an
+    # orchestrator; see resolve_override_source_uri). FILTER_OVERRIDE_SOURCE_URI is the
+    # direct value, FILTER_OVERRIDE_SOURCE_URI_FILE a file to read it from.
+    override_source_uri: str | None
+    override_source_uri_file: str | None
     
 
 class ImageIn(Filter):
@@ -200,6 +210,10 @@ class ImageIn(Filter):
         FILTER_RECURSIVE      / IMAGE_IN_RECURSIVE
         FILTER_POLL_INTERVAL  / IMAGE_IN_POLL_INTERVAL
         FILTER_MAXFPS         / IMAGE_IN_MAXFPS
+        FILTER_OVERRIDE_SOURCE_URI       - logical source URI reported as each frame's meta['src']
+                                           (see `override_source_uri`).
+        FILTER_OVERRIDE_SOURCE_URI_FILE  - path to a file whose contents are that URI (used when
+                                           the value is only known at runtime by an orchestrator).
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
@@ -259,6 +273,7 @@ class ImageIn(Filter):
     def setup(self, config):
         """Initialize the filter with sources and start polling thread."""
         self.config = config
+        self.override_source_uri = resolve_override_source_uri(config)
         self.frame_id = -1
         self.queues = {}                # topic -> list[path]
         self.processed = {}             # topic -> set[path]
@@ -298,14 +313,76 @@ class ImageIn(Filter):
             if isinstance(loop_val, int) and loop_val is not True and loop_val is not False and loop_val > 0:
                 self._finite_loop_topics.add(topic)
 
-        # Load initial images
+        # The override identifies a SINGLE logical object (the orchestrator's batch claimer
+        # downloads one file to a generic path and records its real URI). Applying one override
+        # to every frame would mislabel each image of a directory/glob/multi-source input with the
+        # same meta['src'], so only honor it when the config resolves to a single explicit object.
+        # This is decided from the CONFIG, not a dynamic image count — a watched directory that
+        # merely starts with <=1 image would otherwise slip the override onto later polled images.
+        self._apply_override = bool(self.override_source_uri) and self._override_source_is_single_object(config)
+        if self.override_source_uri and not self._apply_override:
+            logger.warning(
+                "FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this ImageIn source is not a single explicit object "
+                "(directory, glob, or multiple sources); the override identifies one object, so meta['src'] will "
+                "report each image's real path instead")
+
+        # Paths already warned about failing to decode, so a mis-pointed single explicit file under
+        # a loop (re-queued every frame) logs once instead of flooding at the send-callback rate.
+        # Insertion-ordered dict (path -> True) so the bounded-size eviction in _warn_decode_failure
+        # is FIFO (oldest first), not arbitrary.
+        self._decode_warned = {}
+
+        # Load initial images LAST: _load_initial_images() reaches _list_images / _load_image, which
+        # read self._apply_override and self._decode_warned — so those must be initialized above
+        # first, or the initial load raises AttributeError, gets swallowed by _load_initial_images'
+        # own try/except (logging a spurious error), and is silently skipped until the first poll.
         self._load_initial_images()
-        
+
         # Start polling thread
         self.poll_thread = Thread(target=self._poll_loop, daemon=True)
         self.poll_thread.start()
         
         logger.info(f"ImageIn initialized with {len(config.sources)} sources")
+
+    def _override_source_is_single_object(self, config) -> bool:
+        """True only when the config resolves to exactly one explicit object — a single local
+        file or an exact S3/GCS object, not a directory, glob, or multiple sources. Gates
+        _apply_override off the CONFIG rather than a dynamic image count, so a watched
+        directory that happens to start with <=1 image can't slip the override onto later polled
+        images.
+
+        Because the decision is made from the URI shape (not existence, so a not-yet-written source
+        still qualifies), a directory that does NOT exist at setup and lacks a trailing slash is
+        classified as a single object here. A directory source that may not exist at setup should
+        therefore carry a trailing slash (or set recursive) so it is correctly treated as a listing.
+        As a backstop, _list_images disables the override at runtime once a source resolves to an
+        existing directory or to more than one object, so a mis-shaped path self-corrects."""
+        if len(config.sources) != 1:
+            return False
+        source = config.sources[0]
+        if source.options.recursive or config.recursive:
+            return False
+        uri = source.source
+        glob_chars = ('*', '?', '[')
+        if uri.startswith('file://'):
+            # Slice rather than urlparse: urlparse treats a relative file:// path's first segment
+            # as netloc (file://rel/img.png -> path='/img.png'), and this must match how
+            # _list_local_images extracts the path (source.source[7:]).
+            path = uri[7:]
+            # Decide from the URI shape, not existence — ImageIn is a polling filter that tolerates
+            # a source arriving after setup() (the batch claimer downloads to it as an init step),
+            # so requiring the file to exist here would silently disable the override for the whole
+            # run. Mirrors the s3/gs shape check below: a trailing slash or an already-existing
+            # directory is a listing; anything else is a single object. os.path.isdir is only True
+            # when the path exists AND is a directory, so a not-yet-written file still qualifies.
+            return bool(path) and not path.endswith('/') and not os.path.isdir(path) and not any(c in path for c in glob_chars)
+        if uri.startswith('s3://') or uri.startswith('gs://'):
+            # An exact object key (non-empty, no wildcard, no trailing slash) is a single object;
+            # a bare bucket or a prefix is a directory-style listing. urlparse is correct here —
+            # the bucket is the netloc and the key the path (mirrors parse_s3_uri/parse_gcs_uri).
+            key = urlparse(uri).path.lstrip('/')
+            return bool(key) and not key.endswith('/') and not any(c in key for c in glob_chars)
+        return False
 
     def _load_initial_images(self):
         """Load initial images from all sources into queues."""
@@ -322,13 +399,33 @@ class ImageIn(Filter):
     def _list_images(self, source) -> List[str]:
         """List image files from the given source."""
         if source.source.startswith('file://'):
-            return self._list_local_images(source.source[7:], source.options)
+            images = self._list_local_images(source.source[7:], source.options)
         elif source.source.startswith('s3://'):
-            return self._list_s3_images(source.source, source.options)
+            images = self._list_s3_images(source.source, source.options)
         elif source.source.startswith('gs://'):
-            return self._list_gcs_images(source.source, source.options)
+            images = self._list_gcs_images(source.source, source.options)
         else:
             raise ValueError(f'Unsupported source scheme: {source.source}')
+
+        # _apply_override was decided statically from the config URI shape (so a watched directory
+        # that momentarily holds <=1 image can't slip the override onto later polls). Re-check it
+        # against what the listing actually resolved to, and disable if the static guess was wrong:
+        #   - more than one object — a shared cloud prefix (e.g. s3://b/img also matching img-1.png)
+        #     or a directory — so stamping every match with the same override URI would mislabel them; or
+        #   - a local file:// path that is now an EXISTING DIRECTORY, even one holding a single file:
+        #     a not-yet-existing path later created as a directory would otherwise stamp its first
+        #     frame with the override before a second file trips the >1 check.
+        # Disabling is logged once (the flag then stays False). This only ever DISABLES, so it can't
+        # reintroduce the watched-directory race the static gate avoids.
+        local_dir = source.source.startswith('file://') and os.path.isdir(source.source[7:])
+        if self._apply_override and (len(images) > 1 or local_dir):
+            logger.warning(
+                f"override_source_uri is set for a single object, but source {source.source!r} "
+                f"resolved to a directory or multiple images ({len(images)}); disabling the override "
+                "so frames are not mislabeled with the same meta['src'].")
+            self._apply_override = False
+
+        return images
 
     def _list_local_images(self, path: str, options) -> List[str]:
         """List image files from local filesystem."""
@@ -338,7 +435,13 @@ class ImageIn(Filter):
 
         images = []
         if os.path.isfile(path):
-            if is_image_file(path) and matches_pattern(path, options.pattern or self.config.pattern):
+            # A single explicit file was named by the caller — there is nothing to filter,
+            # so skip the image-extension gate (which exists only to keep non-images out of
+            # directory listings) and let _load_image validate by decoding. This lets a
+            # generic/extensionless path (e.g. a batch claimer's /ws/input) be processed;
+            # the override_source_uri carries the real name. Directory/S3/GCS listing below
+            # keeps the extension gate.
+            if matches_pattern(path, options.pattern or self.config.pattern):
                 images.append(path)
         else:
             # Directory
@@ -366,7 +469,13 @@ class ImageIn(Filter):
                 if 'Contents' in page:
                     for obj in page['Contents']:
                         key = obj['Key']
-                        if is_image_file(key) and matches_pattern(key, options.pattern or self.config.pattern):
+                        # An exact key match (not a directory prefix) is a single explicit
+                        # object; skip the image-extension gate for it, mirroring the local
+                        # single-file case. Directory-prefix listings keep the gate.
+                        # `not endswith('/')` excludes the 0-byte directory-marker object
+                        # S3/GCS return for a prefix (named exactly `prefix/`); decoding it fails.
+                        is_exact_object = key == prefix and not key.endswith('/')
+                        if (is_exact_object or is_image_file(key)) and matches_pattern(key, options.pattern or self.config.pattern):
                             images.append(f"s3://{bucket}/{key}")
 
             return sorted(images)
@@ -390,13 +499,30 @@ class ImageIn(Filter):
             
             images = []
             for blob in bucket.list_blobs(prefix=prefix):
-                if is_image_file(blob.name) and matches_pattern(blob.name, options.pattern or self.config.pattern):
+                # Exact key match = single explicit object; skip the extension gate for it
+                # (mirrors the local single-file case), keep it for directory prefixes.
+                # `not endswith('/')` excludes the 0-byte directory-marker object.
+                is_exact_object = blob.name == prefix and not blob.name.endswith('/')
+                if (is_exact_object or is_image_file(blob.name)) and matches_pattern(blob.name, options.pattern or self.config.pattern):
                     images.append(f"gs://{bucket.name}/{blob.name}")
                             
             return sorted(images)
         except Exception as e:
             logger.error(f"Failed to list GCS images from {gs_uri}: {e}")
             return []
+
+    def _warn_decode_failure(self, path: str, message: str) -> None:
+        """Log a decode failure once per path, so a looping mis-pointed source can't flood the log.
+
+        Bounded to DECODE_WARNED_MAX distinct paths so a long-running directory poll over an
+        unbounded stream of different corrupt/unreadable files can't grow the dedup set without
+        limit. `_decode_warned` is an insertion-ordered dict so overflow evicts the OLDEST path
+        (FIFO), keeping recently-warned paths deduped; an evicted path may warn once more, harmless."""
+        if path not in self._decode_warned:
+            if len(self._decode_warned) >= DECODE_WARNED_MAX:
+                del self._decode_warned[next(iter(self._decode_warned))]  # FIFO: evict oldest-inserted
+            self._decode_warned[path] = True
+            logger.warning(message)
 
     def _load_image(self, path: str) -> Optional[np.ndarray]:
         """Load image from path (local or cloud)."""
@@ -410,7 +536,10 @@ class ImageIn(Filter):
                 response = s3_client.get_object(Bucket=bucket, Key=key)
                 data = response['Body'].read()
                 arr = np.frombuffer(data, np.uint8)
-                return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    self._warn_decode_failure(path, f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                return img
             elif path.startswith("gs://"):
                 if not HAS_GCS:
                     logger.error("google-cloud-storage is required for GCS support")
@@ -424,9 +553,18 @@ class ImageIn(Filter):
                 blob = bucket.blob(key)
                 data = blob.download_as_bytes()
                 arr = np.frombuffer(data, np.uint8)
-                return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is None:
+                    self._warn_decode_failure(path, f"Could not decode image {path} (unrecognized or corrupt format); skipping")
+                return img
             else:
-                return cv2.imread(path)
+                img = cv2.imread(path)
+                if img is None:
+                    # imread returns None both for an unreadable/corrupt file and for one that
+                    # no longer exists (e.g. deleted/renamed between listing and load), so the
+                    # message covers all three rather than asserting a corrupt format.
+                    self._warn_decode_failure(path, f"Could not read image {path} (missing, unrecognized, or corrupt format); skipping")
+                return img
         except Exception as e:
             logger.error(f"Failed to load image {path}: {e}")
             return None
@@ -507,7 +645,7 @@ class ImageIn(Filter):
                     self.frame_id += 1
                     meta = {
                         'id': self.frame_id,
-                        'src': path,
+                        'src': self.override_source_uri if self._apply_override else path,
                         'ts': time()
                     }
                     out[topic] = Frame(img, {'meta': meta}, format='BGR')

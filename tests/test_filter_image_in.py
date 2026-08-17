@@ -181,6 +181,286 @@ class TestImageIn(unittest.TestCase):
             runner.stop()
             queue.close()
 
+    def _write_bytes_image(self, name, color, text):
+        """Write a PNG-encoded image to a file whose name has no image extension."""
+        ok, buf = cv2.imencode('.png', create_test_image(color=color, text=text))
+        self.assertTrue(ok)
+        path = os.path.join(self.test_dir, name)
+        with open(path, 'wb') as f:
+            f.write(buf.tobytes())
+        return path
+
+    def test_single_file_no_extension(self):
+        """A single explicit file with a non-image / missing extension must still be
+        processed. The extension gate applies only to directory listings; for a single
+        named file the caller chose it. This is the batch-claimer case where the media is
+        downloaded to a generic /ws/input path."""
+        generic_path = self._write_bytes_image('input', color=(0, 0, 255), text="NoExt")  # no extension
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{generic_path}',
+                outputs='ipc://test-ImageIn-noext',
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-noext',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame for a single extensionless file")
+            frame = result['main']
+            self.assertIsNotNone(frame.image)
+            self.assertEqual(frame.data['meta']['src'], generic_path)  # no override -> physical path
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_override_source_uri_meta(self):
+        """FILTER_OVERRIDE_SOURCE_URI replaces meta['src'] with the logical source URI, so
+        downstream event storage can attribute the record to its real source file
+        even though ImageIn read a generic local path."""
+        generic_path = self._write_bytes_image('input_ovr', color=(0, 255, 0), text="Ovr")
+        override = 's3://my-bucket/nested/path/original-image.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{generic_path}',
+                outputs='ipc://test-ImageIn-ovr',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame")
+            self.assertEqual(result['main'].data['meta']['src'], override)
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_override_ignored_for_multiple_images(self):
+        """A global override identifies ONE object; when ImageIn resolves multiple images
+        (a directory), the override must be ignored so each frame keeps its real per-image
+        path in meta['src'] — otherwise every image would be mislabeled with the same src."""
+        override = 's3://my-bucket/should-not-be-used.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{self.test_dir}',
+                outputs='ipc://test-ImageIn-ovr-multi',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr-multi',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            seen = []
+            for _ in range(3):
+                result = queue.get()
+                if result is False:
+                    break
+                seen.append(result['main'].data['meta']['src'])
+            self.assertEqual(len(seen), 3, "expected three frames for the three-image directory")
+            for src in seen:
+                self.assertNotEqual(src, override, "override must not be applied to a multi-image source")
+                self.assertTrue(os.path.isfile(src), f"meta['src'] should be a real image path, got {src!r}")
+            # Each frame must carry its own distinct real file, not one repeated override.
+            self.assertEqual(len(set(seen)), 3)
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_override_ignored_for_single_image_directory(self):
+        """The override applies only when the *config* names a single explicit object, not by a
+        dynamic image count: a directory holding exactly one image is still a directory (it can
+        grow via polling), so the override must be ignored and meta['src'] keeps the real path."""
+        one_dir = tempfile.mkdtemp(prefix="test_image_in_one_")
+        self.addCleanup(shutil.rmtree, one_dir, ignore_errors=True)
+        create_test_images(one_dir, 1)  # a directory with a single image
+        override = 's3://my-bucket/should-not-be-used.png'
+
+        runner = Filter.Runner([
+            (ImageIn, dict(
+                sources=f'file://{one_dir}',
+                outputs='ipc://test-ImageIn-ovr-onedir',
+                override_source_uri=override,
+            )),
+            (FiltersToQueue, dict(
+                sources='ipc://test-ImageIn-ovr-onedir',
+                queue=(queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            result = queue.get()
+            if result is False:
+                self.fail("ImageIn produced no frame for the single-image directory")
+            src = result['main'].data['meta']['src']
+            self.assertNotEqual(src, override, "override must not be applied to a directory source, even with one image")
+            self.assertTrue(os.path.isfile(src), f"meta['src'] should be the real image path, got {src!r}")
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_single_object_detection_relative_file(self):
+        """Regression: a relative file:// path must be recognized as a single object. urlparse
+        would misparse its first path segment as the netloc (file://sub/x -> path='/x'); the
+        single-object check slices 'file://' off directly, matching how _list_local_images
+        extracts the path. Exercised in-process (no subprocess) to isolate the config-shape logic."""
+        prev_cwd = os.getcwd()
+        tmp = tempfile.mkdtemp(prefix="test_image_in_rel_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.addCleanup(os.chdir, prev_cwd)
+        os.chdir(tmp)
+        os.makedirs('sub')
+        open(os.path.join('sub', 'input'), 'wb').close()  # a real file at a relative path
+
+        detect = ImageIn.__new__(ImageIn)._override_source_is_single_object
+
+        def cfg(src):
+            return ImageIn.normalize_config(dict(id='x', sources=src, outputs='ipc://x'))
+
+        self.assertTrue(detect(cfg('file://sub/input')), "a relative file:// to a real file is a single object")
+        self.assertFalse(detect(cfg('file://sub')), "a relative directory is not a single object")
+
+    def test_single_object_detection_nonexistent_file(self):
+        """Regression: ImageIn is a polling filter, so a single file:// source that doesn't exist
+        yet (the claimer downloads it as an init step) must still be treated as a single object —
+        deciding from URI shape, not existence, so the override isn't silently disabled for the run."""
+        detect = ImageIn.__new__(ImageIn)._override_source_is_single_object
+
+        def cfg(src):
+            return ImageIn.normalize_config(dict(id='x', sources=src, outputs='ipc://x'))
+
+        self.assertTrue(detect(cfg('file:///nonexistent/ws/input')), "a not-yet-written single file is a single object")
+        self.assertFalse(detect(cfg('file:///nonexistent/dir/')), "a trailing-slash path is a directory listing")
+        self.assertFalse(detect(cfg('file:///nonexistent/*.png')), "a glob is not a single object")
+        self.assertFalse(detect(cfg(f'file://{self.test_dir}')), "an existing directory is not a single object")
+        self.assertFalse(detect(cfg('file://')), "an empty file:// path is not a single object")
+
+    def test_list_images_disables_override_when_local_resolves_to_multiple(self):
+        """Safety net: _apply_override is decided from the config URI shape at setup, but if a
+        listing pass later resolves to >1 object (a path that turned out to be a directory),
+        stamping every match with the same override URI would mislabel them — so _list_images
+        disables the override. Only ever disables, so it can't reintroduce the watched-dir race."""
+        multi_dir = tempfile.mkdtemp(prefix="test_image_in_multi_")
+        self.addCleanup(shutil.rmtree, multi_dir, ignore_errors=True)
+        create_test_images(multi_dir, 2)
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True  # statically assumed a single object
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{multi_dir}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 2)
+        self.assertFalse(filt._apply_override, "override must be disabled once the source resolves to >1 object")
+
+    def test_list_images_keeps_override_for_single_object(self):
+        """The safety net only ever disables on >1 object: a genuine single file keeps the
+        override enabled (guards against over-eager disabling)."""
+        one = self._write_bytes_image('input_single_guard', color=(0, 0, 255), text="One")
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{one}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 1)
+        self.assertTrue(filt._apply_override, "a single-object source must keep the override enabled")
+
+    def test_list_images_disables_override_when_cloud_prefix_matches_multiple(self):
+        """A cloud key with no trailing slash/glob is classified single, but S3/GCS listing is
+        prefix-based, so a shared prefix (s3://bucket/img also matching img-1.png) resolves to
+        multiple objects. The disable dispatch fires for the cloud scheme too (the lister is
+        stubbed here to isolate the safety net from boto3)."""
+        from unittest import mock
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True
+        filt.config = ImageIn.normalize_config(dict(id='x', sources='s3://bucket/img', outputs='ipc://x'))
+
+        with mock.patch.object(filt, '_list_s3_images',
+                               return_value=['s3://bucket/img', 's3://bucket/img-1.png', 's3://bucket/img-2.png']):
+            images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 3)
+        self.assertFalse(filt._apply_override, "override must be disabled when a cloud prefix matches multiple objects")
+
+    def test_list_images_disables_override_when_local_resolves_to_single_file_directory(self):
+        """A file:// source that resolves to an existing directory disables the override even with a
+        single image, so a not-yet-existing path later created as a directory can't stamp its first
+        frame with the override before a second file trips the >1 check."""
+        one_dir = tempfile.mkdtemp(prefix="test_image_in_onedir_")
+        self.addCleanup(shutil.rmtree, one_dir, ignore_errors=True)
+        create_test_images(one_dir, 1)  # a directory holding exactly one image
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._apply_override = True  # statically assumed a single object (path didn't exist at setup)
+        filt.config = ImageIn.normalize_config(dict(id='x', sources=f'file://{one_dir}', outputs='ipc://x'))
+
+        images = filt._list_images(filt.config.sources[0])
+
+        self.assertEqual(len(images), 1)
+        self.assertFalse(filt._apply_override, "an existing directory (even with one image) must disable the override")
+
+    def test_decode_warned_set_is_bounded_fifo(self):
+        """The per-path decode-failure dedup set stays bounded (so a long-running poll over an
+        unbounded stream of distinct corrupt files can't leak memory) and evicts FIFO: the oldest
+        paths go first, so recently-warned paths stay deduped."""
+        from openfilter.filter_runtime.filters.image_in import DECODE_WARNED_MAX
+
+        filt = ImageIn.__new__(ImageIn)
+        filt._decode_warned = {}
+        overflow = 500
+        for i in range(DECODE_WARNED_MAX + overflow):
+            filt._warn_decode_failure(f"/tmp/corrupt_{i}.png", "decode failed")
+
+        self.assertLessEqual(len(filt._decode_warned), DECODE_WARNED_MAX,
+                             "the decode-warning dedup set must stay bounded")
+        # FIFO: the first `overflow` paths were evicted; the most recent one is retained.
+        self.assertNotIn("/tmp/corrupt_0.png", filt._decode_warned, "oldest path must be evicted first")
+        self.assertIn(f"/tmp/corrupt_{DECODE_WARNED_MAX + overflow - 1}.png", filt._decode_warned,
+                      "the most recently warned path must be retained")
+
+    def test_setup_loads_initial_images_without_attribute_error(self):
+        """Regression (init ordering): setup() must initialize self._apply_override and
+        self._decode_warned BEFORE calling _load_initial_images(), which reaches _list_images /
+        _load_image and reads both. Otherwise the initial load raises AttributeError, which
+        _load_initial_images' own try/except swallows (logging a spurious error), and the queue
+        stays empty until the first poll."""
+        class _InertPollImageIn(ImageIn):
+            def _poll_loop(self):  # keep the poll thread inert so the test only exercises setup()
+                self.stop_event.wait()
+
+        filt = _InertPollImageIn.__new__(_InertPollImageIn)
+        cfg = ImageIn.normalize_config(dict(id='x', sources=f'file://{self.test_dir}', outputs='ipc://x'))
+        try:
+            filt.setup(cfg)
+            # self.test_dir holds several images; the initial load must have queued them. On the
+            # ordering bug _load_initial_images AttributeErrors and skips, leaving the queue empty.
+            self.assertGreater(len(filt.queues.get('main', [])), 0,
+                               "setup() must load initial images (empty queue => _load_initial_images was skipped)")
+            self.assertTrue(hasattr(filt, '_apply_override'))
+            self.assertTrue(hasattr(filt, '_decode_warned'))
+        finally:
+            filt.stop_event.set()
+            if getattr(filt, 'poll_thread', None):
+                filt.poll_thread.join(timeout=2)
+
     def test_loop(self):
         """Test looping functionality."""
         runner = Filter.Runner([

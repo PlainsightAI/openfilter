@@ -15,7 +15,7 @@ try:
 except ImportError:
     HAS_BOTO3 = False
 
-from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, Deque
+from openfilter.filter_runtime.utils import json_getval, dict_without, split_commas_maybe, hide_uri_users_and_pwds, resolve_override_source_uri, Deque
 
 __all__ = ['is_video', 'is_video_file', 'is_video_webcam', 'is_video_stream', 'VideoReader', 'MultiVideoReader']
 
@@ -623,6 +623,12 @@ class VideoInConfig(FilterConfig):
     maxsize: str | None
     resize:  str | None
 
+    # Logical source URI to report as meta['src'] instead of the physical source
+    # (set by an orchestrator; see resolve_override_source_uri). FILTER_OVERRIDE_SOURCE_URI
+    # is the direct value, FILTER_OVERRIDE_SOURCE_URI_FILE a file to read it from.
+    override_source_uri:      str | None
+    override_source_uri_file: str | None
+
 
 class VideoIn(Filter):
     """Single or multiple video input filter. Videos are assigned to topics via the ';' mapping character in `sources`.
@@ -713,6 +719,12 @@ class VideoIn(Filter):
             Same as `maxsize` but is always applied unconditionally regardless of input size.Can not be specified
             together with `maxsize`, it is one or the other. Set here to apply to all sources or can be set individually
             per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
+
+        override_source_uri:
+            Logical source URI to report as each frame's meta['src'] instead of the physical source opened by the
+            reader. Lets an orchestrator preserve per-file identity when the physical path is generic (e.g. a batch
+            claimer downloads every object to /ws/input). Env var FILTER_OVERRIDE_SOURCE_URI, or
+            FILTER_OVERRIDE_SOURCE_URI_FILE to read it from a file.
 
     Emitted frame meta:
         Every frame carries meta['id'] (delivery counter, rate depends on the consuming chain), meta['ts'] (wall-clock
@@ -813,6 +825,18 @@ class VideoIn(Filter):
         self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
         self.id              = -1  # frame id
         self._camera_connected = 0
+        self.override_source_uri = resolve_override_source_uri(config)
+
+        # The override identifies a SINGLE logical source (an orchestrator's batch claimer
+        # downloads one file and records its real URI). With multiple videos, applying one
+        # override to every frame would mislabel each with the same meta['src'], so only honor
+        # it for a single source; otherwise fall back to each video's real source and warn once.
+        # Mirrors the ImageIn guard.
+        self._apply_override = bool(self.override_source_uri) and len(self.mvreader.videos) <= 1
+        if self.override_source_uri and not self._apply_override:
+            logger.warning(
+                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this VideoIn has {len(self.mvreader.videos)} sources; "
+                "the override identifies a single source, so meta['src'] will report each video's real source instead")
 
         self.mvreader.start()
 
@@ -829,7 +853,7 @@ class VideoIn(Filter):
             self.id = id = self.id + 1
 
             def meta(vid, tfrm, extras):
-                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': vid.source, 'src_fps': vid.fps}
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else vid.source, 'src_fps': vid.fps}
 
                 if extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
                     meta['src_frame'] = extras['frame_n']

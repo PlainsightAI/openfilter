@@ -150,6 +150,95 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_override_source_uri_meta(self):
+        """FILTER_OVERRIDE_SOURCE_URI replaces meta['src'] with the logical source URI while
+        VideoIn still opens the physical file (VideoIn is already extension-agnostic)."""
+        override = 's3://my-bucket/nested/original-video.mp4'
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync',
+                outputs = 'ipc://test-VideoIn-ovr',
+                override_source_uri = override,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-ovr',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            frame = queue.get()['main']
+            self.assertEqual(frame.data['meta']['src'], override)
+        finally:
+            runner.stop()
+            queue.close()
+
+
+    def test_override_ignored_for_multiple_sources(self):
+        """A global override identifies ONE source; with multiple VideoIn sources it must be
+        ignored so each frame keeps its real per-source meta['src'] — otherwise every source
+        would be mislabeled with the same URI (mirrors the ImageIn guard)."""
+        override = 's3://my-bucket/should-not-be-used.mp4'
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{TEST_VIDEO_FNM}!sync;main, file://{TEST_VIDEO_FNM}!sync;other',
+                outputs = 'ipc://test-VideoIn-ovr-multi',
+                override_source_uri = override,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-ovr-multi',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            srcs = []
+            for _ in range(6):
+                result = queue.get()
+                if not result:
+                    break
+                for frame in result.values():
+                    srcs.append(frame.data['meta']['src'])
+            self.assertTrue(srcs, "expected at least one frame")
+            for src in srcs:
+                self.assertNotEqual(src, override, "override must not be applied to a multi-source VideoIn")
+        finally:
+            runner.stop()
+            queue.close()
+
+
+    def test_extensionless_file_decodes(self):
+        """The batch claimer downloads to a generic extension-less path (/ws/input), so VideoIn
+        must decode a file with no extension: is_video_file keys on the file:// scheme (not the
+        extension) and cv2.VideoCapture/FFmpeg probes the container from the bytes. This proves
+        the /ws/input default is safe for VideoIn, not just image-in."""
+        noext = 'test_video_noext'  # deliberately no extension
+        with open(noext, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        self.addCleanup(os.unlink, noext)  # resilient even if Filter.Runner construction raises
+
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{noext}!sync',
+                outputs = 'ipc://test-VideoIn-noext',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-noext',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            result = queue.get()
+            if not result:
+                self.fail("VideoIn produced no frame for an extension-less file")
+            frame = result['main']
+            self.assertIsNotNone(frame.image, "VideoIn must decode the extension-less file by content")
+        finally:
+            runner.stop()
+            queue.close()
+
+
     def test_pts(self):
         """File sources stamp the source position in seconds (src_seconds) and the
         0-based source frame index (src_frame) into each frame's meta, so
