@@ -69,7 +69,7 @@ pip install "openfilter[all] @ git+https://github.com/PlainsightAI/openfilter.gi
 Install a specific version:
 
 ```bash
-pip install "openfilter[all] @ git+https://github.com/PlainsightAI/openfilter.git@v1.1.2"
+pip install "openfilter[all] @ git+https://github.com/PlainsightAI/openfilter.git@v1.3.0"
 ```
 
 Editable install for development:
@@ -145,7 +145,7 @@ OpenFilter ships a set of ready-to-use filters. Run `openfilter info <Filter>` f
 | `Util` | Diagnostic and utility helpers | [docs](https://github.com/PlainsightAI/openfilter/blob/main/docs/util-filter.md) |
 
 Each I/O filter is also published as a Docker image at `plainsightai/openfilter-<name>` (multi-arch `amd64` + `arm64`), tagged with
-both the version (for example `1.1.2`) and `latest`. Each installs `openfilter[extra]=={version}` from PyPI:
+both the version (for example `1.3.0`) and `latest`. Each installs `openfilter[extra]=={version}` from PyPI:
 
 | Image | Filter | Extra |
 | --- | --- | --- |

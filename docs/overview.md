@@ -108,7 +108,7 @@ These installation instructions will install all the dependencies used by all bu
 
 A specific version:
 
-    pip install git+ssh://git@github.com/PlainsightAI/openfilter.git@v1.3.17#egg=openfilter[all]
+    pip install git+ssh://git@github.com/PlainsightAI/openfilter.git@v1.3.0#egg=openfilter[all]
 
 If you want to edit the code:
 

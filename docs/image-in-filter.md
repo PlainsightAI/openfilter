@@ -54,7 +54,7 @@ services:
       context: ../..
       dockerfile: docker/image_in.Dockerfile
       args:
-        VERSION: ${VERSION:-0.1.23}
+        VERSION: ${VERSION:-1.3.0}
     environment:
       FILTER_ID: image_in
       FILTER_SOURCES: "file:///app/data/images!pattern=*.png!maxfps=2.0!loop"
@@ -67,7 +67,7 @@ services:
       context: ../..
       dockerfile: docker/webvis.Dockerfile
       args:
-        VERSION: ${VERSION:-0.1.23}
+        VERSION: ${VERSION:-1.3.0}
     environment:
       FILTER_ID: webvis
       FILTER_SOURCES: "tcp://image_in:5550"

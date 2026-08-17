@@ -145,7 +145,7 @@ All configuration parameters are type-safe and have default values.
 
 ## Dependencies
 
-- openfilter[all]==0.1.5
+- openfilter[all]>=1.3,<2
 - opencv-python>=4.8.0
 - numpy>=1.24.0
 

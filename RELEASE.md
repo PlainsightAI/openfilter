@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.3.0 - 2026-08-17
+
 ### Added
 
 - **`VideoIn` / `ImageIn`: `FILTER_OVERRIDE_SOURCE_URI` to preserve source-file identity.**

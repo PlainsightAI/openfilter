@@ -349,7 +349,7 @@ The final step in the CI pipeline requires manual review and approval by a core 
 
 To publish a new version:
 
-1. Update `VERSION` with the new version (for example `v1.1.2`).
+1. Update `VERSION` with the new version (for example `v1.3.0`).
 2. Add a matching entry at the top of `RELEASE.md`, using the same version and a changelog for that release.
 3. Merge both changes into `main`.
 4. In GitHub Actions, run the **Create Release** workflow via **Run workflow** against `main`.
@@ -362,7 +362,7 @@ From there the workflow runs on its own:
 - Builds the Python wheel and publishes it to [PyPI](https://pypi.org/project/openfilter/).
 - Builds and pushes the built-in filter images to [Docker Hub](https://hub.docker.com/u/plainsightai) (multi-arch: `amd64` and `arm64`).
 
-Publishing to PyPI runs in a protected environment, so the wheel is uploaded only after a core maintainer approves that step. Each filter image is published at `plainsightai/openfilter-<name>` and tagged with both the version (for example `1.1.2`) and `latest`. Because the images install `openfilter[extra]=={version}` from PyPI, they are built only after the PyPI publish has succeeded.
+Publishing to PyPI runs in a protected environment, so the wheel is uploaded only after a core maintainer approves that step. Each filter image is published at `plainsightai/openfilter-<name>` and tagged with both the version (for example `1.3.0`) and `latest`. Because the images install `openfilter[extra]=={version}` from PyPI, they are built only after the PyPI publish has succeeded.
 
 ### 🧯 Hotfixes
 
@@ -388,7 +388,7 @@ gitGraph
    checkout main
    commit id: "More development"
    merge feature/my-new-filter
-   commit id: "Release v1.2.0"
+   commit id: "Release v1.3.0"
 
 ```
 
@@ -396,7 +396,7 @@ gitGraph
 
 ```mermaid
 gitGraph
-   commit id: "v1.2.0"
+   commit id: "v1.3.0"
    branch hotfix/fix-crash
    commit id: "Fix crash"
    commit id: "Create Release"
