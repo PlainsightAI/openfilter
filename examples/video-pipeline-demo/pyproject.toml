@@ -26,7 +26,7 @@ classifiers = [
 dynamic = ["version"]
 
 dependencies = [
-  "openfilter[all]~=0.1.0"
+  "openfilter[all]>=1.3,<2"
   # "filter-frame-dedup~=0.1.0",
   # "filter-faceblur~=0.1.0",
   # "filter-crop~=0.1.0",
