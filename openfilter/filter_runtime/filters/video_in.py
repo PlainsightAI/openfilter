@@ -25,6 +25,7 @@ VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or os.getenv('FI
 VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or os.getenv('FILTER_SYNC') or 'false').lower()))
 VIDEO_IN_LOOP     = _ if isinstance(_ := json_getval((os.getenv('VIDEO_IN_LOOP') or os.getenv('FILTER_LOOP') or 'false').lower()), bool) else int(_)
 VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
+VIDEO_IN_MAXFPS_BY_INDEX = bool(json_getval((os.getenv('VIDEO_IN_MAXFPS_BY_INDEX') or os.getenv('FILTER_MAXFPS_BY_INDEX') or 'false').lower()))
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
 
@@ -130,6 +131,7 @@ class VideoReader:
         sync:    bool | None = None,
         loop:    bool | int = False,
         maxfps:  float | None = None,
+        maxfps_by_index: bool | None = None,
         maxsize: str | None = None,
         resize:  str | None = None,
         region:  str | None = None,
@@ -173,6 +175,8 @@ class VideoReader:
         self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
+        self.index_stride  = None  # set only for file video when maxfps is applied by source index
+        self.frame_i       = 0
         self.is_file       = is_file = is_video_file(source) or is_video_s3(source)
         self.as_bgr        = bool(VIDEO_IN_BGR if bgr is None else bgr)  # only validated after first frame is read (set to False if frames are grayscale)
 
@@ -222,6 +226,22 @@ class VideoReader:
             self.ns_per_fps = 1_000_000_000 // (fps or 15)  # cv2 reads files as fast as possible, this is to keep it realtime, default to 15 if video doesn't provide fixed framerate
 
         self.fps = fps
+
+        # maxfps normally means "N frames per second of WALL CLOCK": the reader either
+        # sleeps (sync) or paces to the container rate (no-sync), so an hour of file costs
+        # an hour however fast the machine is. For offline processing what is wanted is the
+        # same selection taken from the source timeline and read as fast as the box allows.
+        # Opt in with maxfps_by_index: the reader keeps 1 frame in every round(fps/maxfps)
+        # and both clock paths are switched off. Which frames are selected is unchanged in
+        # steady state, they are just no longer spread over real time.
+        if (VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index) \
+                and is_file and maxfps and fps and fps > maxfps:
+            self.index_stride  = max(1, round(fps / maxfps))
+            self.ns_per_fps    = None
+            self.ns_per_maxfps = None
+
+            logger.info(f'maxfps by index: keeping 1 frame in every {self.index_stride} '
+                        f'of {fps:.1f} fps -> {fps / self.index_stride:.2f} fps effective')
 
         if fps is None:
             logger.warning(f'video does not have fixed framerate {self.source!r}{"" if maxfps is None else ", maxfps ignored"}')
@@ -316,6 +336,18 @@ class VideoReader:
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
             t = time_ns()
+
+            if (stride := self.index_stride) is not None:
+                self.frame_i += 1
+
+                if (self.frame_i - 1) % stride:  # dropped: no back-pressure wait, no sleep
+                    return False
+
+                if (sync_evt := self.sync_evt) is not None:
+                    sync_evt.wait()
+                    sync_evt.clear()
+
+                return True
 
             if self.is_file:
                 if (sync_evt := self.sync_evt) is not None:
@@ -604,6 +636,7 @@ class VideoInConfig(FilterConfig):
             sync:       bool | None
             loop:       bool | int | None
             maxfps:     float | None
+            maxfps_by_index: bool | None
             maxsize:    str | None
             resize:     str | None
             region:     str | None
@@ -620,6 +653,7 @@ class VideoInConfig(FilterConfig):
     sync:    bool | None
     loop:    bool | int | None
     maxfps:  float | None
+    maxfps_by_index: bool | None
     maxsize: str | None
     resize:  str | None
 
@@ -669,6 +703,9 @@ class VideoIn(Filter):
                 '!maxfps=10':
                     Set `maxfps` option for this source.
 
+                '!maxfps_by_index', '!no-maxfps_by_index':
+                    Set `maxfps_by_index` option for this source.
+
                 '!maxsize=1280x720', '!maxsize=1280+720C':
                     Set `maxsize` option for this source.
 
@@ -707,6 +744,13 @@ class VideoIn(Filter):
             Restrict video to this FPS. Works for all types of video and if playing a file:// video in `sync` mode then
             will present the individual frames at this frame rate but will not skip any frames. Set here to apply to
             all sources or can be set individually per source. Global env var default FILTER_MAXFPS / VIDEO_IN_MAXFPS.
+
+        maxfps_by_index:
+            Only has meaning for file:// sources with `maxfps` set below the file's own rate. Off by default, in which
+            case `maxfps` behaves as it always has: a limit on frames delivered per second of WALL CLOCK, so an hour of
+            file takes an hour of wall clock however fast the machine is. Turned on, the same selection is taken from
+            the source timeline instead, keeping 1 frame in every round(fps / maxfps) and reading as fast as the box
+            allows. Use it for offline processing of a recording; leave it off for anything that has to track real time.
 
         maxsize:
             Maximum image size to allow, above this will be resized down. Valid codes are 'WxH' which will
@@ -748,6 +792,7 @@ class VideoIn(Filter):
         FILTER_SYNC     / VIDEO_IN_SYNC
         FILTER_LOOP     / VIDEO_IN_LOOP
         FILTER_MAXFPS   / VIDEO_IN_MAXFPS
+        FILTER_MAXFPS_BY_INDEX / VIDEO_IN_MAXFPS_BY_INDEX
         FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
         FILTER_RESIZE   / VIDEO_IN_RESIZE
 
@@ -796,7 +841,7 @@ class VideoIn(Filter):
                 source.topic = 'main'
             if not isinstance(options := source.options, VideoInConfig.Source.Options):
                 source.options = options = VideoInConfig.Source.Options() if options is None else VideoInConfig.Source.Options(options)
-            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize', 'region', 'expiration') for o in options):
+            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxfps_by_index', 'maxsize', 'resize', 'region', 'expiration') for o in options):
                 raise ValueError(f'unknown option {option!r} in {source!r}')
 
         if len(set(source.topic for source in sources)) != len(sources):
@@ -820,7 +865,7 @@ class VideoIn(Filter):
             optionss.append(source.options or {})
 
         default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
-            'maxsize': config.maxsize, 'resize': config.resize}
+            'maxfps_by_index': config.maxfps_by_index, 'maxsize': config.maxsize, 'resize': config.resize}
         self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
         self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
         self.id              = -1  # frame id
