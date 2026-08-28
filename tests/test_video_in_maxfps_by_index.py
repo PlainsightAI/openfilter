@@ -13,7 +13,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from time import time
+from time import sleep, time
 
 import numpy as np
 
@@ -27,15 +27,15 @@ FPS      = 30
 N_FRAMES = 90   # 3 s of source
 
 
-def _write_video(path: str) -> None:
-    """90 distinct frames at 30 fps, via ffmpeg so the container reports a fixed rate."""
+def _write_video(path: str, n_frames: int = N_FRAMES) -> None:
+    """n_frames distinct frames at 30 fps, via ffmpeg so the container reports a fixed rate."""
     proc = subprocess.Popen([
         'ffmpeg', '-loglevel', 'error', '-y',
         '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', '64x64', '-r', str(FPS), '-i', '-',
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path,
     ], stdin=subprocess.PIPE)
 
-    for i in range(N_FRAMES):
+    for i in range(n_frames):
         proc.stdin.write(np.full((64, 64, 3), i * 2 % 256, dtype=np.uint8).tobytes())
 
     proc.stdin.close()
@@ -119,7 +119,65 @@ class TestMaxfpsByIndex(unittest.TestCase):
             try:
                 self.assertIsNone(vid.index_stride)
             finally:
+                vid.cap.release()  # stop() is a no-op without start(); release the cap directly
+
+    def test_by_index_delivers_the_full_selection_with_sync_off_the_default(self):
+        """sync=False (the default) + by-index must still deliver every selected frame.
+
+        By-index switches off both clock paths, which are also the only back-pressure on the
+        reader. Without the sync_evt handshake the reader outruns the 1-slot deque and drops
+        selected frames whenever the consumer is even slightly slow (the reviewer saw 3 of 50).
+        A per-frame sleep here makes that race deterministic."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path)
+
+            vid = VideoReader(f'file://{path}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                self.assertEqual(vid.index_stride, 6)
+
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+
+                    sleep(0.02)  # a slow-ish consumer, to expose the reader outrunning the deque
+            finally:
                 vid.stop()
+
+        self.assertEqual(frame_ns, list(range(0, N_FRAMES, 6)))  # 0, 6, ..., 84 - none dropped
+
+    def test_by_index_holds_the_last_frame_when_the_eof_index_is_off_stride(self):
+        """The last selected frame must survive even when the phantom EOF index is off-stride.
+
+        read_one calls wait() at EOF to hold the last frame for the consumer; the by-index
+        branch used to return before the handshake when that phantom index was off-stride, so
+        the (None, ...) sentinel evicted the last frame. 91 frames at stride 6 puts the phantom
+        EOF index off-stride ((92 - 1) % 6 != 0), the case the 90-frame fixture hides."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path, n_frames=91)
+
+            vid = VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                self.assertEqual(vid.index_stride, 6)
+
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+
+                    sleep(0.02)  # slow consumer so a missed handshake would drop the last frame
+            finally:
+                vid.stop()
+
+        self.assertEqual(frame_ns, list(range(0, 91, 6)))  # 0, 6, ..., 90 - the last one kept
 
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({
