@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import re
 from threading import Condition, Event, Thread
@@ -231,14 +232,26 @@ class VideoReader:
         # sleeps (sync) or paces to the container rate (no-sync), so an hour of file costs
         # an hour however fast the machine is. For offline processing what is wanted is the
         # same selection taken from the source timeline and read as fast as the box allows.
-        # Opt in with maxfps_by_index: the reader keeps 1 frame in every round(fps/maxfps)
+        # Opt in with maxfps_by_index: the reader keeps 1 frame in every ceil(fps/maxfps)
         # and both clock paths are switched off. Which frames are selected is unchanged in
         # steady state, they are just no longer spread over real time.
         if (VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index) \
                 and is_file and maxfps and fps and fps > maxfps:
-            self.index_stride  = max(1, round(fps / maxfps))
+            # ceil, not round: round picks the nearest stride and banker's-rounds 2.5 -> 2,
+            # which lets the by-index rate exceed maxfps (e.g. 25 fps / maxfps 10 -> stride 2
+            # -> 12.5 fps). ceil keeps the effective rate at or below the cap for every ratio,
+            # matching the wall-clock path (fps > maxfps here already guarantees stride >= 2).
+            self.index_stride  = math.ceil(fps / maxfps)
             self.ns_per_fps    = None
             self.ns_per_maxfps = None
+
+            # By-index switches off both clock paths, which are also the only back-pressure
+            # against the reader outrunning the consumer. Without the sync_evt handshake the
+            # reader decodes flat out into the 1-slot deque and overwrites selected frames
+            # before they are popped, so create it here even when sync is off.
+            if self.sync_evt is None:
+                self.sync_evt = Event()
+                self.sync_evt.set()
 
             logger.info(f'maxfps by index: keeping 1 frame in every {self.index_stride} '
                         f'of {fps:.1f} fps -> {fps / self.index_stride:.2f} fps effective')
@@ -334,14 +347,20 @@ class VideoReader:
         return ret, image
 
     def read_one(self):
-        def wait() -> bool:  # returns if should return frame or keep looping
+        def wait(is_eof=False) -> bool:  # returns if should return frame or keep looping
             t = time_ns()
 
             if (stride := self.index_stride) is not None:
-                self.frame_i += 1
+                # At EOF the caller wants the last real frame held for the consumer, not a
+                # by-index decision. Skip the stride test (the phantom EOF index is off-stride
+                # (stride-1)/stride of the time) and go straight to the handshake, otherwise the
+                # (None, ...) sentinel evicts the last frame from the 1-slot deque before it is
+                # popped.
+                if not is_eof:
+                    self.frame_i += 1
 
-                if (self.frame_i - 1) % stride:  # dropped: no back-pressure wait, no sleep
-                    return False
+                    if (self.frame_i - 1) % stride:  # dropped: no back-pressure wait, no sleep
+                        return False
 
                 if (sync_evt := self.sync_evt) is not None:
                     sync_evt.wait()
@@ -396,7 +415,7 @@ class VideoReader:
                     self.loop = loop - 1
 
                     if not self.loop:
-                        wait()
+                        wait(is_eof=True)
 
                         return None
 
@@ -409,7 +428,7 @@ class VideoReader:
                         raise RuntimeError(f'failed to reopen video source: {self.source!r}')
 
                 except Exception:
-                    wait()
+                    wait(is_eof=True)
 
                     return None
 
@@ -749,7 +768,7 @@ class VideoIn(Filter):
             Only has meaning for file:// sources with `maxfps` set below the file's own rate. Off by default, in which
             case `maxfps` behaves as it always has: a limit on frames delivered per second of WALL CLOCK, so an hour of
             file takes an hour of wall clock however fast the machine is. Turned on, the same selection is taken from
-            the source timeline instead, keeping 1 frame in every round(fps / maxfps) and reading as fast as the box
+            the source timeline instead, keeping 1 frame in every ceil(fps / maxfps) and reading as fast as the box
             allows. Use it for offline processing of a recording; leave it off for anything that has to track real time.
 
         maxsize:
