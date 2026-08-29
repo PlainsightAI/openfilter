@@ -173,7 +173,7 @@ class VideoReader:
         self.maxsize       = None if (s := VIDEO_IN_MAXSIZE if maxsize is None else maxsize) is None else parse_size(s)
         self.resize        = None if (s := VIDEO_IN_RESIZE if resize is None else resize) is None else parse_size(s)
         self.state         = 0     # 0 = before start, 1 = playing, 2 = stopped / done
-        self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
+        self.sync_evt      = None  # file video only: set for 'sync' True, and also for 'sync' False when index_stride is set (by-index needs the back-pressure), so this being set does NOT imply sync is on
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
         self.index_stride  = None  # set only for file video when maxfps is applied by source index
@@ -424,6 +424,7 @@ class VideoReader:
 
                     self.cap.release()
                     self.cap = cv2.VideoCapture(self.ssource)
+                    self.frame_i = 0  # by-index counts source frames; restart it with the cap so each pass selects from source index 0
                     if not self.cap.isOpened():
                         raise RuntimeError(f'failed to reopen video source: {self.source!r}')
 
