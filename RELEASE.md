@@ -11,7 +11,7 @@ OpenFilter Library release notes
   a `file://` source the reader sleeps and an hour of recording costs an hour of wall clock
   however fast the machine is. The new `maxfps_by_index` config (env `FILTER_MAXFPS_BY_INDEX`
   / `VIDEO_IN_MAXFPS_BY_INDEX`, or `!maxfps_by_index` on a source string) keeps 1 frame in
-  every `round(fps / maxfps)` and reads as fast as the decoder allows. Off by default, and it
+  every `ceil(fps / maxfps)` and reads as fast as the decoder allows. Off by default, and it
   only engages for a file whose own rate is above `maxfps`, so existing behaviour is
   unchanged. Selecting from the source timeline is also exact, where selecting against the
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
