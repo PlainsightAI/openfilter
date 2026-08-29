@@ -179,6 +179,34 @@ class TestMaxfpsByIndex(unittest.TestCase):
 
         self.assertEqual(frame_ns, list(range(0, 91, 6)))  # 0, 6, ..., 90 - the last one kept
 
+    def test_by_index_restarts_at_source_zero_on_each_loop(self):
+        """Each loop pass must restart the by-index phase at source index 0.
+
+        The reopen resets self.cap but has to reset self.frame_i too, otherwise the stride
+        phase carries over and pass two selects from the wrong offset. 92 frames is not a
+        multiple of stride 6, so a carried-over phase shows (pass two would start at frame 4);
+        the 90-frame fixture hides it because 90 % 6 == 0."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path, n_frames=92)
+
+            vid = VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True, loop=2)
+            vid.start()
+
+            try:
+                self.assertEqual(vid.index_stride, 6)
+
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+            finally:
+                vid.stop()
+
+        one_pass = list(range(0, 92, 6))  # 0, 6, ..., 90
+        self.assertEqual(frame_ns, one_pass + one_pass)  # both passes select from source index 0
+
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({
             'id': 'vidin',
