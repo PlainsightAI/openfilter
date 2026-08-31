@@ -14,10 +14,12 @@ import subprocess
 import tempfile
 import unittest
 from time import sleep, time
+from unittest import mock
 
+import cv2
 import numpy as np
 
-from openfilter.filter_runtime.filters.video_in import VideoIn, VideoReader
+from openfilter.filter_runtime.filters.video_in import VideoIn, VideoReader, FPS_SANE_CEILING
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,20 @@ def _drain(**kwargs) -> tuple[int, float]:
             vid.stop()
 
 
+def _reader_reporting_fps(path: str, fps: float, **kwargs) -> VideoReader:
+    """Open a real fixture but make cap.get(CAP_PROP_FPS) report `fps` at construction.
+
+    Reproduces a container whose reported rate is the VFR sentinel without having to author
+    one; the patch only spans __init__ (which is where the by-index gate reads the rate)."""
+    real_get = cv2.VideoCapture.get
+
+    def fake_get(self, prop):
+        return fps if prop == cv2.CAP_PROP_FPS else real_get(self, prop)
+
+    with mock.patch.object(cv2.VideoCapture, 'get', fake_get):
+        return VideoReader(f'file://{path}', **kwargs)
+
+
 @unittest.skipUnless(
     subprocess.run(['which', 'ffmpeg'], capture_output=True).returncode == 0,
     'ffmpeg needed to author the fixture',
@@ -81,18 +97,18 @@ class TestMaxfpsByIndex(unittest.TestCase):
         self.assertGreater(elapsed, 2.0, 'default maxfps should still be bound to real time')
 
     def test_by_index_selects_the_same_frames_without_waiting(self):
-        n, elapsed = _drain(sync=True, maxfps=5, maxfps_by_index=True)
+        n, elapsed = _drain(sync=False, maxfps=5, maxfps_by_index=True)
 
         self.assertEqual(n, N_FRAMES // 6, 'by-index is exact: 1 in every 6 of 90')
         self.assertLess(elapsed, 1.5, 'by-index should read as fast as the decoder allows')
 
     def test_by_index_keeps_the_first_frame_and_then_every_stride(self):
-        """The selection is 1 in round(fps / maxfps), starting at the first frame."""
+        """The selection is 1 in ceil(fps / maxfps), starting at the first frame."""
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'v.mp4')
             _write_video(path)
 
-            vid = VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True)
+            vid = VideoReader(f'file://{path}', sync=False, maxfps=5, maxfps_by_index=True)
             vid.start()
 
             try:
@@ -114,7 +130,7 @@ class TestMaxfpsByIndex(unittest.TestCase):
             path = os.path.join(d, 'v.mp4')
             _write_video(path)
 
-            vid = VideoReader(f'file://{path}', sync=True, maxfps=60, maxfps_by_index=True)
+            vid = VideoReader(f'file://{path}', sync=False, maxfps=60, maxfps_by_index=True)
 
             try:
                 self.assertIsNone(vid.index_stride)
@@ -161,7 +177,7 @@ class TestMaxfpsByIndex(unittest.TestCase):
             path = os.path.join(d, 'v.mp4')
             _write_video(path, n_frames=91)
 
-            vid = VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True)
+            vid = VideoReader(f'file://{path}', sync=False, maxfps=5, maxfps_by_index=True)
             vid.start()
 
             try:
@@ -190,7 +206,7 @@ class TestMaxfpsByIndex(unittest.TestCase):
             path = os.path.join(d, 'v.mp4')
             _write_video(path, n_frames=92)
 
-            vid = VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True, loop=2)
+            vid = VideoReader(f'file://{path}', sync=False, maxfps=5, maxfps_by_index=True, loop=2)
             vid.start()
 
             try:
@@ -206,6 +222,53 @@ class TestMaxfpsByIndex(unittest.TestCase):
 
         one_pass = list(range(0, 92, 6))  # 0, 6, ..., 90
         self.assertEqual(frame_ns, one_pass + one_pass)  # both passes select from source index 0
+
+    def test_by_index_no_ops_under_sync_preserving_the_no_skip_guarantee(self):
+        """sync=True is documented as "will not skip any frames"; by-index is a sync=False
+        optimisation and must no-op under sync=True. Locks in the reviewer's 181 -> 61 drop:
+        the by-index count must equal the stock sync=True count, never a subsample."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path, n_frames=30)  # 1 s of source, paced at 15/s -> ~2 s per run
+
+            def count(**kwargs):
+                vid = VideoReader(f'file://{path}', **kwargs)
+                vid.start()
+
+                try:
+                    n = 0
+
+                    while vid.read() is not None:
+                        n += 1
+
+                    return n, vid.index_stride
+                finally:
+                    vid.stop()
+
+            stock_n, _         = count(sync=True, maxfps=15)
+            by_index_n, stride = count(sync=True, maxfps=15, maxfps_by_index=True)
+
+        self.assertIsNone(stride, 'by-index must not engage under sync=True')
+        self.assertEqual(by_index_n, stock_n, 'sync=True must never skip: by-index == stock')
+        self.assertEqual(by_index_n, 30, 'all frames delivered under sync=True')
+
+    def test_by_index_no_ops_on_the_fps_sentinel_container(self):
+        """A container reporting the >= FPS_SANE_CEILING VFR sentinel must not drive by-index.
+
+        _cap_read already rejects that rate as bogus; the gate must too, otherwise stride is
+        ceil(1000 / maxfps) = 200 and 99% of the frames are dropped. Guarding the gate makes
+        it fall back to the normal path (index_stride stays None) instead."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path)
+
+            vid = _reader_reporting_fps(path, FPS_SANE_CEILING, sync=False, maxfps=5, maxfps_by_index=True)
+
+            try:
+                self.assertEqual(vid.native_fps, FPS_SANE_CEILING)  # the reported sentinel rate
+                self.assertIsNone(vid.index_stride)                 # by-index no-ops on it
+            finally:
+                vid.cap.release()
 
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({
