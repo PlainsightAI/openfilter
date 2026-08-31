@@ -173,7 +173,7 @@ class VideoReader:
         self.maxsize       = None if (s := VIDEO_IN_MAXSIZE if maxsize is None else maxsize) is None else parse_size(s)
         self.resize        = None if (s := VIDEO_IN_RESIZE if resize is None else resize) is None else parse_size(s)
         self.state         = 0     # 0 = before start, 1 = playing, 2 = stopped / done
-        self.sync_evt      = None  # file video only: set for 'sync' True, and also for 'sync' False when index_stride is set (by-index needs the back-pressure), so this being set does NOT imply sync is on
+        self.sync_evt      = None  # file video only: set for 'sync' True, and also for 'sync' False when maxfps_by_index engages (by-index needs the back-pressure), so this being set does NOT imply sync is on
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
         self.index_stride  = None  # set only for file video when maxfps is applied by source index
@@ -232,11 +232,17 @@ class VideoReader:
         # sleeps (sync) or paces to the container rate (no-sync), so an hour of file costs
         # an hour however fast the machine is. For offline processing what is wanted is the
         # same selection taken from the source timeline and read as fast as the box allows.
-        # Opt in with maxfps_by_index: the reader keeps 1 frame in every ceil(fps/maxfps)
-        # and both clock paths are switched off. Which frames are selected is unchanged in
-        # steady state, they are just no longer spread over real time.
+        # Opt in with maxfps_by_index: on a sync=False file the reader keeps 1 frame in every
+        # ceil(fps/maxfps) and reads flat out, both clock paths switched off. The selection is
+        # unchanged in steady state, it is just no longer spread over real time.
+        #
+        # It is deliberately a sync=False optimisation. sync=True documents a no-skip contract
+        # ("will not skip any frames"), so by-index no-ops under sync and leaves that paced
+        # path untouched rather than silently subsampling it. It also no-ops when fps is the
+        # >= FPS_SANE_CEILING sentinel a VFR container reports for no real rate (the value
+        # _cap_read rejects as bogus): a stride derived from it would drop nearly every frame.
         if (VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index) \
-                and is_file and maxfps and fps and fps > maxfps:
+                and is_file and not sync and maxfps and fps and fps < FPS_SANE_CEILING and fps > maxfps:
             # ceil, not round: round picks the nearest stride and banker's-rounds 2.5 -> 2,
             # which lets the by-index rate exceed maxfps (e.g. 25 fps / maxfps 10 -> stride 2
             # -> 12.5 fps). ceil keeps the effective rate at or below the cap for every ratio,
@@ -245,13 +251,13 @@ class VideoReader:
             self.ns_per_fps    = None
             self.ns_per_maxfps = None
 
-            # By-index switches off both clock paths, which are also the only back-pressure
-            # against the reader outrunning the consumer. Without the sync_evt handshake the
-            # reader decodes flat out into the 1-slot deque and overwrites selected frames
-            # before they are popped, so create it here even when sync is off.
-            if self.sync_evt is None:
-                self.sync_evt = Event()
-                self.sync_evt.set()
+            # We only get here under sync=False, which switches off both clock paths - and
+            # those were the only back-pressure against the reader outrunning the consumer.
+            # Without the sync_evt handshake the reader decodes flat out into the 1-slot deque
+            # and overwrites selected frames before they are popped, so give the by-index path
+            # the same handshake sync=True has (sync_evt is None here, never created above).
+            self.sync_evt = Event()
+            self.sync_evt.set()
 
             logger.info(f'maxfps by index: keeping 1 frame in every {self.index_stride} '
                         f'of {fps:.1f} fps -> {fps / self.index_stride:.2f} fps effective')
@@ -262,7 +268,7 @@ class VideoReader:
             fps_str = ''
 
         else:
-            if maxfps is None or fps <= maxfps:  # maxfps is not None implies (not is_file or not sync) because it would have errored otherwise
+            if maxfps is None or fps <= maxfps:
                 fps_str = f'  ({fps:.1f} fps)'
 
             else:
@@ -766,11 +772,14 @@ class VideoIn(Filter):
             all sources or can be set individually per source. Global env var default FILTER_MAXFPS / VIDEO_IN_MAXFPS.
 
         maxfps_by_index:
-            Only has meaning for file:// sources with `maxfps` set below the file's own rate. Off by default, in which
-            case `maxfps` behaves as it always has: a limit on frames delivered per second of WALL CLOCK, so an hour of
-            file takes an hour of wall clock however fast the machine is. Turned on, the same selection is taken from
-            the source timeline instead, keeping 1 frame in every ceil(fps / maxfps) and reading as fast as the box
-            allows. Use it for offline processing of a recording; leave it off for anything that has to track real time.
+            A `sync=False` optimisation, for file:// sources with `maxfps` set below the file's own rate. Off by
+            default, in which case `maxfps` behaves as it always has: a limit on frames delivered per second of WALL
+            CLOCK, so an hour of file takes an hour of wall clock however fast the machine is. Turned on, the same
+            selection is taken from the source timeline instead, keeping 1 frame in every ceil(fps / maxfps) and reading
+            as fast as the box allows. Use it for offline processing of a recording; leave it off for anything that has
+            to track real time. It only engages under `sync=False`: `sync=True` documents a no-skip guarantee ("will not
+            skip any frames"), so with `sync=True` this flag is a no-op and that paced, lossless path is preserved. It
+            is also a no-op on a container that reports no real frame rate (the >= 1000 fps VFR sentinel).
 
         maxsize:
             Maximum image size to allow, above this will be resized down. Valid codes are 'WxH' which will
