@@ -42,7 +42,7 @@ install:  ## Install package with dev dependencies
 
 	@if [ ! -f model.pth ]; then \
 		echo "model not found, downloading model archive..." && \
-		curl -fL -o model.zip https://storage.googleapis.com/plainsight-ml-assets-production/models/license_plate_detection_model_v0.1.0.zip && \
+		curl -fL --retry 2 --retry-delay 5 -o model.zip https://storage.googleapis.com/plainsight-ml-assets-production/models/license_plate_detection_model_v0.1.0.zip && \
 		echo "Unzipping model archive to current directory..." && \
 		unzip -o model.zip && \
 		echo "Removing model.zip..." && \
