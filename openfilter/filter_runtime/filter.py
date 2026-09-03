@@ -123,6 +123,27 @@ scarf_elogger = ScarfEventLogger(
     endpoint_url=f"https://python.openfilter.io/openfilter"
 )
 
+
+def _usage_analytics_disabled() -> bool:
+    """Whether the user opted out of usage analytics.
+
+    Mirrors the two environment variables the Scarf SDK itself honors. Checking
+    them here as well keeps the startup log honest — it previously announced
+    analytics as enabled even when they were opted out — and avoids starting a
+    thread that would do nothing.
+    """
+    return (os.getenv("DO_NOT_TRACK") or "").lower() in ("1", "true") or (
+        os.getenv("SCARF_NO_ANALYTICS") or ""
+    ).lower() in ("1", "true")
+
+
+def _report_filter_initialized(filter_name: str) -> None:
+    """Send one usage event. Runs on a daemon thread; never raises."""
+    try:
+        scarf_elogger.log_event(properties={"filter_initialized": filter_name})
+    except Exception as e:
+        logger.warning(f"Failed to log Scarf event: {e}")
+
 LOG_LEVEL = (os.getenv("LOG_LEVEL") or "INFO").upper()
 LOG_FORMAT = os.getenv("LOG_FORMAT") or None
 LOG_PID = bool(
@@ -902,16 +923,27 @@ class Filter:
                 "[Filter] Raw subject data export is DISABLED (set OPENLINEAGE_EXPORT_RAW_DATA=true to enable)"
             )
 
-        try:
-            scarf_metric_name = type(self).__name__.lower()
+        # Usage analytics. The SDK's log_event is a synchronous POST with a 3s
+        # timeout and used to run inline here, so anywhere the endpoint is
+        # unreachable but not actively refused — a firewall that DROPs, a
+        # captive network, an air-gapped host — every Filter paid up to 3s of
+        # startup, multiplied by the number of filters in the pipeline. Hand it
+        # to a daemon thread instead: a slow or blackholed endpoint can no
+        # longer delay startup, and being a daemon it never holds up exit.
+        if _usage_analytics_disabled():
+            logger.info(
+                "[Filter] Usage analytics disabled (DO_NOT_TRACK / SCARF_NO_ANALYTICS)"
+            )
+        else:
             logger.info(
                 "[Filter] Usage analytics enabled via Scarf (set DO_NOT_TRACK=true to disable)"
             )
-            scarf_elogger.log_event(
-                properties={"filter_initialized": f"{scarf_metric_name}"}
-            )
-        except Exception as e:
-            logger.warning(f"Failed to log Scarf event: {e}")
+            threading.Thread(
+                target=_report_filter_initialized,
+                args=(type(self).__name__.lower(),),
+                name="scarf-usage-event",
+                daemon=True,
+            ).start()
 
         try:
             try:
