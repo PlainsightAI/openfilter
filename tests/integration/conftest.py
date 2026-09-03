@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -29,7 +31,8 @@ CONTAINER_STARTUP_TIMEOUT_SECS = 30
 class JaegerContainer:
     """Handle to a running jaeger-all-in-one container.
 
-    otlp_grpc_endpoint is a host:port string suitable for OTLPSpanExporter.
+    otlp_grpc_endpoint is a URL suitable for OTLPSpanExporter, including the
+    scheme — see the note where it is built.
     query_base_url is the jaeger query API root (append /api/traces/<id>).
     """
 
@@ -110,7 +113,11 @@ def _docker_run_jaeger() -> JaegerContainer:
 
     jc = JaegerContainer(
         container_id=container_id,
-        otlp_grpc_endpoint=f"localhost:{otlp_port}",
+        # The scheme is load-bearing, not decoration: infer_otlp_insecure treats a
+        # bare host:port as TLS (the OTel SDK's secure default), so dropping it
+        # makes the exporter TLS-handshake this plaintext receiver and fail with
+        # WRONG_VERSION_NUMBER instead of exporting anything.
+        otlp_grpc_endpoint=f"http://localhost:{otlp_port}",
         query_base_url=f"http://localhost:{query_port}",
     )
 
@@ -165,3 +172,28 @@ def jaeger() -> Iterator[JaegerContainer]:
             capture_output=True,
             timeout=15,
         )
+
+
+@pytest.fixture
+def short_ipc_dir() -> Iterator[str]:
+    """A unique directory short enough to hold a ZMQ ipc:// socket.
+
+    pytest's ``tmp_path`` cannot be used for this. A unix domain socket path
+    must fit in ``sockaddr_un.sun_path`` — 104 bytes on macOS, 108 on Linux —
+    and on macOS ``tmp_path`` resolves under
+    ``/private/var/folders/<...>/T/pytest-of-<user>/pytest-<n>/<testname>/``,
+    which puts a socket beneath it at ~138 characters. The bind fails, and the
+    only symptom is the receiver never coming up, which reads like a hang rather
+    than a path problem.
+
+    ``/tmp`` is hardcoded because it is short on both macOS and Linux, unlike
+    ``tempfile.gettempdir()`` which returns the long ``/var/folders`` path on
+    macOS. That is safe here: ``ipc://`` is POSIX-only to begin with, so these
+    tests never run where ``/tmp`` is absent. ``mkdtemp`` keeps the per-run
+    uniqueness that using ``tmp_path`` was there to provide.
+    """
+    path = tempfile.mkdtemp(prefix="of-ipc-", dir="/tmp")
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)

@@ -19,6 +19,24 @@ OpenFilter Library release notes
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
   the difference between about 60 minutes and 16 minutes, with the same frames analysed.
 
+### Changed
+
+- **Usage analytics no longer block filter startup.** The Scarf event reported once
+  per `Filter` init went out through a synchronous POST with a 3s timeout, run
+  inline in `Filter.__init__`. Anywhere the endpoint is unreachable but not
+  actively refused — a firewall that DROPs, a captive network, an air-gapped
+  host — every filter paid up to 3s of startup, multiplied by the number of
+  filters in the pipeline. The report now runs on a daemon thread, so a slow or
+  blackholed endpoint can neither delay startup nor hold up process exit. What is
+  sent, and the `DO_NOT_TRACK` / `SCARF_NO_ANALYTICS` opt-out, are unchanged.
+
+### Fixed
+
+- **The startup log no longer claims analytics are enabled when they are opted
+  out.** `Filter` printed `Usage analytics enabled via Scarf` unconditionally,
+  including for users who had set `DO_NOT_TRACK`. It now reports the actual state
+  and skips the reporting thread entirely when opted out.
+
 ## v1.3.0 - 2026-08-17
 
 ### Added
