@@ -16,7 +16,6 @@ OpenFilter Library release notes
 
 ### Added
 
-
 - **`VideoIn` / `ImageIn`: `FILTER_OVERRIDE_SOURCE_URI` to preserve source-file identity.**
   A new `override_source_uri` config (env `FILTER_OVERRIDE_SOURCE_URI`, or
   `FILTER_OVERRIDE_SOURCE_URI_FILE` to read it from a file written at runtime) makes both

@@ -228,6 +228,34 @@ Filter.run_multi([
 ])
 ```
 
+### 6. Local Directory of Video Files
+
+The Video Source filter can sequentially read and play video files located inside a local directory in alphabetical order. 
+
+#### Directory Path Format
+```python
+sources='file:///path/to/directory'
+```
+
+#### Directory Playback Parameters
+When pointing `sources` to a folder, you can configure these optional parameters:
+- **`pattern`**: A glob/wildcard pattern (e.g. `*.mp4`) or regular expression to filter specific files.
+- **`recursive`**: If `True`, the filter scans subfolders recursively for matching videos.
+
+#### Directory Example
+```python
+# Process a folder of videos sequentially
+Filter.run_multi([
+    (VideoIn, dict(
+        sources='file:///home/user/videos_to_process',
+        outputs='tcp://*:5550',
+        pattern='*.mp4',    # Only read .mp4 files
+        recursive=True,     # Look inside subfolders
+        sync=True,          # Decode with sync
+    )),
+])
+```
+
 ## Video Processing Options
 
 ### Color Format (`bgr`)
@@ -714,6 +742,8 @@ class VideoInConfig(FilterConfig):
     fps: int | None
     maxsize: str | None
     resize: str | None
+    pattern: str | None
+    recursive: bool | None
 ```
 
 ### VideoIn
@@ -744,3 +774,5 @@ class VideoIn(Filter):
 - `FILTER_MAXFPS`: Maximum frame rate
 - `FILTER_MAXSIZE`: Maximum image size
 - `FILTER_RESIZE`: Image resize dimensions
+- `FILTER_PATTERN`: Glob/wildcard pattern for directory video files
+- `FILTER_RECURSIVE`: Scan directories recursively for matching videos

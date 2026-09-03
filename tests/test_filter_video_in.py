@@ -839,8 +839,6 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_directory_source(self):
-        import shutil
-        import tempfile
 
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
@@ -901,8 +899,6 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_directory_loop(self):
-        import shutil
-        import tempfile
 
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
@@ -948,8 +944,6 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_directory_skips_non_videos(self):
-        import shutil
-        import tempfile
 
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
@@ -990,8 +984,7 @@ class TestVideoIn(unittest.TestCase):
 
 
     def test_sync_mode_fps_preservation_across_transition(self):
-        import shutil
-        import tempfile
+
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
@@ -1031,8 +1024,7 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_override_source_uri_rejected_for_directory(self):
-        import shutil
-        import tempfile
+
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
@@ -1065,12 +1057,13 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_directory_transition_skip_bad_file(self):
-        import shutil
-        import tempfile
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
-        # 01.mp4 is good, 02.mp4 is a file we will delete, 03.mp4 is good
+        # 01.mp4 is good, 02.mp4 has a valid extension but garbage bytes (fails to open), 03.mp4 is good.
+        # A deleted file would race VideoReader.__init__'s directory scan (which runs in the Filter.Runner
+        # subprocess): if the delete won, 02_bad.mp4 would never make it into dir_files and the
+        # transition-skip code path would never be entered. A present-but-corrupt file is deterministic.
         v_a = os.path.join(test_dir, '01_good.mp4')
         v_b = os.path.join(test_dir, '02_bad.mp4')
         v_c = os.path.join(test_dir, '03_good.mp4')
@@ -1078,7 +1071,7 @@ class TestVideoIn(unittest.TestCase):
         with open(v_a, 'wb') as f:
             f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
         with open(v_b, 'wb') as f:
-            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+            f.write(b'not actually a video, but has a .mp4 extension')
         with open(v_c, 'wb') as f:
             f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
 
@@ -1094,12 +1087,6 @@ class TestVideoIn(unittest.TestCase):
         ], exit_time=4)
 
         try:
-            # Delete v_b right after VideoIn initializes its directory list.
-            # When VideoIn transitions to v_b, the file won't exist anymore,
-            # which fails instantly inside OpenCV without any FFmpeg demuxer stall!
-            if os.path.exists(v_b):
-                os.unlink(v_b)
-
             frames = []
             while frame_dict := queue.get():
                 frames.append(frame_dict['main'])
@@ -1114,8 +1101,6 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
     def test_empty_directory_raises(self):
-        import shutil
-        import tempfile
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
@@ -1124,8 +1109,6 @@ class TestVideoIn(unittest.TestCase):
             VideoReader(f'file://{test_dir}')
 
     def test_directory_pattern_and_recursive_options(self):
-        import shutil
-        import tempfile
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
@@ -1179,6 +1162,51 @@ class TestVideoIn(unittest.TestCase):
         self.assertGreater(width, 0)
         self.assertEqual(fmt, 'BGR')
         self.assertGreater(fps, 0.0)
+
+    def test_nosync_mode_fps_preservation_across_transition(self):
+        """Non-sync mode caps self.fps to maxfps when native fps exceeds it (see _open_dir_file),
+        and that capped value is what reaches meta['src_fps'] downstream. Asserting on
+        VideoReader.ns_per_fps (as a prior version of this test did) doesn't exercise that: ns_per_fps
+        is recomputed purely from native_fps regardless of maxfps (see _open_dir_file), so it would be
+        unaffected by maxfps handling and, with two byte-identical clips, would compare equal even if
+        the maxfps cap were dropped or stale after a transition. Checking meta['src_fps'] end-to-end
+        (like test_sync_mode_fps_preservation_across_transition does for sync mode) actually exercises
+        the cap being correctly reapplied to the newly opened file."""
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01_good.mp4')
+        v_b = os.path.join(test_dir, '02_good.mp4')
+
+        for path in (v_a, v_b):
+            with open(path, 'wb') as f:
+                f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # Native test video is ~30 fps; maxfps=10 forces the cap on both files. loop keeps the
+        # reader emitting past the two files (6 frames) so the slow-joining ipc subscriber below
+        # doesn't miss frames that were already sent before it connected.
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!maxfps=10!loop=3',
+                outputs = 'ipc://test-VideoIn-nosync-fps',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-nosync-fps',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=4)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+
+            self.assertTrue(frames, 'expected at least one frame')
+            for f in frames:
+                self.assertAlmostEqual(f.data['meta']['src_fps'], 10.0, places=1)
+        finally:
+            runner.stop()
+            queue.close()
 
 
 if __name__ == '__main__':

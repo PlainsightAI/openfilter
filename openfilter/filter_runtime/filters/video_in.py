@@ -1,4 +1,5 @@
 import glob
+import fnmatch
 import logging
 import os
 import re
@@ -57,12 +58,25 @@ def matches_pattern(path: str, pattern: str) -> bool:
     if not pattern:
         return True
     if '*' in pattern or '?' in pattern:
-        return glob.fnmatch.fnmatch(os.path.basename(path), pattern)
+        return fnmatch.fnmatch(os.path.basename(path), pattern)
     try:
         return bool(re.search(pattern, path))
     except re.error:
         return pattern in path
 
+
+def scan_dir_videos(path: str, pattern: str | None = None, recursive: bool | None = None) -> list[str]:
+    """List video files in a directory honoring `pattern` and `recursive`, sorted alphabetically.
+
+    Shared by VideoReader.__init__ and VideoReader.get_info so both agree on which file in a
+    directory is "first", instead of get_info silently reimplementing (and diverging from) the scan.
+    """
+    if recursive:
+        candidates = glob.glob(os.path.join(path, '**', '*'), recursive=True)
+    else:
+        candidates = glob.glob(os.path.join(path, '*'))
+
+    return [p for p in sorted(candidates) if os.path.isfile(p) and is_video_file_ext(p) and matches_pattern(p, pattern)]
 
 
 re_size = re.compile(r'^\s* (\d+) \s* ([x+]) \s* (\d+) \s* (n(?:ear)? | l(?:in)? | c(?:ub)?)? \s*$', re.VERBOSE | re.IGNORECASE)
@@ -157,22 +171,22 @@ class VideoReader:
         pattern:  str | None = None,
         recursive: bool | None = None,
     ):
-        """Read a single video file, network stream or webcam until the end.
+        """Read a single video file, network stream, webcam, or video directory until the end.
 
         Args:
-            source: Source video stream, can be file, web stream like 'rtsp://...' or a webcam index starting at 0 -
-                'webcam://0'.
+            source: Source video stream, can be file, web stream like 'rtsp://...', a webcam index starting at 0 -
+                'webcam://0', or a local directory path (e.g. 'file:///path/to/dir') for sequential playback of matching video files in alphabetical order.
 
             cond: A threading.Condition to .notify_all() whenever a new frame is read.
 
             bgr: True means images in BGR mode, False means RGB. Has env var default.
 
-            sync: Only has meaning for files. If True then frames will be delivered one by one without skipping or
+            sync: Only has meaning for files/directories. If True then frames will be delivered one by one without skipping or
                 waiting to maintain realtime, in this way all frames will be read. If None the the system default is
                 used which comes from an environment variable (and is False if not present).
 
-            loop: Only has meaning for files. True or 0 means infinite loop, False means loop once, otherwise int loops
-                through the video. Has env var default.
+            loop: Only has meaning for files/directories. True or 0 means infinite loop, False means loop once, otherwise int loops
+                through the video files. Has env var default.
 
             maxsize: Maximum image size to allow, above this will be resized down. Valid codes are '123x456' which will
                 proportionally resize maintaining aspect ratio so that neither dimension exceeds the max, '123+456' will
@@ -180,6 +194,14 @@ class VideoReader:
                 interpolation, default is 'near'est neighbor.
 
             resize: Straight resize always, can not be specified together with `maxsize`, it is one or the other.
+
+            region: S3 bucket AWS region (optional).
+
+            expiration: Presigned URL expiration in seconds (optional).
+
+            pattern: Filter string or glob pattern (e.g., `*.mp4`) to select specific video files from directories.
+
+            recursive: If True, subfolders in directories are recursively scanned for video files.
         """
 
         if not isinstance((loop := VIDEO_IN_LOOP if loop is None else loop), (bool, int)) or loop < 0:
@@ -222,19 +244,8 @@ class VideoReader:
             if os.path.isdir(source):
                 self.is_dir = True
                 self.source_dir_path = self.source
-                
-                # Scan directory with pattern and recursive options
-                if recursive:
-                    glob_pat = os.path.join(source, '**', '*')
-                    candidates = glob.glob(glob_pat, recursive=True)
-                else:
-                    glob_pat = os.path.join(source, '*')
-                    candidates = glob.glob(glob_pat)
 
-                self.dir_files = []
-                for p in sorted(candidates):
-                    if os.path.isfile(p) and is_video_file_ext(p) and matches_pattern(p, pattern):
-                        self.dir_files.append(p)
+                self.dir_files = scan_dir_videos(source, pattern, recursive)
 
                 if not self.dir_files:
                     raise RuntimeError(f'no valid video files found in directory: {self.source!r}')
@@ -382,7 +393,7 @@ class VideoReader:
                 self.fps = self.maxfps
 
         if not self.sync_evt:
-            self.ns_per_fps = 1_000_000_000 // (self.fps or 15)
+            self.ns_per_fps = 1_000_000_000 // (self.native_fps or 15)
 
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
@@ -489,7 +500,7 @@ class VideoReader:
                         self.cap.release()
                         self.cap = cv2.VideoCapture(self.ssource)
                         if not self.cap.isOpened():
-                            raise RuntimeError(f'failed to reopen video source: {self.ssource}')
+                            raise RuntimeError(f'failed to reopen video source: {self.source!r}')
                         ret, image = self._cap_read()
                         if not ret or image is None:
                             return None
@@ -592,8 +603,9 @@ class VideoReader:
 
     def read(self, with_tframe=False):  # -> np.ndarray | tuple[np.ndarray, int, dict] | None
         # BREAKING CHANGE (unreleased): with_tframe=True returns (image, tframe, extras) instead of (image, tframe);
-        # extras is {} for non-file sources and absorbs future additions without another arity break (same shape as
-        # the seekable-replay branch). with_tframe=False (the default) is unaffected.
+        # extras always carries 'source'/'fps' (added in thread_reader) and, for file sources only, 'frame_n'/'pts_s';
+        # this absorbs future additions without another arity break (same shape as the seekable-replay branch).
+        # with_tframe=False (the default) is unaffected.
         if self.state == 0:
             raise RuntimeError('can not read from video before it is started')
         elif self.state == 2:
@@ -612,25 +624,28 @@ class VideoReader:
         return image_n_tframe if with_tframe else image_n_tframe[0]
 
     @staticmethod
-    def get_info(source: str) -> tuple[int, int, str, float]:  # (height, width, format, fps)
+    def get_info(source: str, pattern: str | None = None, recursive: bool | None = None) -> tuple[int, int, str, float]:  # (height, width, format, fps)
         path = source[7:] if is_video_file(source) else source
         if os.path.isdir(path):
-            # Find the first valid video file in the directory
-            with os.scandir(path) as entries:
-                for entry in sorted(entries, key=lambda e: e.name):
-                    if entry.is_file() and is_video_file_ext(entry.path):
-                        test_cap = cv2.VideoCapture(entry.path)
-                        if test_cap.isOpened():
-                            ret, image = test_cap.read()
-                            if ret:
-                                width  = image.shape[1]
-                                height = image.shape[0]
-                                fps    = test_cap.get(cv2.CAP_PROP_FPS)
-                                is_bgr = test_cap.get(cv2.CAP_PROP_CONVERT_RGB)
-                                format = 'GRAY' if len(image.shape) == 2 else 'BGR' if is_bgr else 'RGB'
-                                test_cap.release()
-                                return height, width, format, fps
-                            test_cap.release()
+            # First file per scan_dir_videos, so this reports the file __init__ will actually play
+            dir_files = scan_dir_videos(path, pattern, recursive)
+
+            if not dir_files:
+                raise RuntimeError(f'no valid video files found in directory: {source}')
+
+            for entry_path in dir_files:
+                test_cap = cv2.VideoCapture(entry_path)
+                if test_cap.isOpened():
+                    ret, image = test_cap.read()
+                    if ret:
+                        width  = image.shape[1]
+                        height = image.shape[0]
+                        fps    = test_cap.get(cv2.CAP_PROP_FPS)
+                        is_bgr = test_cap.get(cv2.CAP_PROP_CONVERT_RGB)
+                        format = 'GRAY' if len(image.shape) == 2 else 'BGR' if is_bgr else 'RGB'
+                        test_cap.release()
+                        return height, width, format, fps
+                    test_cap.release()
             raise RuntimeError(f'no valid video files found in directory: {source}')
 
         cap = cv2.VideoCapture(int(source[9:]) if is_video_webcam(source) else path)
@@ -823,6 +838,12 @@ class VideoIn(Filter):
                     Set presigned URL expiration time in seconds for S3 sources. Default is 3600 (1 hour).
                     Only applies to s3:// sources.
 
+                '!pattern=*.mp4':
+                    Set pattern option for directory source.
+
+                '!recursive', '!no-recursive':
+                    Set recursive option for directory source.
+
         bgr:
             True means images in BGR format, False means RGB. Doesn't really affect anythong other than procesing speed
             since images should always be converted to the needed format. Don't touch this unless you have an explicit
@@ -860,6 +881,13 @@ class VideoIn(Filter):
             Same as `maxsize` but is always applied unconditionally regardless of input size.Can not be specified
             together with `maxsize`, it is one or the other. Set here to apply to all sources or can be set individually
             per source. Global env var default FILTER_RESIZE / VIDEO_IN_RESIZE.
+
+        pattern:
+            Only has meaning for folder/directory file:// sources. A glob pattern (e.g. `*.mp4`) or regular expression
+            to match and filter video files in the directory. Set here to apply to all sources or can be set individually per source.
+
+        recursive:
+            Only has meaning for folder/directory file:// sources. If True, scans the directory and its subdirectories recursively for matching files. Set here to apply to all sources or can be set individually per source.
 
         override_source_uri:
             Logical source URI to report as each frame's meta['src'] instead of the physical source opened by the
