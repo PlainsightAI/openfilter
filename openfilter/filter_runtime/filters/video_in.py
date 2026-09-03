@@ -72,7 +72,12 @@ def scan_dir_videos(path: str, pattern: str | None = None, recursive: bool | Non
 
     Shared by VideoReader.__init__ and VideoReader.get_info so both agree on which file in a
     directory is "first", instead of get_info silently reimplementing (and diverging from) the scan.
+    Also resolves the VIDEO_IN_PATTERN/VIDEO_IN_RECURSIVE env var defaults here (rather than in each
+    caller) so both callers apply them identically.
     """
+    pattern   = VIDEO_IN_PATTERN if pattern is None else pattern
+    recursive = VIDEO_IN_RECURSIVE if recursive is None else recursive
+
     if recursive:
         candidates = glob.glob(os.path.join(path, '**', '*'), recursive=True)
     else:
@@ -215,8 +220,6 @@ class VideoReader:
         self.maxfps        = maxfps = VIDEO_IN_MAXFPS if maxfps is None else maxfps
         self.maxsize       = None if (s := VIDEO_IN_MAXSIZE if maxsize is None else maxsize) is None else parse_size(s)
         self.resize        = None if (s := VIDEO_IN_RESIZE if resize is None else resize) is None else parse_size(s)
-        pattern            = VIDEO_IN_PATTERN if pattern is None else pattern
-        recursive          = VIDEO_IN_RECURSIVE if recursive is None else recursive
         self.state         = 0     # 0 = before start, 1 = playing, 2 = stopped / done
         self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
