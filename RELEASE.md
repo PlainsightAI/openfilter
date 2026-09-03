@@ -4,9 +4,18 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Added
+
+- **`VideoIn` support for directory-based sequential video playback.**
+  Users can now pass a directory of video files as a source (e.g. `file:///path/to/folder`).
+  The video files inside are sorted alphabetically and played sequentially. Includes full
+  support for loop and sync, recursive subfolder scanning via `recursive`, and glob-based file
+  pattern filtering via `pattern`.
+
 ## v1.3.0 - 2026-08-17
 
 ### Added
+
 
 - **`VideoIn` / `ImageIn`: `FILTER_OVERRIDE_SOURCE_URI` to preserve source-file identity.**
   A new `override_source_uri` config (env `FILTER_OVERRIDE_SOURCE_URI`, or

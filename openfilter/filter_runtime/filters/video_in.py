@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 import re
@@ -43,6 +44,25 @@ is_video_file     = lambda name: name.startswith('file://')
 is_video_webcam   = lambda name: name.startswith('webcam://')
 is_video_stream   = lambda name: bool(re_video_stream.match(name))
 is_video_s3       = lambda name: name.startswith('s3://')
+
+VIDEO_EXTENSIONS = {'mp4', 'mkv', 'avi', 'mov', 'webm', 'flv', 'wmv', 'm4v', '3gp', 'mpg', 'mpeg'}
+
+def is_video_file_ext(path: str) -> bool:
+    """Check if the given file path has a valid video file extension."""
+    ext = path.split('.')[-1].lower() if '.' in path else ''
+    return ext in VIDEO_EXTENSIONS
+
+def matches_pattern(path: str, pattern: str) -> bool:
+    """Check if path matches the given pattern (glob or regex)."""
+    if not pattern:
+        return True
+    if '*' in pattern or '?' in pattern:
+        return glob.fnmatch.fnmatch(os.path.basename(path), pattern)
+    try:
+        return bool(re.search(pattern, path))
+    except re.error:
+        return pattern in path
+
 
 
 re_size = re.compile(r'^\s* (\d+) \s* ([x+]) \s* (\d+) \s* (n(?:ear)? | l(?:in)? | c(?:ub)?)? \s*$', re.VERBOSE | re.IGNORECASE)
@@ -134,6 +154,8 @@ class VideoReader:
         resize:  str | None = None,
         region:  str | None = None,
         expiration: int | None = None,
+        pattern:  str | None = None,
+        recursive: bool | None = None,
     ):
         """Read a single video file, network stream or webcam until the end.
 
@@ -175,6 +197,10 @@ class VideoReader:
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
         self.is_file       = is_file = is_video_file(source) or is_video_s3(source)
         self.as_bgr        = bool(VIDEO_IN_BGR if bgr is None else bgr)  # only validated after first frame is read (set to False if frames are grayscale)
+        self.is_dir        = False
+        self.dir_files     = []
+        self.dir_index     = 0
+        self.source_dir_path = None
 
         if self.maxsize and self.resize:
             raise ValueError(f"can not specify both 'maxsize' and 'resize' together in {self.source!r}")
@@ -192,6 +218,31 @@ class VideoReader:
                 except Exception as e:
                     raise ValueError(f'Failed to generate presigned URL for S3 source {self.source!r}: {e}')
             self.is_file = True
+
+            if os.path.isdir(source):
+                self.is_dir = True
+                self.source_dir_path = self.source
+                
+                # Scan directory with pattern and recursive options
+                if recursive:
+                    glob_pat = os.path.join(source, '**', '*')
+                    candidates = glob.glob(glob_pat, recursive=True)
+                else:
+                    glob_pat = os.path.join(source, '*')
+                    candidates = glob.glob(glob_pat)
+
+                self.dir_files = []
+                for p in sorted(candidates):
+                    if os.path.isfile(p) and is_video_file_ext(p) and matches_pattern(p, pattern):
+                        self.dir_files.append(p)
+
+                if not self.dir_files:
+                    raise RuntimeError(f'no valid video files found in directory: {self.source!r}')
+                self.dir_index = 0
+                source = self.dir_files[0]
+                self.source = f'file://{source}'
+            else:
+                self.is_dir = False
 
             if sync := VIDEO_IN_SYNC if sync is None else sync:
                 self.sync_evt = Event()
@@ -313,6 +364,26 @@ class VideoReader:
 
         return ret, image
 
+    def _open_dir_file(self, index: int):
+        self.dir_index = index
+        active_source = self.dir_files[index]
+        self.cap.release()
+        self.cap = cv2.VideoCapture(active_source)
+        if not self.cap.isOpened():
+            raise RuntimeError(f'failed to open video in directory: {active_source}')
+
+        self.source = f'file://{active_source}'
+        self.ssource = active_source
+        fps = self.cap.get(cv2.CAP_PROP_FPS) or None
+        self.native_fps = fps
+        self.fps = fps
+        if self.maxfps is not None and fps is not None and fps > self.maxfps:
+            if not self.is_file or not self.sync_evt:
+                self.fps = self.maxfps
+
+        if not self.sync_evt:
+            self.ns_per_fps = 1_000_000_000 // (self.fps or 15)
+
     def read_one(self):
         def wait() -> bool:  # returns if should return frame or keep looping
             t = time_ns()
@@ -360,6 +431,31 @@ class VideoReader:
                 # frame may be lost on a realtime video if it takes too long to query it but it will never be lost on
                 # a `sync` video.
 
+                if self.is_dir and self.dir_index + 1 < len(self.dir_files):
+                    success = False
+                    while self.dir_index + 1 < len(self.dir_files):
+                        next_index = self.dir_index + 1
+                        active_source = self.dir_files[next_index]
+                        try:
+                            logger.info(f'video transition: opening next file in directory: {active_source}')
+                            self._open_dir_file(next_index)
+                            ret, image = self._cap_read()
+                            if ret and image is not None:
+                                success = True
+                                break
+                            self.dir_index = next_index
+                        except Exception as e:
+                            logger.error(f'Error during video transition to {active_source}: {e}')
+                            self.dir_index = next_index
+
+                    if success:
+                        if wait():
+                            break
+                        continue
+
+                    # If we ran out of directory files, fall through to loop/restart logic below
+
+                # Handle loop/restart
                 if loop := self.loop:
                     self.loop = loop - 1
 
@@ -369,21 +465,39 @@ class VideoReader:
                         return None
 
                 try:
-                    logger.info(f'video loop: {self.source}{f"  (last loop)" if loop == 2 else f"  ({self.loop} left)" if loop else ""}')
+                    if self.is_dir:
+                        logger.info(f'directory loop: {self.source_dir_path}{f"  (last loop)" if loop == 2 else f"  ({self.loop} left)" if loop else ""}')
+                        success = False
+                        self.dir_index = 0
+                        while self.dir_index < len(self.dir_files):
+                            active_source = self.dir_files[self.dir_index]
+                            try:
+                                self._open_dir_file(self.dir_index)
+                                ret, image = self._cap_read()
+                                if ret and image is not None:
+                                    success = True
+                                    break
+                                self.dir_index += 1
+                            except Exception as e:
+                                logger.error(f'Error during directory loop restart for {active_source}: {e}')
+                                self.dir_index += 1
 
-                    self.cap.release()
-                    self.cap = cv2.VideoCapture(self.ssource)
-                    if not self.cap.isOpened():
-                        raise RuntimeError(f'failed to reopen video source: {self.source!r}')
+                        if not success:
+                            return None
+                    else:
+                        logger.info(f'video loop: {self.source}{f"  (last loop)" if loop == 2 else f"  ({self.loop} left)" if loop else ""}')
+                        self.cap.release()
+                        self.cap = cv2.VideoCapture(self.ssource)
+                        if not self.cap.isOpened():
+                            raise RuntimeError(f'failed to reopen video source: {self.ssource}')
+                        ret, image = self._cap_read()
+                        if not ret or image is None:
+                            return None
 
-                except Exception:
+                except Exception as e:
+                    logger.error(f'Error during loop restart: {e}')
                     wait()
 
-                    return None
-
-                ret, image = self._cap_read()
-
-                if not ret or image is None:  # no wait() here because if first frame fails then nothing means anything anymore and we might as well just end it
                     return None
 
             if wait():
@@ -450,7 +564,10 @@ class VideoReader:
                 elif not self.as_bgr:
                     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            self.deque.append((image, tframe, self.extras))
+            extras_copy = dict(self.extras) if self.extras else {}
+            extras_copy['source'] = self.source
+            extras_copy['fps'] = self.fps
+            self.deque.append((image, tframe, extras_copy))
 
             if cond is not None:
                 with cond:
@@ -496,7 +613,27 @@ class VideoReader:
 
     @staticmethod
     def get_info(source: str) -> tuple[int, int, str, float]:  # (height, width, format, fps)
-        cap = cv2.VideoCapture(int(source[9:]) if is_video_webcam(source) else source[7:] if is_video_file(source) else source)
+        path = source[7:] if is_video_file(source) else source
+        if os.path.isdir(path):
+            # Find the first valid video file in the directory
+            with os.scandir(path) as entries:
+                for entry in sorted(entries, key=lambda e: e.name):
+                    if entry.is_file() and is_video_file_ext(entry.path):
+                        test_cap = cv2.VideoCapture(entry.path)
+                        if test_cap.isOpened():
+                            ret, image = test_cap.read()
+                            if ret:
+                                width  = image.shape[1]
+                                height = image.shape[0]
+                                fps    = test_cap.get(cv2.CAP_PROP_FPS)
+                                is_bgr = test_cap.get(cv2.CAP_PROP_CONVERT_RGB)
+                                format = 'GRAY' if len(image.shape) == 2 else 'BGR' if is_bgr else 'RGB'
+                                test_cap.release()
+                                return height, width, format, fps
+                            test_cap.release()
+            raise RuntimeError(f'no valid video files found in directory: {source}')
+
+        cap = cv2.VideoCapture(int(source[9:]) if is_video_webcam(source) else path)
 
         try:
             ret, image = cap.read()
@@ -608,6 +745,8 @@ class VideoInConfig(FilterConfig):
             resize:     str | None
             region:     str | None
             expiration: int | None
+            pattern:    str | None
+            recursive:  bool | None
 
         source:  str
         topic:   str | None
@@ -622,6 +761,8 @@ class VideoInConfig(FilterConfig):
     maxfps:  float | None
     maxsize: str | None
     resize:  str | None
+    pattern:    str | None
+    recursive:  bool | None
 
     # Logical source URI to report as meta['src'] instead of the physical source
     # (set by an orchestrator; see resolve_override_source_uri). FILTER_OVERRIDE_SOURCE_URI
@@ -796,7 +937,7 @@ class VideoIn(Filter):
                 source.topic = 'main'
             if not isinstance(options := source.options, VideoInConfig.Source.Options):
                 source.options = options = VideoInConfig.Source.Options() if options is None else VideoInConfig.Source.Options(options)
-            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize', 'region', 'expiration') for o in options):
+            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize', 'region', 'expiration', 'pattern', 'recursive') for o in options):
                 raise ValueError(f'unknown option {option!r} in {source!r}')
 
         if len(set(source.topic for source in sources)) != len(sources):
@@ -820,7 +961,7 @@ class VideoIn(Filter):
             optionss.append(source.options or {})
 
         default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
-            'maxsize': config.maxsize, 'resize': config.resize}
+            'maxsize': config.maxsize, 'resize': config.resize, 'pattern': config.get('pattern'), 'recursive': config.get('recursive')}
         self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
         self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
         self.id              = -1  # frame id
@@ -832,10 +973,11 @@ class VideoIn(Filter):
         # override to every frame would mislabel each with the same meta['src'], so only honor
         # it for a single source; otherwise fall back to each video's real source and warn once.
         # Mirrors the ImageIn guard.
-        self._apply_override = bool(self.override_source_uri) and len(self.mvreader.videos) <= 1
+        self._apply_override = bool(self.override_source_uri) and len(self.mvreader.videos) <= 1 and not self.mvreader.videos[0].is_dir
         if self.override_source_uri and not self._apply_override:
+            reason = "a directory source" if len(self.mvreader.videos) == 1 and self.mvreader.videos[0].is_dir else f"{len(self.mvreader.videos)} sources"
             logger.warning(
-                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this VideoIn has {len(self.mvreader.videos)} sources; "
+                f"FILTER_OVERRIDE_SOURCE_URI[_FILE] is set but this VideoIn has {reason}; "
                 "the override identifies a single source, so meta['src'] will report each video's real source instead")
 
         self.mvreader.start()
@@ -853,9 +995,11 @@ class VideoIn(Filter):
             self.id = id = self.id + 1
 
             def meta(vid, tfrm, extras):
-                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else vid.source, 'src_fps': vid.fps}
+                src = extras.get('source', vid.source) if extras else vid.source
+                src_fps = extras.get('fps', vid.fps) if extras else vid.fps
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else src, 'src_fps': src_fps}
 
-                if extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
+                if extras and 'frame_n' in extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
                     meta['src_frame'] = extras['frame_n']
 
                     if (pts_s := extras.get('pts_s')) is not None:

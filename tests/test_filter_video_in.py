@@ -2,6 +2,8 @@
 
 import logging
 import os
+import shutil
+import tempfile
 import unittest
 from time import sleep, time
 from unittest.mock import patch
@@ -835,6 +837,348 @@ class TestVideoIn(unittest.TestCase):
         finally:
             runner.stop()
             queue.close()
+
+    def test_directory_source(self):
+        import shutil
+        import tempfile
+
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # Write two separate video files into the temp directory
+        video_a_path = os.path.join(test_dir, 'video_a.mp4')
+        video_b_path = os.path.join(test_dir, 'video_b.mp4')
+
+        with open(video_a_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(video_b_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # Test VideoIn with directory as a source
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync',
+                outputs = 'ipc://test-VideoIn-dir',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-dir',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+
+            # There should be exactly 6 frames (3 from video_a and 3 from video_b)
+            self.assertEqual(len(frames), 6)
+
+            # Check that src name is continuously updated
+            # First 3 frames should belong to video_a
+            self.assertEqual(frames[0].data['meta']['src'], f'file://{video_a_path}')
+            self.assertEqual(frames[1].data['meta']['src'], f'file://{video_a_path}')
+            self.assertEqual(frames[2].data['meta']['src'], f'file://{video_a_path}')
+
+            # Next 3 frames should belong to video_b
+            self.assertEqual(frames[3].data['meta']['src'], f'file://{video_b_path}')
+            self.assertEqual(frames[4].data['meta']['src'], f'file://{video_b_path}')
+            self.assertEqual(frames[5].data['meta']['src'], f'file://{video_b_path}')
+
+            # Check that src_frame resets upon opening each new video file
+            self.assertEqual([f.data['meta']['src_frame'] for f in frames], [0, 1, 2, 0, 1, 2])
+
+            # Check image colors to make sure they play correctly
+            self.assertTrue(is_image_very_red(frames[0].image))
+            self.assertTrue(is_image_very_green(frames[1].image))
+            self.assertTrue(is_image_very_blue(frames[2].image))
+            self.assertTrue(is_image_very_red(frames[3].image))
+            self.assertTrue(is_image_very_green(frames[4].image))
+            self.assertTrue(is_image_very_blue(frames[5].image))
+
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_directory_loop(self):
+        import shutil
+        import tempfile
+
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # Write two separate video files into the temp directory
+        video_a_path = os.path.join(test_dir, 'video_a.mp4')
+        video_b_path = os.path.join(test_dir, 'video_b.mp4')
+
+        with open(video_a_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(video_b_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # Test VideoIn with directory source and loop=2
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync!loop=2',
+                outputs = 'ipc://test-VideoIn-dir-loop',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-dir-loop',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+
+            # 2 videos * 3 frames each * 2 loops = 12 frames
+            self.assertEqual(len(frames), 12)
+
+            # Check that src_frame resets and progresses properly
+            self.assertEqual([f.data['meta']['src_frame'] for f in frames], [0, 1, 2, 0, 1, 2] * 2)
+
+            # Check sources are correctly sequenced
+            expected_srcs = ([f'file://{video_a_path}'] * 3 + [f'file://{video_b_path}'] * 3) * 2
+            self.assertEqual([f.data['meta']['src'] for f in frames], expected_srcs)
+
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_directory_skips_non_videos(self):
+        import shutil
+        import tempfile
+
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # Write a non-video file and a video file
+        non_video_path = os.path.join(test_dir, 'video_a.txt')
+        video_b_path = os.path.join(test_dir, 'video_b.mp4')
+
+        with open(non_video_path, 'w') as f:
+            f.write("This is not a video file.")
+        with open(video_b_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # Test VideoIn with directory source
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync',
+                outputs = 'ipc://test-VideoIn-dir-skip',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-dir-skip',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+
+            # Only video_b should play (3 frames)
+            self.assertEqual(len(frames), 3)
+            self.assertEqual(frames[0].data['meta']['src'], f'file://{video_b_path}')
+
+        finally:
+            runner.stop()
+            queue.close()
+
+
+    def test_sync_mode_fps_preservation_across_transition(self):
+        import shutil
+        import tempfile
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01.mp4')
+        v_b = os.path.join(test_dir, '02.mp4')
+        with open(v_a, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(v_b, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # In sync mode with maxfps, the original native frame rate (approx 30.0)
+        # must be preserved in meta['src_fps'] even after transitioning to 02.mp4
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync!maxfps=10',
+                outputs = 'ipc://test-VideoIn-sync-fps',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-sync-fps',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+            
+            self.assertEqual(len(frames), 6)
+            for idx, f in enumerate(frames):
+                self.assertIsNotNone(f.data['meta']['src_fps'])
+                # Native test video is 30.0 fps. Maxfps is 10.
+                # In sync mode, native fps must be passed downstream.
+                self.assertAlmostEqual(f.data['meta']['src_fps'], 30.0, places=1)
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_override_source_uri_rejected_for_directory(self):
+        import shutil
+        import tempfile
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01.mp4')
+        with open(v_a, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        override = 's3://some-logical-dir-uri'
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync',
+                outputs = 'ipc://test-VideoIn-override-dir',
+                override_source_uri = override,
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-override-dir',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=3)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+            self.assertTrue(len(frames) > 0)
+            # Override must be ignored because source is a directory.
+            self.assertEqual(frames[0].data['meta']['src'], f'file://{v_a}')
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_directory_transition_skip_bad_file(self):
+        import shutil
+        import tempfile
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # 01.mp4 is good, 02.mp4 is a file we will delete, 03.mp4 is good
+        v_a = os.path.join(test_dir, '01_good.mp4')
+        v_b = os.path.join(test_dir, '02_bad.mp4')
+        v_c = os.path.join(test_dir, '03_good.mp4')
+
+        with open(v_a, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(v_b, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(v_c, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync',
+                outputs = 'ipc://test-VideoIn-skip-bad',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-skip-bad',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=4)
+
+        try:
+            # Delete v_b right after VideoIn initializes its directory list.
+            # When VideoIn transitions to v_b, the file won't exist anymore,
+            # which fails instantly inside OpenCV without any FFmpeg demuxer stall!
+            if os.path.exists(v_b):
+                os.unlink(v_b)
+
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+            
+            # Since 02_bad.mp4 is skipped during transition, we expect 3 frames from 01_good
+            # and 3 frames from 03_good (total 6 frames).
+            self.assertEqual(len(frames), 6)
+            self.assertEqual(frames[0].data['meta']['src'], f'file://{v_a}')
+            self.assertEqual(frames[3].data['meta']['src'], f'file://{v_c}')
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_empty_directory_raises(self):
+        import shutil
+        import tempfile
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # Reading an empty directory must raise RuntimeError on initialization
+        with self.assertRaises(RuntimeError):
+            VideoReader(f'file://{test_dir}')
+
+    def test_directory_pattern_and_recursive_options(self):
+        import shutil
+        import tempfile
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # Create nested folders
+        nested_dir = os.path.join(test_dir, 'subdir')
+        os.makedirs(nested_dir)
+
+        v_root = os.path.join(test_dir, 'root_match.mp4')
+        v_ignored = os.path.join(test_dir, 'ignored.txt')
+        v_nested = os.path.join(nested_dir, 'nested_match.mp4')
+
+        with open(v_root, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+        with open(v_ignored, 'wb') as f:
+            f.write(b'not a video')
+        with open(v_nested, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        # Test recursive glob scanning
+        reader_rec = VideoReader(f'file://{test_dir}', sync=True, recursive=True)
+        try:
+            self.assertEqual(len(reader_rec.dir_files), 2)
+            self.assertEqual(reader_rec.dir_files[0], v_root)
+            self.assertEqual(reader_rec.dir_files[1], v_nested)
+        finally:
+            reader_rec.cap.release()
+
+        # Test pattern filter
+        reader_pat = VideoReader(f'file://{test_dir}', sync=True, recursive=True, pattern='*nested*')
+        try:
+            self.assertEqual(len(reader_pat.dir_files), 1)
+            self.assertEqual(reader_pat.dir_files[0], v_nested)
+        finally:
+            reader_pat.cap.release()
+
+    def test_directory_get_info(self):
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        # 1. Failure Case: Empty directory should raise RuntimeError
+        with self.assertRaises(RuntimeError):
+            VideoReader.get_info(f'file://{test_dir}')
+
+        # 2. Success Case: Directory with a valid video
+        v_path = os.path.join(test_dir, 'video.mp4')
+        with open(v_path, 'wb') as f:
+            f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        height, width, fmt, fps = VideoReader.get_info(f'file://{test_dir}')
+        self.assertGreater(height, 0)
+        self.assertGreater(width, 0)
+        self.assertEqual(fmt, 'BGR')
+        self.assertGreater(fps, 0.0)
 
 
 if __name__ == '__main__':
