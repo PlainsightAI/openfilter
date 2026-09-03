@@ -1239,12 +1239,64 @@ class TestVideoIn(unittest.TestCase):
         finally:
             reader.stop()
 
-    def _write_clip(self, path, fps, size):
-        """Write a tiny 3-frame red/green/blue clip. size=(width, height)."""
+    def _write_clip(self, path, fps, size, num_frames=3):
+        """Write a tiny red/green/blue-cycling clip. size=(width, height)."""
         writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
-        for color in ((0, 0, 255), (0, 255, 0), (255, 0, 0)):  # BGR: red, green, blue
-            writer.write(np.full((size[1], size[0], 3), color, dtype=np.uint8))
+        colors = ((0, 0, 255), (0, 255, 0), (255, 0, 0))  # BGR: red, green, blue
+        for i in range(num_frames):
+            writer.write(np.full((size[1], size[0], 3), colors[i % len(colors)], dtype=np.uint8))
         writer.release()
+
+    def test_nosync_mode_maxfps_paces_delivery_across_transition(self):
+        """Confirms actual frame DELIVERY (not just the reported meta['src_fps'] label checked by
+        test_nosync_mode_src_fps_capped_across_transition) still honors maxfps across a directory
+        transition: the pacing loop (ns_per_fps) reads each file at its own native rate, but it's the
+        separate maxfps skip-logic (ns_per_maxfps) that throttles what actually reaches the caller, and
+        that skip logic runs off a clock that is never reset in _open_dir_file. So delivered-frame
+        spacing - including the gap spanning the transition itself - should stay at ~1/maxfps
+        throughout, never collapsing to the (much faster) native-rate spacing."""
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01.mp4')
+        v_b = os.path.join(test_dir, '02.mp4')
+
+        native_fps, maxfps, frames_per_file = 100.0, 20.0, 40
+
+        self._write_clip(v_a, fps=native_fps, size=(64, 48), num_frames=frames_per_file)
+        self._write_clip(v_b, fps=native_fps, size=(64, 48), num_frames=frames_per_file)
+
+        reader = VideoReader(f'file://{test_dir}', sync=False, maxfps=maxfps)
+        try:
+            reader.start()
+
+            deliveries = []  # (wall_clock_time, source) per delivered frame
+
+            while (item := reader.read(with_tframe=True)) is not None:
+                _, _, extras = item
+                deliveries.append((time(), extras['source']))
+
+            self.assertGreaterEqual(len(deliveries), 6, 'expected several throttled deliveries per file')
+
+            # Locate the first delivery from the second file (its 'source' differs from the first).
+            transition_idx = next(i for i, (_, src) in enumerate(deliveries) if src != deliveries[0][1])
+
+            target = 1 / maxfps
+            deltas = [t2 - t1 for (t1, _), (t2, _) in zip(deliveries, deliveries[1:])]
+
+            # The last gap is exempt: the reader delivers end-of-stream's final frame immediately
+            # (see read_one()'s "maintain the last frame" comment) rather than waiting a full
+            # throttle interval, which is expected and unrelated to maxfps pacing correctness.
+            for i, d in enumerate(deltas[:-1]):
+                self.assertGreater(d, target / 2, f'gap {i} too short for maxfps throttling: {d}s')
+
+            # Specifically: the gap spanning the file transition must stay throttled to ~1/maxfps,
+            # not collapse to the much shorter native-rate (1/native_fps) spacing.
+            transition_delta = deliveries[transition_idx][0] - deliveries[transition_idx - 1][0]
+            self.assertGreater(transition_delta, target / 2,
+                'delivery spacing across the file transition collapsed to native rate instead of staying maxfps-throttled')
+        finally:
+            reader.stop()
 
     def test_directory_files_differing_fps_and_resolution(self):
         """A directory source is not guaranteed uniform: files may differ in native fps and/or
