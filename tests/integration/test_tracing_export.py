@@ -74,7 +74,7 @@ def test_otlp_grpc_export_reaches_jaeger(jaeger):
 
 
 @pytest.mark.slow
-def test_per_frame_trace_context_crosses_mq_hop(jaeger, tmp_path):
+def test_per_frame_trace_context_crosses_mq_hop(jaeger, short_ipc_dir):
     """Two MQ endpoints across an IPC hop must produce spans for the same frame.id
     that share a single trace ID and nest under the producer's mq.send span.
 
@@ -114,8 +114,11 @@ def test_per_frame_trace_context_crosses_mq_hop(jaeger, tmp_path):
     tracer = provider.get_tracer("openfilter-mq-hop-test")
     register_hop_tracer(tracer)
 
-    # IPC socket lives in the test's tmp dir so parallel runs don't collide.
-    ipc_addr = f"ipc://{tmp_path}/mq-hop-test.sock"
+    # IPC socket lives in a per-test dir so parallel runs don't collide. It has
+    # to be short_ipc_dir rather than tmp_path — a unix socket path must fit in
+    # sun_path (104 bytes on macOS), and tmp_path blows past that. See the
+    # fixture for the details.
+    ipc_addr = f"ipc://{short_ipc_dir}/mq-hop-test.sock"
 
     recv_ready = threading.Event()
     recv_done = threading.Event()
