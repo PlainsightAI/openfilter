@@ -270,6 +270,31 @@ class TestMaxfpsByIndex(unittest.TestCase):
             finally:
                 vid.cap.release()
 
+    def test_by_index_logs_the_two_requested_but_no_op_paths(self):
+        """The requested-but-no-op paths must not be silent: an operator who set the flag
+        fleet-wide needs to know why a pipeline got no speedup. Limited to sync=True and the
+        fps sentinel; the frequent, legitimate fps <= maxfps no-op stays quiet."""
+        _LOGGER = 'openfilter.filter_runtime.filters.video_in'
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'v.mp4')
+            _write_video(path)
+
+            # sync=True: requested, would have engaged, but no-skip is preserved
+            with self.assertLogs(_LOGGER, level='INFO') as cm:
+                VideoReader(f'file://{path}', sync=True, maxfps=5, maxfps_by_index=True).cap.release()
+            self.assertTrue(any('not engaged' in m and 'sync is on' in m for m in cm.output))
+
+            # fps sentinel: requested, sync off, but the reported rate is bogus
+            with self.assertLogs(_LOGGER, level='INFO') as cm:
+                _reader_reporting_fps(path, FPS_SANE_CEILING, sync=False, maxfps=5, maxfps_by_index=True).cap.release()
+            self.assertTrue(any('not engaged' in m and 'sentinel' in m for m in cm.output))
+
+            # fps <= maxfps: a legitimate no-op, must stay quiet about by-index
+            with self.assertLogs(_LOGGER, level='INFO') as cm:
+                VideoReader(f'file://{path}', sync=False, maxfps=60, maxfps_by_index=True).cap.release()
+            self.assertFalse(any('not engaged' in m for m in cm.output))
+
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({
             'id': 'vidin',

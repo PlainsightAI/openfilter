@@ -241,8 +241,9 @@ class VideoReader:
         # path untouched rather than silently subsampling it. It also no-ops when fps is the
         # >= FPS_SANE_CEILING sentinel a VFR container reports for no real rate (the value
         # _cap_read rejects as bogus): a stride derived from it would drop nearly every frame.
-        if (VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index) \
-                and is_file and not sync and maxfps and fps and fps < FPS_SANE_CEILING and fps > maxfps:
+        by_index = VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index
+
+        if by_index and is_file and not sync and maxfps and fps and fps < FPS_SANE_CEILING and fps > maxfps:
             # ceil, not round: round picks the nearest stride and banker's-rounds 2.5 -> 2,
             # which lets the by-index rate exceed maxfps (e.g. 25 fps / maxfps 10 -> stride 2
             # -> 12.5 fps). ceil keeps the effective rate at or below the cap for every ratio,
@@ -261,6 +262,18 @@ class VideoReader:
 
             logger.info(f'maxfps by index: keeping 1 frame in every {self.index_stride} '
                         f'of {fps:.1f} fps -> {fps / self.index_stride:.2f} fps effective')
+
+        # The two no-op paths that would otherwise be silent: by-index was asked for on a file
+        # whose rate is above maxfps (so it would have engaged), but sync is on or the reported
+        # rate is the >= FPS_SANE_CEILING sentinel. An operator setting FILTER_MAXFPS_BY_INDEX
+        # fleet-wide gets no speedup on those pipelines, so say why. NOT logged for fps <= maxfps,
+        # which is a legitimate, frequent no-op and would just be noise.
+        elif by_index and is_file and maxfps and fps and fps > maxfps and (sync or fps >= FPS_SANE_CEILING):
+            reason = ('sync is on, its no-skip guarantee is preserved' if sync else
+                      f'the source reports no real frame rate ({fps:.0f} fps sentinel)')
+
+            logger.info(f'maxfps by index requested but not engaged ({reason}); '
+                        f'maxfps {maxfps:.1f} applied on the wall clock instead')
 
         if fps is None:
             logger.warning(f'video does not have fixed framerate {self.source!r}{"" if maxfps is None else ", maxfps ignored"}')
