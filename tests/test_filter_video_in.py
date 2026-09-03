@@ -1163,15 +1163,12 @@ class TestVideoIn(unittest.TestCase):
         self.assertEqual(fmt, 'BGR')
         self.assertGreater(fps, 0.0)
 
-    def test_nosync_mode_fps_preservation_across_transition(self):
+    def test_nosync_mode_src_fps_capped_across_transition(self):
         """Non-sync mode caps self.fps to maxfps when native fps exceeds it (see _open_dir_file),
-        and that capped value is what reaches meta['src_fps'] downstream. Asserting on
-        VideoReader.ns_per_fps (as a prior version of this test did) doesn't exercise that: ns_per_fps
-        is recomputed purely from native_fps regardless of maxfps (see _open_dir_file), so it would be
-        unaffected by maxfps handling and, with two byte-identical clips, would compare equal even if
-        the maxfps cap were dropped or stale after a transition. Checking meta['src_fps'] end-to-end
-        (like test_sync_mode_fps_preservation_across_transition does for sync mode) actually exercises
-        the cap being correctly reapplied to the newly opened file."""
+        and that capped value is what reaches meta['src_fps'] downstream. This is unaffected by
+        whether ns_per_fps (real-time pacing) is recomputed from native_fps or from the already-capped
+        self.fps - self.fps is capped identically either way - so this test does NOT cover that
+        distinction; see test_nosync_mode_ns_per_fps_native_after_transition for that."""
         test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, test_dir)
 
@@ -1204,6 +1201,92 @@ class TestVideoIn(unittest.TestCase):
             self.assertTrue(frames, 'expected at least one frame')
             for f in frames:
                 self.assertAlmostEqual(f.data['meta']['src_fps'], 10.0, places=1)
+        finally:
+            runner.stop()
+            queue.close()
+
+    def test_nosync_mode_ns_per_fps_native_after_transition(self):
+        """Regression test: in non-sync mode, ns_per_fps (the real-time pacing interval used by
+        wait() to avoid reading a file faster than realtime) must be recomputed from the newly
+        opened file's native_fps after a directory transition (see _open_dir_file), not from
+        self.fps - which _open_dir_file may have already capped down to maxfps. A prior bug
+        recomputed ns_per_fps from self.fps, so with maxfps well below native fps, pacing after
+        the transition collapsed to 1e9 // maxfps instead of staying at 1e9 // native_fps.
+        meta['src_fps'] does not reveal this bug because self.fps is capped to maxfps identically
+        whether or not ns_per_fps is computed correctly (see test_nosync_mode_src_fps_capped_across_transition)."""
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01_good.mp4')
+        v_b = os.path.join(test_dir, '02_good.mp4')
+
+        for path in (v_a, v_b):
+            with open(path, 'wb') as f:
+                f.write(RED_THEN_GREEN_THEN_BLUE_FRAME_MP4)
+
+        reader = VideoReader(f'file://{test_dir}', sync=False, maxfps=1)  # maxfps << native (~30 fps)
+        try:
+            initial_ns_per_fps = reader.ns_per_fps  # native-fps pacing, established before any transition
+
+            reader.start()
+
+            while reader.read() is not None:
+                pass  # drain both directory files to force the transition
+
+            # Pacing after the transition into 02_good.mp4 must still be native-fps derived, not
+            # collapsed to the maxfps-capped self.fps.
+            self.assertEqual(reader.ns_per_fps, initial_ns_per_fps)
+        finally:
+            reader.stop()
+
+    def _write_clip(self, path, fps, size):
+        """Write a tiny 3-frame red/green/blue clip. size=(width, height)."""
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
+        for color in ((0, 0, 255), (0, 255, 0), (255, 0, 0)):  # BGR: red, green, blue
+            writer.write(np.full((size[1], size[0], 3), color, dtype=np.uint8))
+        writer.release()
+
+    def test_directory_files_differing_fps_and_resolution(self):
+        """A directory source is not guaranteed uniform: files may differ in native fps and/or
+        resolution. Each file's own properties - not the previous file's, and not the first
+        file's - must be reflected per-frame: meta['src_fps'] from the newly opened file's fps
+        and the emitted image shape from the newly opened file's resolution."""
+        test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, test_dir)
+
+        v_a = os.path.join(test_dir, '01_small_30fps.mp4')
+        v_b = os.path.join(test_dir, '02_big_15fps.mp4')
+
+        self._write_clip(v_a, fps=30.0, size=(64, 48))
+        self._write_clip(v_b, fps=15.0, size=(128, 96))
+
+        runner = Filter.Runner([
+            (VideoIn, dict(
+                sources = f'file://{test_dir}!sync',
+                outputs = 'ipc://test-VideoIn-dir-mixed',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-VideoIn-dir-mixed',
+                queue   = (queue := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], exit_time=5)
+
+        try:
+            frames = []
+            while frame_dict := queue.get():
+                frames.append(frame_dict['main'])
+
+            self.assertEqual(len(frames), 6)  # 3 frames from each file
+
+            for f in frames[:3]:
+                self.assertEqual(f.shape[:2], (48, 64))
+                self.assertAlmostEqual(f.data['meta']['src_fps'], 30.0, delta=1.0)
+                self.assertEqual(f.data['meta']['src'], f'file://{v_a}')
+
+            for f in frames[3:]:
+                self.assertEqual(f.shape[:2], (96, 128))
+                self.assertAlmostEqual(f.data['meta']['src_fps'], 15.0, delta=1.0)
+                self.assertEqual(f.data['meta']['src'], f'file://{v_b}')
         finally:
             runner.stop()
             queue.close()

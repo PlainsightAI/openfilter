@@ -29,6 +29,8 @@ VIDEO_IN_LOOP     = _ if isinstance(_ := json_getval((os.getenv('VIDEO_IN_LOOP')
 VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
+VIDEO_IN_PATTERN  = os.getenv('VIDEO_IN_PATTERN') or os.getenv('FILTER_PATTERN') or None
+VIDEO_IN_RECURSIVE = bool(json_getval((os.getenv('VIDEO_IN_RECURSIVE') or os.getenv('FILTER_RECURSIVE') or 'false').lower()))
 
 # OpenCV's ffmpeg backend reports a sentinel ~1000 fps (the 1 ms MKV/webm container
 # timebase, not a real rate) for some VFR files. Any CAP_PROP_FPS at or above this
@@ -199,9 +201,9 @@ class VideoReader:
 
             expiration: Presigned URL expiration in seconds (optional).
 
-            pattern: Filter string or glob pattern (e.g., `*.mp4`) to select specific video files from directories.
+            pattern: Filter string or glob pattern (e.g., `*.mp4`) to select specific video files from directories. Has env var default.
 
-            recursive: If True, subfolders in directories are recursively scanned for video files.
+            recursive: If True, subfolders in directories are recursively scanned for video files. Has env var default.
         """
 
         if not isinstance((loop := VIDEO_IN_LOOP if loop is None else loop), (bool, int)) or loop < 0:
@@ -213,6 +215,8 @@ class VideoReader:
         self.maxfps        = maxfps = VIDEO_IN_MAXFPS if maxfps is None else maxfps
         self.maxsize       = None if (s := VIDEO_IN_MAXSIZE if maxsize is None else maxsize) is None else parse_size(s)
         self.resize        = None if (s := VIDEO_IN_RESIZE if resize is None else resize) is None else parse_size(s)
+        pattern            = VIDEO_IN_PATTERN if pattern is None else pattern
+        recursive          = VIDEO_IN_RECURSIVE if recursive is None else recursive
         self.state         = 0     # 0 = before start, 1 = playing, 2 = stopped / done
         self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
@@ -793,22 +797,23 @@ class VideoIn(Filter):
 
     config:
         sources:
-            The source(s) of the video(s), comma delimited, can be file://, rtsp:// stream, s3:// bucket object, 
-            or a webcam:// index.
+            The source(s) of the video(s), comma delimited, can be file://, rtsp:// stream, s3:// bucket object,
+            a webcam:// index, or a file:// directory path for sequential playback of the video files within it.
 
             Examples:
-                'file://a.mp4!sync!loop=3, rtsp://b.com!no-bgr;c, s3://bucket/video.mp4!region=us-west-2, webcam://0;e'
+                'file://a.mp4!sync!loop=3, rtsp://b.com!no-bgr;c, s3://bucket/video.mp4!region=us-west-2, webcam://0;e, file:///path/to/dir!pattern=*.mp4'
 
                     is the same as
 
-                ['file://a.mp4!sync!loop=3', 'rtsp://b.com!no-bgr;c', 's3://bucket/video.mp4!region=us-west-2', 'webcam://0;e']
+                ['file://a.mp4!sync!loop=3', 'rtsp://b.com!no-bgr;c', 's3://bucket/video.mp4!region=us-west-2', 'webcam://0;e', 'file:///path/to/dir!pattern=*.mp4']
 
                     is the same as
 
                 [{'source': 'file://a.mp4', 'topic': 'main', 'options': {'sync': True, 'loop': 3}},
                  {'source': 'rtsp://b.com', 'topic': 'c', 'options': {'bgr': False}},
                  {'source': 's3://bucket/video.mp4', 'topic': 'main', 'options': {'region': 'us-west-2'}},
-                 {'source': 'webcam://0', 'topic': 'e', 'options': {}}]
+                 {'source': 'webcam://0', 'topic': 'e', 'options': {}},
+                 {'source': 'file:///path/to/dir', 'topic': 'main', 'options': {'pattern': '*.mp4'}}]
 
                     For 'options' see below.
 
@@ -884,10 +889,13 @@ class VideoIn(Filter):
 
         pattern:
             Only has meaning for folder/directory file:// sources. A glob pattern (e.g. `*.mp4`) or regular expression
-            to match and filter video files in the directory. Set here to apply to all sources or can be set individually per source.
+            to match and filter video files in the directory. Set here to apply to all sources or can be set individually
+            per source. Global env var default FILTER_PATTERN / VIDEO_IN_PATTERN.
 
         recursive:
-            Only has meaning for folder/directory file:// sources. If True, scans the directory and its subdirectories recursively for matching files. Set here to apply to all sources or can be set individually per source.
+            Only has meaning for folder/directory file:// sources. If True, scans the directory and its subdirectories
+            recursively for matching files. Set here to apply to all sources or can be set individually per source.
+            Global env var default FILTER_RECURSIVE / VIDEO_IN_RECURSIVE.
 
         override_source_uri:
             Logical source URI to report as each frame's meta['src'] instead of the physical source opened by the
@@ -909,6 +917,9 @@ class VideoIn(Filter):
         With `loop`, the cap is reopened each pass, so src_frame and src_seconds restart at 0 every loop (they are the
         position WITHIN the file) while meta['id'] keeps counting across passes: a looped timeline is non-monotonic
         in src_frame/src_seconds but monotonic in id, so consumers indexing a looped source must key off id, not src_frame.
+        A directory source reproduces this same restart at every file transition even without `loop`: src_frame and
+        src_seconds reset to 0 (and meta['src'] changes) each time playback moves to the next file in the directory,
+        while meta['id'] keeps counting across the whole run - so consumers of a directory source must key off id too.
 
         Stream and webcam sources have no meaningful decoder position: both keys are absent, all other meta unchanged.
 
@@ -919,6 +930,8 @@ class VideoIn(Filter):
         FILTER_MAXFPS   / VIDEO_IN_MAXFPS
         FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
         FILTER_RESIZE   / VIDEO_IN_RESIZE
+        FILTER_PATTERN  / VIDEO_IN_PATTERN
+        FILTER_RECURSIVE / VIDEO_IN_RECURSIVE
 
     S3 Configuration:
         For s3:// sources, AWS credentials are required. Set these environment variables:
