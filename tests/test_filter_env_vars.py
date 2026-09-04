@@ -20,8 +20,9 @@ ALL_FILTER_ENV_VARS = [
     'FILTER_BGR', 'FILTER_SYNC', 'FILTER_LOOP', 'FILTER_MAXFPS', 'FILTER_MAXSIZE',
     'FILTER_RESIZE', 'FILTER_FPS', 'FILTER_SEGTIME', 'FILTER_PARAMS',
     'FILTER_POLL_INTERVAL', 'FILTER_RECURSIVE', 'FILTER_QUALITY', 'FILTER_COMPRESSION',
+    'FILTER_PATTERN',
     'VIDEO_IN_BGR', 'VIDEO_IN_SYNC', 'VIDEO_IN_LOOP', 'VIDEO_IN_MAXFPS',
-    'VIDEO_IN_MAXSIZE', 'VIDEO_IN_RESIZE',
+    'VIDEO_IN_MAXSIZE', 'VIDEO_IN_RESIZE', 'VIDEO_IN_PATTERN', 'VIDEO_IN_RECURSIVE',
     'VIDEO_OUT_BGR', 'VIDEO_OUT_FPS', 'VIDEO_OUT_SEGTIME', 'VIDEO_OUT_PARAMS',
     'IMAGE_IN_POLL_INTERVAL', 'IMAGE_IN_LOOP', 'IMAGE_IN_RECURSIVE', 'IMAGE_IN_MAXFPS',
     'IMAGE_OUT_BGR', 'IMAGE_OUT_QUALITY', 'IMAGE_OUT_COMPRESSION',
@@ -107,6 +108,15 @@ class TestVideoInEnvVars(unittest.TestCase):
     def test_filter_resize_with_interpolation(self):
         self.assertEqual(self._get('VIDEO_IN_RESIZE', {'FILTER_RESIZE': '640x480lin'}), '640x480lin')
 
+    def test_filter_pattern(self):
+        self.assertEqual(self._get('VIDEO_IN_PATTERN', {'FILTER_PATTERN': '*.mp4'}), '*.mp4')
+
+    def test_filter_recursive_true(self):
+        self.assertTrue(self._get('VIDEO_IN_RECURSIVE', {'FILTER_RECURSIVE': 'true'}))
+
+    def test_filter_recursive_false(self):
+        self.assertFalse(self._get('VIDEO_IN_RECURSIVE', {'FILTER_RECURSIVE': 'false'}))
+
     # --- Legacy VIDEO_IN_* still works ---
 
     def test_legacy_bgr(self):
@@ -126,6 +136,12 @@ class TestVideoInEnvVars(unittest.TestCase):
 
     def test_legacy_resize(self):
         self.assertEqual(self._get('VIDEO_IN_RESIZE', {'VIDEO_IN_RESIZE': '320x240'}), '320x240')
+
+    def test_legacy_pattern(self):
+        self.assertEqual(self._get('VIDEO_IN_PATTERN', {'VIDEO_IN_PATTERN': '*.mkv'}), '*.mkv')
+
+    def test_legacy_recursive(self):
+        self.assertTrue(self._get('VIDEO_IN_RECURSIVE', {'VIDEO_IN_RECURSIVE': 'true'}))
 
     # --- Legacy takes precedence over FILTER_* ---
 
@@ -147,6 +163,12 @@ class TestVideoInEnvVars(unittest.TestCase):
     def test_precedence_resize(self):
         self.assertEqual(self._get('VIDEO_IN_RESIZE', {'FILTER_RESIZE': '320x240', 'VIDEO_IN_RESIZE': '640x480'}), '640x480')
 
+    def test_precedence_pattern(self):
+        self.assertEqual(self._get('VIDEO_IN_PATTERN', {'FILTER_PATTERN': '*.mp4', 'VIDEO_IN_PATTERN': '*.mkv'}), '*.mkv')
+
+    def test_precedence_recursive(self):
+        self.assertTrue(self._get('VIDEO_IN_RECURSIVE', {'FILTER_RECURSIVE': 'false', 'VIDEO_IN_RECURSIVE': 'true'}))
+
     # --- Defaults (no env vars set) ---
 
     def test_default_bgr(self):
@@ -166,6 +188,12 @@ class TestVideoInEnvVars(unittest.TestCase):
 
     def test_default_resize(self):
         self.assertIsNone(self._get('VIDEO_IN_RESIZE', {}))
+
+    def test_default_pattern(self):
+        self.assertIsNone(self._get('VIDEO_IN_PATTERN', {}))
+
+    def test_default_recursive(self):
+        self.assertFalse(self._get('VIDEO_IN_RECURSIVE', {}))
 
     # --- Case insensitivity ---
 

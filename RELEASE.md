@@ -18,6 +18,11 @@ OpenFilter Library release notes
   sentinel). Selecting from the source timeline is also exact, where selecting against the
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
   the difference between about 60 minutes and 16 minutes, with the same frames analysed.
+- **`VideoIn` support for directory-based sequential video playback.**
+  Users can now pass a directory of video files as a source (e.g. `file:///path/to/folder`).
+  The video files inside are sorted alphabetically and played sequentially. Includes full
+  support for loop and sync, recursive subfolder scanning via `recursive`, and glob-based file
+  pattern filtering via `pattern`.
 
 ### Changed
 
