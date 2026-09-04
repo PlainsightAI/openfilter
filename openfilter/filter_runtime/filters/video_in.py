@@ -1,6 +1,7 @@
 import glob
 import fnmatch
 import logging
+import math
 import os
 import re
 from threading import Condition, Event, Thread
@@ -27,6 +28,7 @@ VIDEO_IN_BGR      = bool(json_getval((os.getenv('VIDEO_IN_BGR') or os.getenv('FI
 VIDEO_IN_SYNC     = bool(json_getval((os.getenv('VIDEO_IN_SYNC') or os.getenv('FILTER_SYNC') or 'false').lower()))
 VIDEO_IN_LOOP     = _ if isinstance(_ := json_getval((os.getenv('VIDEO_IN_LOOP') or os.getenv('FILTER_LOOP') or 'false').lower()), bool) else int(_)
 VIDEO_IN_MAXFPS   = None if (_ := json_getval((os.getenv('VIDEO_IN_MAXFPS') or os.getenv('FILTER_MAXFPS') or 'null').lower())) is None else float(_)
+VIDEO_IN_MAXFPS_BY_INDEX = bool(json_getval((os.getenv('VIDEO_IN_MAXFPS_BY_INDEX') or os.getenv('FILTER_MAXFPS_BY_INDEX') or 'false').lower()))
 VIDEO_IN_MAXSIZE  = os.getenv('VIDEO_IN_MAXSIZE') or os.getenv('FILTER_MAXSIZE') or None
 VIDEO_IN_RESIZE   = os.getenv('VIDEO_IN_RESIZE') or os.getenv('FILTER_RESIZE') or None
 VIDEO_IN_PATTERN  = os.getenv('VIDEO_IN_PATTERN') or os.getenv('FILTER_PATTERN') or None
@@ -171,6 +173,7 @@ class VideoReader:
         sync:    bool | None = None,
         loop:    bool | int = False,
         maxfps:  float | None = None,
+        maxfps_by_index: bool | None = None,
         maxsize: str | None = None,
         resize:  str | None = None,
         region:  str | None = None,
@@ -221,9 +224,11 @@ class VideoReader:
         self.maxsize       = None if (s := VIDEO_IN_MAXSIZE if maxsize is None else maxsize) is None else parse_size(s)
         self.resize        = None if (s := VIDEO_IN_RESIZE if resize is None else resize) is None else parse_size(s)
         self.state         = 0     # 0 = before start, 1 = playing, 2 = stopped / done
-        self.sync_evt      = None  # this is set only for file fideo with 'sync' option True
+        self.sync_evt      = None  # file video only: set for 'sync' True, and also for 'sync' False when maxfps_by_index engages (by-index needs the back-pressure), so this being set does NOT imply sync is on
         self.ns_per_fps    = None  # this is set only for file video with 'sync' option False
         self.ns_per_maxfps = None if maxfps is None else 1_000_000_000 // maxfps
+        self.index_stride  = None  # set only for file video when maxfps is applied by source index
+        self.frame_i       = 0
         self.is_file       = is_file = is_video_file(source) or is_video_s3(source)
         self.as_bgr        = bool(VIDEO_IN_BGR if bgr is None else bgr)  # only validated after first frame is read (set to False if frames are grayscale)
         self.is_dir        = False
@@ -292,13 +297,65 @@ class VideoReader:
 
         self.fps = fps
 
+        # maxfps normally means "N frames per second of WALL CLOCK": the reader either
+        # sleeps (sync) or paces to the container rate (no-sync), so an hour of file costs
+        # an hour however fast the machine is. For offline processing what is wanted is the
+        # same selection taken from the source timeline and read as fast as the box allows.
+        # Opt in with maxfps_by_index: on a sync=False file the reader keeps 1 frame in every
+        # ceil(fps/maxfps) and reads flat out, both clock paths switched off. The selection is
+        # unchanged in steady state, it is just no longer spread over real time.
+        #
+        # It is deliberately a sync=False optimisation. sync=True documents a no-skip contract
+        # ("will not skip any frames"), so by-index no-ops under sync and leaves that paced
+        # path untouched rather than silently subsampling it. It also no-ops when fps is the
+        # >= FPS_SANE_CEILING sentinel a VFR container reports for no real rate (the value
+        # _cap_read rejects as bogus): a stride derived from it would drop nearly every frame.
+        by_index = VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index
+
+        # Kept so the gate can run again per file: a directory source opens members with
+        # their own rates, and each has to be gated on its own fps (see _open_dir_file).
+        self._by_index = by_index
+        self._sync     = bool(sync)
+
+        if self._by_index_stride_for(fps) is not None:
+            # ceil, not round: round picks the nearest stride and banker's-rounds 2.5 -> 2,
+            # which lets the by-index rate exceed maxfps (e.g. 25 fps / maxfps 10 -> stride 2
+            # -> 12.5 fps). ceil keeps the effective rate at or below the cap for every ratio,
+            # matching the wall-clock path (fps > maxfps here already guarantees stride >= 2).
+            self.index_stride  = self._by_index_stride_for(fps)
+            self.ns_per_fps    = None
+            self.ns_per_maxfps = None
+
+            # We only get here under sync=False, which switches off both clock paths - and
+            # those were the only back-pressure against the reader outrunning the consumer.
+            # Without the sync_evt handshake the reader decodes flat out into the 1-slot deque
+            # and overwrites selected frames before they are popped, so give the by-index path
+            # the same handshake sync=True has (sync_evt is None here, never created above).
+            self.sync_evt = Event()
+            self.sync_evt.set()
+
+            logger.info(f'maxfps by index: keeping 1 frame in every {self.index_stride} '
+                        f'of {fps:.1f} fps -> {fps / self.index_stride:.2f} fps effective')
+
+        # The two no-op paths that would otherwise be silent: by-index was asked for on a file
+        # whose rate is above maxfps (so it would have engaged), but sync is on or the reported
+        # rate is the >= FPS_SANE_CEILING sentinel. An operator setting FILTER_MAXFPS_BY_INDEX
+        # fleet-wide gets no speedup on those pipelines, so say why. NOT logged for fps <= maxfps,
+        # which is a legitimate, frequent no-op and would just be noise.
+        elif by_index and is_file and maxfps and fps and fps > maxfps and (sync or fps >= FPS_SANE_CEILING):
+            reason = ('sync is on, its no-skip guarantee is preserved' if sync else
+                      f'the source reports no real frame rate ({fps:.0f} fps sentinel)')
+
+            logger.info(f'maxfps by index requested but not engaged ({reason}); '
+                        f'maxfps {maxfps:.1f} applied on the wall clock instead')
+
         if fps is None:
             logger.warning(f'video does not have fixed framerate {self.source!r}{"" if maxfps is None else ", maxfps ignored"}')
 
             fps_str = ''
 
         else:
-            if maxfps is None or fps <= maxfps:  # maxfps is not None implies (not is_file or not sync) because it would have errored otherwise
+            if maxfps is None or fps <= maxfps:
                 fps_str = f'  ({fps:.1f} fps)'
 
             else:
@@ -382,6 +439,20 @@ class VideoReader:
 
         return ret, image
 
+    def _by_index_stride_for(self, fps):
+        """The by-index stride for a file reporting ``fps``, or None if the gate declines it.
+
+        Shared by __init__ and _open_dir_file so that every member of a directory source is
+        gated exactly the way a lone file is: the stride is derived from THAT file's rate.
+        """
+        maxfps = self.maxfps
+
+        if (self._by_index and self.is_file and not self._sync and maxfps and fps
+                and fps < FPS_SANE_CEILING and fps > maxfps):
+            return math.ceil(fps / maxfps)
+
+        return None
+
     def _open_dir_file(self, index: int):
         self.dir_index = index
         active_source = self.dir_files[index]
@@ -399,12 +470,69 @@ class VideoReader:
             if not self.is_file or not self.sync_evt:
                 self.fps = self.maxfps
 
+        # A directory's members can each report their own rate, so re-run the by-index gate
+        # for this file instead of carrying dir_files[0]'s decision for the whole directory:
+        # the stride is ceil(fps / maxfps) of THIS file, and a file the gate declines falls
+        # back to the wall-clock pacing it would have had on its own. Without this a 30 fps
+        # file followed by a 60 fps one keeps stride 6 throughout and the second file is
+        # delivered at 10 fps under maxfps=5.
+        #
+        # The sync_evt handshake, once created, is never torn down: the consumer side holds a
+        # reference to it, so swapping it back to None mid-stream would strand a reader waiting
+        # on the old event. Leaving it in place only adds back-pressure, which is harmless on
+        # the files the gate declines.
+        if (stride := self._by_index_stride_for(fps)) is not None:
+            if stride != self.index_stride:
+                logger.info(f'maxfps by index: keeping 1 frame in every {stride} of '
+                            f'{fps:.1f} fps -> {fps / stride:.2f} fps effective ({active_source})')
+
+            self.index_stride  = stride
+            self.ns_per_fps    = None
+            self.ns_per_maxfps = None
+
+            if self.sync_evt is None:  # by-index needs the handshake, see the __init__ gate
+                self.sync_evt = Event()
+
+                self.sync_evt.set()
+
+        else:
+            if self.index_stride is not None:
+                logger.info(f'maxfps by index not engaged for {active_source} '
+                            f'({"no fixed rate" if fps is None else f"{fps:.1f} fps"}); '
+                            f'maxfps applied on the wall clock instead')
+
+            self.index_stride  = None
+            self.ns_per_maxfps = None if self.maxfps is None else 1_000_000_000 // self.maxfps
+
+        # by-index counts source frames, so restart the count with every file: each member of
+        # a directory selects from its own index 0, on the first pass and on every loop pass.
+        # Same reason as the reset next to the VideoCapture reopen in read_one.
+        self.frame_i = 0
+
         if not self.sync_evt:
             self.ns_per_fps = 1_000_000_000 // (self.native_fps or 15)
 
     def read_one(self):
-        def wait() -> bool:  # returns if should return frame or keep looping
+        def wait(is_eof=False) -> bool:  # returns if should return frame or keep looping
             t = time_ns()
+
+            if (stride := self.index_stride) is not None:
+                # At EOF the caller wants the last real frame held for the consumer, not a
+                # by-index decision. Skip the stride test (the phantom EOF index is off-stride
+                # (stride-1)/stride of the time) and go straight to the handshake, otherwise the
+                # (None, ...) sentinel evicts the last frame from the 1-slot deque before it is
+                # popped.
+                if not is_eof:
+                    self.frame_i += 1
+
+                    if (self.frame_i - 1) % stride:  # dropped: no back-pressure wait, no sleep
+                        return False
+
+                if (sync_evt := self.sync_evt) is not None:
+                    sync_evt.wait()
+                    sync_evt.clear()
+
+                return True
 
             if self.is_file:
                 if (sync_evt := self.sync_evt) is not None:
@@ -478,7 +606,7 @@ class VideoReader:
                     self.loop = loop - 1
 
                     if not self.loop:
-                        wait()
+                        wait(is_eof=True)
 
                         return None
 
@@ -506,6 +634,7 @@ class VideoReader:
                         logger.info(f'video loop: {self.source}{f"  (last loop)" if loop == 2 else f"  ({self.loop} left)" if loop else ""}')
                         self.cap.release()
                         self.cap = cv2.VideoCapture(self.ssource)
+                        self.frame_i = 0  # by-index counts source frames; restart it with the cap so each pass selects from source index 0
                         if not self.cap.isOpened():
                             raise RuntimeError(f'failed to reopen video source: {self.source!r}')
                         ret, image = self._cap_read()
@@ -514,7 +643,7 @@ class VideoReader:
 
                 except Exception as e:
                     logger.error(f'Error during loop restart: {e}')
-                    wait()
+                    wait(is_eof=True)
 
                     return None
 
@@ -763,6 +892,7 @@ class VideoInConfig(FilterConfig):
             sync:       bool | None
             loop:       bool | int | None
             maxfps:     float | None
+            maxfps_by_index: bool | None
             maxsize:    str | None
             resize:     str | None
             region:     str | None
@@ -781,6 +911,7 @@ class VideoInConfig(FilterConfig):
     sync:    bool | None
     loop:    bool | int | None
     maxfps:  float | None
+    maxfps_by_index: bool | None
     maxsize: str | None
     resize:  str | None
     pattern:    str | None
@@ -833,6 +964,9 @@ class VideoIn(Filter):
                 '!maxfps=10':
                     Set `maxfps` option for this source.
 
+                '!maxfps_by_index', '!no-maxfps_by_index':
+                    Set `maxfps_by_index` option for this source.
+
                 '!maxsize=1280x720', '!maxsize=1280+720C':
                     Set `maxsize` option for this source.
 
@@ -877,6 +1011,16 @@ class VideoIn(Filter):
             Restrict video to this FPS. Works for all types of video and if playing a file:// video in `sync` mode then
             will present the individual frames at this frame rate but will not skip any frames. Set here to apply to
             all sources or can be set individually per source. Global env var default FILTER_MAXFPS / VIDEO_IN_MAXFPS.
+
+        maxfps_by_index:
+            A `sync=False` optimisation, for file:// sources with `maxfps` set below the file's own rate. Off by
+            default, in which case `maxfps` behaves as it always has: a limit on frames delivered per second of WALL
+            CLOCK, so an hour of file takes an hour of wall clock however fast the machine is. Turned on, the same
+            selection is taken from the source timeline instead, keeping 1 frame in every ceil(fps / maxfps) and reading
+            as fast as the box allows. Use it for offline processing of a recording; leave it off for anything that has
+            to track real time. It only engages under `sync=False`: `sync=True` documents a no-skip guarantee ("will not
+            skip any frames"), so with `sync=True` this flag is a no-op and that paced, lossless path is preserved. It
+            is also a no-op on a container that reports no real frame rate (the >= 1000 fps VFR sentinel).
 
         maxsize:
             Maximum image size to allow, above this will be resized down. Valid codes are 'WxH' which will
@@ -931,6 +1075,7 @@ class VideoIn(Filter):
         FILTER_SYNC     / VIDEO_IN_SYNC
         FILTER_LOOP     / VIDEO_IN_LOOP
         FILTER_MAXFPS   / VIDEO_IN_MAXFPS
+        FILTER_MAXFPS_BY_INDEX / VIDEO_IN_MAXFPS_BY_INDEX
         FILTER_MAXSIZE  / VIDEO_IN_MAXSIZE
         FILTER_RESIZE   / VIDEO_IN_RESIZE
         FILTER_PATTERN  / VIDEO_IN_PATTERN
@@ -981,7 +1126,7 @@ class VideoIn(Filter):
                 source.topic = 'main'
             if not isinstance(options := source.options, VideoInConfig.Source.Options):
                 source.options = options = VideoInConfig.Source.Options() if options is None else VideoInConfig.Source.Options(options)
-            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxsize', 'resize', 'region', 'expiration', 'pattern', 'recursive') for o in options):
+            if any((option := o) not in ('bgr', 'sync', 'loop', 'maxfps', 'maxfps_by_index', 'maxsize', 'resize', 'region', 'expiration', 'pattern', 'recursive') for o in options):
                 raise ValueError(f'unknown option {option!r} in {source!r}')
 
         if len(set(source.topic for source in sources)) != len(sources):
@@ -1005,7 +1150,8 @@ class VideoIn(Filter):
             optionss.append(source.options or {})
 
         default_options      = {'bgr': config.bgr, 'sync': config.sync, 'loop': config.loop, 'maxfps': config.maxfps,
-            'maxsize': config.maxsize, 'resize': config.resize, 'pattern': config.get('pattern'), 'recursive': config.get('recursive')}
+            'maxfps_by_index': config.maxfps_by_index, 'maxsize': config.maxsize, 'resize': config.resize,
+            'pattern': config.get('pattern'), 'recursive': config.get('recursive')}
         self.mvreader        = MultiVideoReader(vsources, [{**default_options, **options} for options in optionss])
         self.tops_n_vids     = tuple(zip(topics, self.mvreader.videos))
         self.id              = -1  # frame id

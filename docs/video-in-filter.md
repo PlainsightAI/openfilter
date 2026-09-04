@@ -73,6 +73,7 @@ export FILTER_BGR="true"
 export FILTER_SYNC="true"
 export FILTER_LOOP="true"
 export FILTER_MAXFPS="30"
+export FILTER_MAXFPS_BY_INDEX="false"
 export FILTER_MAXSIZE="1920x1080"
 export FILTER_RESIZE="800x600"
 ```
@@ -772,6 +773,7 @@ class VideoIn(Filter):
 - `FILTER_SYNC`: Enable synchronization
 - `FILTER_LOOP`: Enable video looping
 - `FILTER_MAXFPS`: Maximum frame rate
+- `FILTER_MAXFPS_BY_INDEX`: Apply `maxfps` from the source timeline instead of the wall clock (`sync=False` files only; reads as fast as the decoder allows). On a directory source it is gated per file, so members with different frame rates each get their own stride. Off by default
 - `FILTER_MAXSIZE`: Maximum image size
 - `FILTER_RESIZE`: Image resize dimensions
 - `FILTER_PATTERN`: Glob/wildcard pattern for directory video files
