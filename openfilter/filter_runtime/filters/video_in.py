@@ -312,12 +312,17 @@ class VideoReader:
         # _cap_read rejects as bogus): a stride derived from it would drop nearly every frame.
         by_index = VIDEO_IN_MAXFPS_BY_INDEX if maxfps_by_index is None else maxfps_by_index
 
-        if by_index and is_file and not sync and maxfps and fps and fps < FPS_SANE_CEILING and fps > maxfps:
+        # Kept so the gate can run again per file: a directory source opens members with
+        # their own rates, and each has to be gated on its own fps (see _open_dir_file).
+        self._by_index = by_index
+        self._sync     = bool(sync)
+
+        if self._by_index_stride_for(fps) is not None:
             # ceil, not round: round picks the nearest stride and banker's-rounds 2.5 -> 2,
             # which lets the by-index rate exceed maxfps (e.g. 25 fps / maxfps 10 -> stride 2
             # -> 12.5 fps). ceil keeps the effective rate at or below the cap for every ratio,
             # matching the wall-clock path (fps > maxfps here already guarantees stride >= 2).
-            self.index_stride  = math.ceil(fps / maxfps)
+            self.index_stride  = self._by_index_stride_for(fps)
             self.ns_per_fps    = None
             self.ns_per_maxfps = None
 
@@ -434,6 +439,20 @@ class VideoReader:
 
         return ret, image
 
+    def _by_index_stride_for(self, fps):
+        """The by-index stride for a file reporting ``fps``, or None if the gate declines it.
+
+        Shared by __init__ and _open_dir_file so that every member of a directory source is
+        gated exactly the way a lone file is: the stride is derived from THAT file's rate.
+        """
+        maxfps = self.maxfps
+
+        if (self._by_index and self.is_file and not self._sync and maxfps and fps
+                and fps < FPS_SANE_CEILING and fps > maxfps):
+            return math.ceil(fps / maxfps)
+
+        return None
+
     def _open_dir_file(self, index: int):
         self.dir_index = index
         active_source = self.dir_files[index]
@@ -450,6 +469,45 @@ class VideoReader:
         if self.maxfps is not None and fps is not None and fps > self.maxfps:
             if not self.is_file or not self.sync_evt:
                 self.fps = self.maxfps
+
+        # A directory's members can each report their own rate, so re-run the by-index gate
+        # for this file instead of carrying dir_files[0]'s decision for the whole directory:
+        # the stride is ceil(fps / maxfps) of THIS file, and a file the gate declines falls
+        # back to the wall-clock pacing it would have had on its own. Without this a 30 fps
+        # file followed by a 60 fps one keeps stride 6 throughout and the second file is
+        # delivered at 10 fps under maxfps=5.
+        #
+        # The sync_evt handshake, once created, is never torn down: the consumer side holds a
+        # reference to it, so swapping it back to None mid-stream would strand a reader waiting
+        # on the old event. Leaving it in place only adds back-pressure, which is harmless on
+        # the files the gate declines.
+        if (stride := self._by_index_stride_for(fps)) is not None:
+            if stride != self.index_stride:
+                logger.info(f'maxfps by index: keeping 1 frame in every {stride} of '
+                            f'{fps:.1f} fps -> {fps / stride:.2f} fps effective ({active_source})')
+
+            self.index_stride  = stride
+            self.ns_per_fps    = None
+            self.ns_per_maxfps = None
+
+            if self.sync_evt is None:  # by-index needs the handshake, see the __init__ gate
+                self.sync_evt = Event()
+
+                self.sync_evt.set()
+
+        else:
+            if self.index_stride is not None:
+                logger.info(f'maxfps by index not engaged for {active_source} '
+                            f'({"no fixed rate" if fps is None else f"{fps:.1f} fps"}); '
+                            f'maxfps applied on the wall clock instead')
+
+            self.index_stride  = None
+            self.ns_per_maxfps = None if self.maxfps is None else 1_000_000_000 // self.maxfps
+
+        # by-index counts source frames, so restart the count with every file: each member of
+        # a directory selects from its own index 0, on the first pass and on every loop pass.
+        # Same reason as the reset next to the VideoCapture reopen in read_one.
+        self.frame_i = 0
 
         if not self.sync_evt:
             self.ns_per_fps = 1_000_000_000 // (self.native_fps or 15)

@@ -29,11 +29,11 @@ FPS      = 30
 N_FRAMES = 90   # 3 s of source
 
 
-def _write_video(path: str, n_frames: int = N_FRAMES) -> None:
-    """n_frames distinct frames at 30 fps, via ffmpeg so the container reports a fixed rate."""
+def _write_video(path: str, n_frames: int = N_FRAMES, fps: int = FPS) -> None:
+    """n_frames distinct frames at `fps`, via ffmpeg so the container reports a fixed rate."""
     proc = subprocess.Popen([
         'ffmpeg', '-loglevel', 'error', '-y',
-        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', '64x64', '-r', str(FPS), '-i', '-',
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', '64x64', '-r', str(fps), '-i', '-',
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path,
     ], stdin=subprocess.PIPE)
 
@@ -294,6 +294,79 @@ class TestMaxfpsByIndex(unittest.TestCase):
             with self.assertLogs(_LOGGER, level='INFO') as cm:
                 VideoReader(f'file://{path}', sync=False, maxfps=60, maxfps_by_index=True).cap.release()
             self.assertFalse(any('not engaged' in m for m in cm.output))
+
+    def test_by_index_regates_each_file_of_a_mixed_rate_directory(self):
+        """A directory's members can report different rates, so the stride is per file.
+
+        The gate runs once in __init__ against dir_files[0]; _open_dir_file re-runs it for
+        every subsequent member. Without that the stride of the first file is carried for the
+        whole directory and a faster file is delivered above maxfps: 30 fps then 60 fps at
+        maxfps=5 keeps stride 6 throughout, so the 60 fps file comes out at 10 fps."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=30, fps=30)
+            _write_video(os.path.join(d, 'b.mp4'), n_frames=60, fps=60)
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                self.assertEqual(vid.index_stride, 6)  # from a.mp4, 30 fps
+
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+            finally:
+                vid.stop()
+
+        # a.mp4 at stride 6, then b.mp4 re-gated to stride 12: both land on 5 fps effective.
+        self.assertEqual(frame_ns, list(range(0, 30, 6)) + list(range(0, 60, 12)))
+
+    def test_by_index_restarts_at_source_zero_for_every_file_in_a_directory(self):
+        """The by-index phase must not carry across a directory's file boundaries.
+
+        This is the fe89efe loop-reopen fix on the directory path: _open_dir_file resets
+        frame_i so each member selects from its own index 0, both on the first pass and on
+        every loop pass. The file lengths are deliberately off-stride (10 and 12 against
+        stride 6) so a carried-over phase shows as a shifted start."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=10)
+            _write_video(os.path.join(d, 'b.mp4'), n_frames=12)
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+            finally:
+                vid.stop()
+
+        self.assertEqual(frame_ns, [0, 6, 0, 6])  # b.mp4 starts at its own 0, not at 2
+
+    def test_by_index_restarts_at_source_zero_on_each_directory_loop_pass(self):
+        """Same reset, exercised through the directory loop-restart branch rather than the
+        file-to-file transition: a single-file directory looped twice."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=10)
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True, loop=2)
+            vid.start()
+
+            try:
+                frame_ns = []
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        frame_ns.append(item[2]['frame_n'])
+            finally:
+                vid.stop()
+
+        self.assertEqual(frame_ns, [0, 6, 0, 6])  # pass two restarts the phase
 
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({

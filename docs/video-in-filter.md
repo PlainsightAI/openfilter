@@ -773,7 +773,7 @@ class VideoIn(Filter):
 - `FILTER_SYNC`: Enable synchronization
 - `FILTER_LOOP`: Enable video looping
 - `FILTER_MAXFPS`: Maximum frame rate
-- `FILTER_MAXFPS_BY_INDEX`: Apply `maxfps` from the source timeline instead of the wall clock (`sync=False` files only; reads as fast as the decoder allows). Off by default
+- `FILTER_MAXFPS_BY_INDEX`: Apply `maxfps` from the source timeline instead of the wall clock (`sync=False` files only; reads as fast as the decoder allows). On a directory source it is gated per file, so members with different frame rates each get their own stride. Off by default
 - `FILTER_MAXSIZE`: Maximum image size
 - `FILTER_RESIZE`: Image resize dimensions
 - `FILTER_PATTERN`: Glob/wildcard pattern for directory video files

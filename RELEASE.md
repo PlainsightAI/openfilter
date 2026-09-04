@@ -17,7 +17,9 @@ OpenFilter Library release notes
   preserved; it also no-ops on a container that reports no real rate (the >= 1000 fps VFR
   sentinel). Selecting from the source timeline is also exact, where selecting against the
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
-  the difference between about 60 minutes and 16 minutes, with the same frames analysed.
+  the difference between about 60 minutes and 16 minutes, with the same frames analysed. On a
+  directory source the gate runs per file, so members that report different rates each get
+  their own stride and their own selection starting at that file's index 0.
 - **`VideoIn` support for directory-based sequential video playback.**
   Users can now pass a directory of video files as a source (e.g. `file:///path/to/folder`).
   The video files inside are sorted alphabetically and played sequentially. Includes full
