@@ -411,11 +411,16 @@ class TestMaxfpsByIndex(unittest.TestCase):
                 vid.stop()
 
     def test_src_fps_does_not_flip_across_directory_members(self):
-        """meta['src_fps'] must not change between members of one directory.
+        """The rate the reader reports must not change between members of one directory.
 
         Same root cause: _open_dir_file decided the reported rate on `not self.sync_evt`
         while __init__ decides it on `not sync`. With by-index on, the first member reported
-        maxfps and every later member reported its native rate, in one stream."""
+        maxfps and every later member reported its native rate, in one stream.
+
+        The reader publishes that rate as extras['fps'], which VideoIn.process turns into
+        meta['src_fps'] (`src_fps = extras.get('fps', vid.fps)`). Assert on extras['fps']:
+        'src_fps' is not a key the reader itself emits, so reading it here would always be
+        None and the assertion would hold no matter what the reader did."""
         with tempfile.TemporaryDirectory() as d:
             _write_video(os.path.join(d, 'a.mp4'), n_frames=30, fps=30)
             _write_video(os.path.join(d, 'b.mp4'), n_frames=30, fps=30)
@@ -424,15 +429,23 @@ class TestMaxfpsByIndex(unittest.TestCase):
             vid.start()
 
             try:
-                seen = set()
+                by_source = {}
 
                 while (item := vid.read(with_tframe=True)) is not None:
                     if item[0] is not None:
-                        seen.add(item[2].get('src_fps'))
+                        extras = item[2]
+
+                        self.assertIn('fps', extras)
+
+                        by_source.setdefault(os.path.basename(extras['source']), set()).add(extras['fps'])
             finally:
                 vid.stop()
 
-        self.assertEqual(len(seen), 1, f'src_fps changed mid-directory: {sorted(seen)}')
+        self.assertEqual(sorted(by_source), ['a.mp4', 'b.mp4'],
+                         f'both members must be reached for this to mean anything: {sorted(by_source)}')
+
+        self.assertEqual({fps for rates in by_source.values() for fps in rates}, {5},
+                         f'reported fps changed mid-directory: {by_source}')
 
     def test_a_declined_directory_member_does_not_run_the_sync_contract(self):
         """A member the gate declines must keep sync=False semantics, not gain sync=True ones.
