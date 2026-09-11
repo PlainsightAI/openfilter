@@ -368,6 +368,110 @@ class TestMaxfpsByIndex(unittest.TestCase):
 
         self.assertEqual(frame_ns, [0, 6, 0, 6])  # pass two restarts the phase
 
+    def test_declined_directory_member_keeps_its_own_pacing(self):
+        """A member the gate declines must fall back to ITS OWN wall-clock pacing.
+
+        Regression. Once by-index engages on the first member it creates a sync_evt, and the
+        code used to read "sync_evt exists" as "sync is on". A declined member then ran the
+        sync=True no-skip contract on a sync=False reader: every frame handed downstream,
+        paced at maxfps, costing frames/maxfps seconds. Measured by review on a 120-frame
+        no-rate member: 1 frame in 2.17 s became 120 frames in 24.21 s.
+
+        Asserted on state rather than wall clock, so it does not flake: after the transition
+        the stride is gone AND ns_per_fps is back, which is the pair the bug broke."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=30, fps=30)   # engages, stride 6
+            _write_video(os.path.join(d, 'b.mp4'), n_frames=30, fps=3)    # declined, 3 <= maxfps
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                self.assertEqual(vid.index_stride, 6)        # a.mp4 engaged
+                self.assertIsNotNone(vid.sync_evt)           # and created the handshake
+
+                # Sample the state while the declined member is the open one. Reading to
+                # exhaustion is no good: the directory restarts on a.mp4, which re-engages
+                # by-index and legitimately nulls ns_per_fps again.
+                on_b = None
+
+                while vid.read() is not None:
+                    if vid.ssource.endswith('b.mp4') and on_b is None:
+                        on_b = (vid.index_stride, vid.ns_per_fps)
+
+                self.assertIsNotNone(on_b, 'never reached the second member')
+                stride_on_b, ns_per_fps_on_b = on_b
+
+                self.assertIsNone(stride_on_b)               # b.mp4 declined
+                self.assertIsNotNone(
+                    ns_per_fps_on_b,
+                    'a declined member lost its own pacing: the by-index branch nulls '
+                    'ns_per_fps and nothing puts it back once sync_evt exists')
+            finally:
+                vid.stop()
+
+    def test_src_fps_does_not_flip_across_directory_members(self):
+        """meta['src_fps'] must not change between members of one directory.
+
+        Same root cause: _open_dir_file decided the reported rate on `not self.sync_evt`
+        while __init__ decides it on `not sync`. With by-index on, the first member reported
+        maxfps and every later member reported its native rate, in one stream."""
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=30, fps=30)
+            _write_video(os.path.join(d, 'b.mp4'), n_frames=30, fps=30)
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                seen = set()
+
+                while (item := vid.read(with_tframe=True)) is not None:
+                    if item[0] is not None:
+                        seen.add(item[2].get('src_fps'))
+            finally:
+                vid.stop()
+
+        self.assertEqual(len(seen), 1, f'src_fps changed mid-directory: {sorted(seen)}')
+
+    def test_a_declined_directory_member_does_not_run_the_sync_contract(self):
+        """A member the gate declines must keep sync=False semantics, not gain sync=True ones.
+
+        `wait()` used to select the paced, no-skip branch on `sync_evt is not None`, which was
+        equivalent to the sync flag until by-index started creating that event on a sync=False
+        reader. From then on a declined member ran the sync=True contract on a sync=False
+        reader: handshake plus sleep-to-maxfps with no frame skipping, so it handed the chain
+        every one of its frames instead of subsampling, and cost `frames / maxfps` seconds.
+
+        The sentinel member is the case that shows it as a count rather than as a duration:
+        declined on its own it contributes nothing, so the directory should deliver only
+        a.mp4's 5 sampled frames. Measured on the pre-fix tree this test returns 65 frames in
+        12.20 s; fixed it is 5 in 0.08 s.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            _write_video(os.path.join(d, 'a.mp4'), n_frames=30, fps=30)          # engages, stride 6
+            _write_video(os.path.join(d, 'b.mp4'), n_frames=60, fps=1000)        # VFR sentinel, declined
+
+            vid = VideoReader(f'file://{d}', sync=False, maxfps=5, maxfps_by_index=True)
+            vid.start()
+
+            try:
+                t0 = time()
+                n  = 0
+
+                while vid.read() is not None:
+                    n += 1
+            finally:
+                vid.stop()
+
+        self.assertEqual(n, 5,
+            'the declined member contributed frames: it is running the sync=True no-skip '
+            'contract on a sync=False reader')
+        # Generous, because the point is the order of magnitude: paced at maxfps the declined
+        # member alone would take 60 / 5 = 12 s.
+        self.assertLess(time() - t0, 5.0,
+            'the declined member was paced at maxfps instead of read as fast as possible')
+
     def test_option_is_accepted_in_a_source_string(self):
         cfg = VideoIn.normalize_config({
             'id': 'vidin',

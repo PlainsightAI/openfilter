@@ -467,7 +467,10 @@ class VideoReader:
         self.native_fps = fps
         self.fps = fps
         if self.maxfps is not None and fps is not None and fps > self.maxfps:
-            if not self.is_file or not self.sync_evt:
+            # keys on the sync flag, the same test __init__ uses. Keying on sync_evt made
+            # meta['src_fps'] flip mid-directory: by-index creates the event on the first
+            # member, so later members reported their native rate instead of maxfps.
+            if not self.is_file or not self._sync:
                 self.fps = self.maxfps
 
         # A directory's members can each report their own rate, so re-run the by-index gate
@@ -504,6 +507,13 @@ class VideoReader:
             self.index_stride  = None
             self.ns_per_maxfps = None if self.maxfps is None else 1_000_000_000 // self.maxfps
 
+            # Restore this member's own pacing. The by-index branch above nulls ns_per_fps,
+            # and the trailing `if not self.sync_evt:` at the end of this method cannot put it
+            # back once by-index has created the event, so a declined member would otherwise
+            # run with no rate of its own.
+            if not self._sync:
+                self.ns_per_fps = 1_000_000_000 // (fps or 15)
+
         # by-index counts source frames, so restart the count with every file: each member of
         # a directory selects from its own index 0, on the first pass and on every loop pass.
         # Same reason as the reset next to the VideoCapture reopen in read_one.
@@ -535,9 +545,15 @@ class VideoReader:
                 return True
 
             if self.is_file:
-                if (sync_evt := self.sync_evt) is not None:
-                    sync_evt.wait()
-                    sync_evt.clear()
+                # The paced, no-skip contract belongs to sync=True and must be selected on the
+                # sync flag. It used to key on `sync_evt is not None`, which was equivalent
+                # until by-index started creating that event on a sync=False reader: a
+                # directory member the gate declines then ran sync=True semantics, handing the
+                # chain every frame at maxfps instead of subsampling it.
+                if self._sync:
+                    if (sync_evt := self.sync_evt) is not None:
+                        sync_evt.wait()
+                        sync_evt.clear()
 
                     if (ns_per_maxfps := self.ns_per_maxfps) is not None:  # sleep until we reach maxfps
                         if (tleft := (ns_per_maxfps - ((t := time_ns()) - (tmaxfps := self.tmaxfps)))) > 0:
@@ -561,6 +577,13 @@ class VideoReader:
                     return False
 
                 self.tmaxfps = tmaxfps + (tdiff // ns_per_maxfps) * ns_per_maxfps
+
+            # Back-pressure for a sync=False reader that by-index gave a handshake to. It runs
+            # on the delivering path only, after the skip decision above: a dropped frame must
+            # not consume a credit the consumer never posts back for it.
+            if not self._sync and (sync_evt := self.sync_evt) is not None:
+                sync_evt.wait()
+                sync_evt.clear()
 
             return True
 
