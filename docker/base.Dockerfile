@@ -28,6 +28,13 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Same idea one layer up: the python:X-slim tags ship pip/setuptools/wheel frozen at
+# whatever was current when that tag was cut, and they drift. On py3.10/py3.11 that
+# leaves wheel and setuptools' vendored jaraco.context flagged High, plus a handful of
+# Medium pip findings, inherited by every downstream image. py3.13/py3.14 already ship
+# current versions, so this is a no-op there and cheap everywhere.
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
