@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.4.0 - 2026-09-23
+
 ### Added
 
 - **`VideoIn`: `maxfps_by_index` to apply `maxfps` from the source timeline instead of the
@@ -12,15 +14,15 @@ OpenFilter Library release notes
   however fast the machine is. The new `maxfps_by_index` config (env `FILTER_MAXFPS_BY_INDEX`
   / `VIDEO_IN_MAXFPS_BY_INDEX`, or `!maxfps_by_index` on a source string) keeps 1 frame in
   every `ceil(fps / maxfps)` and reads as fast as the decoder allows. Off by default, it is a
-  `sync=False` optimisation: it engages only for a `sync=False` file whose own rate is above
+  `sync=False` optimization: it engages only for a `sync=False` file whose own rate is above
   `maxfps`. Under `sync=True` it is a no-op, so that mode's documented no-skip guarantee is
   preserved; it also no-ops on a container that reports no real rate (the >= 1000 fps VFR
   sentinel). Selecting from the source timeline is also exact, where selecting against the
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
-  the difference between about 60 minutes and 16 minutes, with the same frames analysed. On a
+  the difference between about 60 minutes and 16 minutes, with the same frames analyzed. On a
   directory source the gate runs per file, so members that report different rates each get
   their own stride and their own selection starting at that file's index 0. A member the gate
-  declines keeps plain `sync=False` behaviour: it is read at its own rate with `maxfps` applied
+  declines keeps plain `sync=False` behavior: it is read at its own rate with `maxfps` applied
   on the wall clock, exactly as it would be opened on its own. That is worth stating because
   the event this mode uses for back-pressure exists on a `sync=False` reader now, so "the
   handshake event exists" no longer means "sync is on" anywhere in `VideoIn`.
@@ -31,6 +33,14 @@ OpenFilter Library release notes
   pattern filtering via `pattern`.
 
 ### Changed
+
+- **The base image now ships current `pip`, `setuptools` and `wheel`.** The
+  `python:X-slim` tags freeze those at whatever was current when the tag was cut,
+  and every image built on `openfilter-base` inherited them. On py3.10 and py3.11
+  that was two High and seven Medium findings — `wheel` 0.45.1, setuptools'
+  vendored `jaraco.context` 5.3.0, and six `pip` advisories — none of which the
+  weekly `apt upgrade` touches, since they are Python packages rather than OS
+  ones. py3.13 and py3.14 already shipped current tooling and are unchanged.
 
 - **Usage analytics no longer block filter startup.** The Scarf event reported once
   per `Filter` init went out through a synchronous POST with a 3s timeout, run
@@ -43,10 +53,23 @@ OpenFilter Library release notes
 
 ### Fixed
 
+- **The `hello-world` example Makefile works again**
+  ([FILTER-648](https://plainsight-ai.atlassian.net/browse/FILTER-648)).
+
 - **The startup log no longer claims analytics are enabled when they are opted
   out.** `Filter` printed `Usage analytics enabled via Scarf` unconditionally,
   including for users who had set `DO_NOT_TRACK`. It now reports the actual state
   and skips the reporting thread entirely when opted out.
+
+### Internal
+
+Nothing here changes the published library or images.
+
+- Repaired the three integration tests in `tests/integration/test_tracing_export.py`,
+  which had been failing for two unrelated reasons.
+- The scheduled SAST and secret scan no longer fails `main` on a verified finding
+  it is not meant to gate on.
+- Bumped `trufflesecurity/trufflehog` 3.97.1 → 3.97.5 across the actions group.
 
 ## v1.3.0 - 2026-08-17
 
