@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.4.0 - 2026-09-23
+
 ### Added
 
 - **`VideoIn`: `maxfps_by_index` to apply `maxfps` from the source timeline instead of the
@@ -32,6 +34,14 @@ OpenFilter Library release notes
 
 ### Changed
 
+- **The base image now ships current `pip`, `setuptools` and `wheel`.** The
+  `python:X-slim` tags freeze those at whatever was current when the tag was cut,
+  and every image built on `openfilter-base` inherited them. On py3.10 and py3.11
+  that was two High and seven Medium findings — `wheel` 0.45.1, setuptools'
+  vendored `jaraco.context` 5.3.0, and six `pip` advisories — none of which the
+  weekly `apt upgrade` touches, since they are Python packages rather than OS
+  ones. py3.13 and py3.14 already shipped current tooling and are unchanged.
+
 - **Usage analytics no longer block filter startup.** The Scarf event reported once
   per `Filter` init went out through a synchronous POST with a 3s timeout, run
   inline in `Filter.__init__`. Anywhere the endpoint is unreachable but not
@@ -43,10 +53,23 @@ OpenFilter Library release notes
 
 ### Fixed
 
+- **The `hello-world` example Makefile works again**
+  ([FILTER-648](https://plainsight-ai.atlassian.net/browse/FILTER-648)).
+
 - **The startup log no longer claims analytics are enabled when they are opted
   out.** `Filter` printed `Usage analytics enabled via Scarf` unconditionally,
   including for users who had set `DO_NOT_TRACK`. It now reports the actual state
   and skips the reporting thread entirely when opted out.
+
+### Internal
+
+Nothing here changes the published library or images.
+
+- Repaired the three integration tests in `tests/integration/test_tracing_export.py`,
+  which had been failing for two unrelated reasons.
+- The scheduled SAST and secret scan no longer fails `main` on a verified finding
+  it is not meant to gate on.
+- Bumped `trufflesecurity/trufflehog` 3.97.1 → 3.97.5 across the actions group.
 
 ## v1.3.0 - 2026-08-17
 
