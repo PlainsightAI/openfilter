@@ -22,7 +22,7 @@ OpenFilter Library release notes
   the difference between about 60 minutes and 16 minutes, with the same frames analyzed. On a
   directory source the gate runs per file, so members that report different rates each get
   their own stride and their own selection starting at that file's index 0. A member the gate
-  declines keeps plain `sync=False` behaviour: it is read at its own rate with `maxfps` applied
+  declines keeps plain `sync=False` behavior: it is read at its own rate with `maxfps` applied
   on the wall clock, exactly as it would be opened on its own. That is worth stating because
   the event this mode uses for back-pressure exists on a `sync=False` reader now, so "the
   handshake event exists" no longer means "sync is on" anywhere in `VideoIn`.
