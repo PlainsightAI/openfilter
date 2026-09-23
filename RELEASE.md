@@ -14,12 +14,12 @@ OpenFilter Library release notes
   however fast the machine is. The new `maxfps_by_index` config (env `FILTER_MAXFPS_BY_INDEX`
   / `VIDEO_IN_MAXFPS_BY_INDEX`, or `!maxfps_by_index` on a source string) keeps 1 frame in
   every `ceil(fps / maxfps)` and reads as fast as the decoder allows. Off by default, it is a
-  `sync=False` optimisation: it engages only for a `sync=False` file whose own rate is above
+  `sync=False` optimization: it engages only for a `sync=False` file whose own rate is above
   `maxfps`. Under `sync=True` it is a no-op, so that mode's documented no-skip guarantee is
   preserved; it also no-ops on a container that reports no real rate (the >= 1000 fps VFR
   sentinel). Selecting from the source timeline is also exact, where selecting against the
   wall clock is not. On a detection chain running an hour of 30 fps video at 5 fps this is
-  the difference between about 60 minutes and 16 minutes, with the same frames analysed. On a
+  the difference between about 60 minutes and 16 minutes, with the same frames analyzed. On a
   directory source the gate runs per file, so members that report different rates each get
   their own stride and their own selection starting at that file's index 0. A member the gate
   declines keeps plain `sync=False` behaviour: it is read at its own rate with `maxfps` applied
