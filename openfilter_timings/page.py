@@ -100,8 +100,10 @@ const pad = (v, w, right) => right ? String(v).padStart(w) : String(v).padEnd(w)
 // than KEEP of them, and the view follows the bottom unless the reader has scrolled up to look at
 // something, which is the one time auto-scrolling is a nuisance.
 const KEEP = 60;
-const COLS = [4, 8, 19, 19, 10];
-const HEADER = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS'];
+const COLS = [4, 8, 19, 19, 10, 12];
+const HEADER = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS', 'CLOCK'];
+const at = t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour12: false }) +
+                '.' + String(Math.floor((t % 1) * 1000)).padStart(3, '0');
 const line = cells => cells.map((cell, c) => pad(cell, COLS[c], c >= 2)).join('  ');
 
 function render(t, browser) {
@@ -112,12 +114,14 @@ function render(t, browser) {
   const id = String(t.id != null ? t.id : '-');
   const total = ((filters[filters.length - 1].out - filters[0]['in']) * 1000).toFixed(3);
   const rows = filters.map(f =>
-    line([id, String(f.name || '?'), f['in'].toFixed(6), f.out.toFixed(6), total]));
+    line([id, String(f.name || '?'), f['in'].toFixed(6), f.out.toFixed(6), total, at(f['in'])]));
 
-  if (t.served != null) rows.push(line([id, 'served', t.served.toFixed(6), '', '']));
+  if (t.served != null) {
+    rows.push(line([id, 'served', t.served.toFixed(6), '', '', at(t.served)]));
+  }
 
   rows.push(line([id, 'browser', browser.toFixed(6), '',
-                  t.ts != null ? ((browser - t.ts) * 1000).toFixed(3) : '']));
+                  t.ts != null ? ((browser - t.ts) * 1000).toFixed(3) : '', at(browser)]));
 
   return rows.join(NL);
 }

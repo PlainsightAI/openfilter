@@ -4,6 +4,32 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.0 - 2026-09-24
+
+### Added
+
+- **`Webvis`: `timings`, a per-frame timing chain drawn on the picture and carried inside the
+  served JPEG.** A pipeline times itself from video_in's read to the last filter's return, which
+  leaves the two legs at the ends unmeasured: camera to video_in, and webvis to browser. With
+  `timings` set (`true`, or a corner such as `bottom-left`), webvis draws the chain as a table,
+  one row per filter, columns `ID FILTER TIME IN TIME OUT TOTAL MS CLOCK`. Times are raw epoch, so
+  they line up with the same numbers printed from the subject data, alongside a wall clock for
+  comparing against a camera's own burned-in timestamp. `TOTAL MS` is the frame's total, first
+  filter in to last filter out, because per-filter durations are mostly the wait for the next
+  frame rather than work.
+
+  The same chain now travels as JSON in every served JPEG's COM segment, drawn or not, at about
+  280 bytes for a two-filter chain. Nothing is re-encoded and every decoder skips the segment, so
+  the picture is unchanged for anything not looking for it. It is not optional because the
+  alternative is unsafe: the picture comes from one URL and the subject data from another, and
+  pairing them is an assumption.
+
+  `GET /timings` serves a page that reads those numbers back in the browser and puts them beside
+  the machine's clock, which closes the leg no filter can see.
+
+  The implementation lives in `openfilter_timings/`, outside the framework tree. webvis imports it
+  defensively, so removing that folder leaves the filter working and the option warning once.
+
 ## v1.4.0 - 2026-09-23
 
 ### Added

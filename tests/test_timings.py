@@ -109,10 +109,11 @@ class TestTimingRows(unittest.TestCase):
 
         header, rows = timing_rows(self._data(now))
 
-        self.assertEqual(header, ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS'])
+        self.assertEqual(header, ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS', 'CLOCK'])
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0][:2], ['3247', 'VideoIn'])
-        self.assertEqual(rows[0][2], '1790273007.697044')  # raw epoch, not a clock
+        self.assertEqual(rows[0][2], '1790273007.697044')  # raw epoch, to line up with the script
+        self.assertRegex(rows[0][5], r'^\d\d:\d\d:\d\d\.\d\d\d$')  # and the same instant as a clock
 
     def test_total_is_the_frame_not_the_filter_and_repeats_on_every_row(self):
         # Per-filter durations are mostly the wait for the next frame; the frame's total is the

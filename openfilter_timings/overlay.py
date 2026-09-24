@@ -77,10 +77,12 @@ def format_epoch(t: float | None, with_millis: bool = True) -> str:
 def timing_rows(data: dict | None) -> tuple[list[str], list[list[str]]]:
     """The chain as a header and one row per filter, the shape a log already reads in.
 
-    Columns are `ID FILTER TIME IN TIME OUT TOTAL MS`, with the times as raw
-    epoch seconds rather than a formatted clock: this is read next to a terminal
-    printing the same numbers out of the subject data, and a reader should not
-    have to convert between the two to line them up.
+    Columns are `ID FILTER TIME IN TIME OUT TOTAL MS CLOCK`. The times are raw
+    epoch seconds, because this is read next to a terminal printing the same
+    numbers out of the subject data and nobody should have to convert between
+    the two to line them up. CLOCK is the same instant as TIME IN on a wall
+    clock, for the other comparison this exists for: the camera's own timestamp
+    burned into the picture, and the clock on the wall behind it.
 
     TOTAL MS is the frame's total, first filter in to last filter out, repeated
     on every row. Per-filter durations are mostly the wait for the next frame,
@@ -96,7 +98,7 @@ def timing_rows(data: dict | None) -> tuple[list[str], list[list[str]]]:
 
     frame_id = str(meta.get('id', '-'))
     total_ms = (timings[-1].get('time_out', 0) - timings[0].get('time_in', 0)) * 1000
-    header = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS']
+    header = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS', 'CLOCK']
     rows = [
         [
             frame_id,
@@ -104,6 +106,7 @@ def timing_rows(data: dict | None) -> tuple[list[str], list[list[str]]]:
             f'{entry.get("time_in", 0):.6f}',
             f'{entry.get("time_out", 0):.6f}',
             f'{total_ms:.3f}',
+            format_epoch(entry.get('time_in')).split(' ', 1)[-1],  # time only: the date is on the frame
         ]
         for entry in timings
     ]
