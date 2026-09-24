@@ -59,9 +59,42 @@ Filter.run_multi([
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
         access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
+        overlay_timings=False, # Draw this frame's timing chain onto the image (default False)
+        overlay_corner='top-left',  # top-left | top-right | bottom-left | bottom-right
+        overlay_color='#ffffff',    # '#rgb' or '#rrggbb'
+        overlay_scale=0.5,          # OpenCV font scale
     )),
 ])
 ```
+
+### Timing overlay
+
+`overlay_timings` draws the frame's own timing chain into the picture, in the
+`2026-09-22 15:22:53.123` format an IP camera burns into its image:
+
+```
+video_in ts   2026-09-23 17:18:48.876
+VideoIn            in 2026-09-23 17:18:48.756  out 2026-09-23 17:18:48.882  126.0ms
+webvis now    2026-09-23 17:18:48.900
+ts -> now     24ms
+```
+
+One line per filter, from `meta['filter_timings']`, plus video_in's read
+timestamp and the wall clock at the moment webvis drew it.
+
+It answers a question the per-filter durations cannot. Those cover the pipeline
+from video_in's read to the last filter's return, so a pipeline whose numbers
+all look healthy can still show a picture that is seconds old: the legs before
+video_in reads and after webvis serves are outside every filter's measurement.
+With a camera that stamps its own clock, both clocks are then in one frame, and
+a screenshot measures the first leg. Choose `overlay_corner` so the block does
+not land on the camera's own timestamp.
+
+Note that `ts` is stamped when video_in *reads* a frame, not when the camera
+captured it. When a stream stalls, that read happens late and the stale picture
+carries a fresh `ts`, which is exactly the case the camera's own clock exposes.
+
+The overlay costs one `putText` pass per line per frame and is off by default.
 
 ### Environment Variables
 
@@ -76,6 +109,10 @@ export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
 export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
+export FILTER_OVERLAY_TIMINGS="false"
+export FILTER_OVERLAY_CORNER="top-left"
+export FILTER_OVERLAY_COLOR="#ffffff"
+export FILTER_OVERLAY_SCALE="0.5"
 ```
 
 ## Web Interface
