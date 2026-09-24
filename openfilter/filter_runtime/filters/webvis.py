@@ -6,6 +6,8 @@ from queue import Queue
 from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
+from openfilter.filter_runtime.frame import Frame
+from openfilter.filter_runtime.filters.timing_overlay import draw_lines, parse_color, timing_lines
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
 
 __all__ = ['WebvisConfig', 'Webvis']
@@ -24,6 +26,10 @@ class WebvisConfig(FilterConfig):
     cors_origins: str | None = None
     access_log: bool = False
     enable_snapshot_payload: bool = False
+    overlay_timings: bool = False
+    overlay_corner: str = 'top-left'
+    overlay_color: str = '#ffffff'
+    overlay_scale: float = 0.5
 
 
 class Webvis(Filter):
@@ -60,6 +66,29 @@ class Webvis(Filter):
         enable_snapshot_payload:
             Whether to enable the GET /snapshot-payload and /{topic}/snapshot-payload REST endpoints.
             Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
+
+        overlay_timings:
+            Draw this frame's timing chain onto the image before it is encoded: video_in's read
+            timestamp, one line per filter with its time in/out and duration, and the wall clock at
+            the moment webvis served it, all in the ``2026-09-22 15:22:53.123`` format a camera burns
+            into its own picture. With a camera that stamps its own clock, both clocks then sit in
+            one frame, so a screenshot measures the camera-to-video_in leg that no filter times.
+            Costs one putText pass per line per frame, so it is off by default. Default ``False``.
+            Also settable via ``FILTER_OVERLAY_TIMINGS``.
+
+        overlay_corner:
+            Which corner to draw in: ``top-left`` (default), ``top-right``, ``bottom-left`` or
+            ``bottom-right``. Pick the corner the camera's own timestamp does not occupy.
+            Also settable via ``FILTER_OVERLAY_CORNER``.
+
+        overlay_color:
+            Text colour as ``#rgb`` or ``#rrggbb``, the spelling ``util`` already accepts. Default
+            white. The text is drawn over a dark outline, so it stays readable on any scene.
+            Also settable via ``FILTER_OVERLAY_COLOR``.
+
+        overlay_scale:
+            OpenCV font scale. Default ``0.5``. Raise it for 4K sources where the default is
+            unreadable. Also settable via ``FILTER_OVERLAY_SCALE``.
     """
 
     FILTER_TYPE = 'Output'
@@ -220,6 +249,10 @@ class Webvis(Filter):
             "cors_origins": str,
             "access_log": bool,
             "enable_snapshot_payload": bool,
+            "overlay_timings": bool,
+            "overlay_corner": str,
+            "overlay_color": str,
+            "overlay_scale": float,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -242,6 +275,11 @@ class Webvis(Filter):
 
         if config.sleep_interval <= 0:
             raise ValueError('sleep interval must be greater than 0, got:{config.sleep_interval}')
+
+        # A bad corner or colour is warned about and falls back at draw time rather than refusing to
+        # start: this is a debug overlay, and a run that dies over a typo in it measures nothing.
+        if config.overlay_scale <= 0:
+            raise ValueError(f'overlay scale must be greater than 0, got:{config.overlay_scale}')
 
         if outputs:  # convenience output "http://host:port" -> config.host / config.port
             if len(outputs) != 1:
@@ -274,6 +312,10 @@ class Webvis(Filter):
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
         self.enable_snapshot_payload = config.enable_snapshot_payload
+        self.overlay_timings = config.overlay_timings
+        self.overlay_corner = config.overlay_corner
+        self.overlay_color = parse_color(config.overlay_color)
+        self.overlay_scale = config.overlay_scale
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()
@@ -295,9 +337,40 @@ class Webvis(Filter):
             daemon=True
         ).start()
 
+    def _with_timing_overlay(self, frame):
+        """Return `frame` with its timing chain drawn on, or `frame` itself if that fails.
+
+        Drawn here rather than in the MJPEG generator so the cost is paid once per frame instead of
+        once per connected browser, and so `/snapshot-payload` and the stream show the same pixels.
+
+        webvis's own time_in/time_out are not in `filter_timings` yet: `_inject_timings` appends them
+        after `process()` returns. The line the overlay adds instead is the wall clock at draw time,
+        which is the number that matters here, since it is the last instant the frame is ours.
+        """
+
+        try:
+            rw = frame.rw
+            draw_lines(
+                rw.image, timing_lines(frame.data),
+                corner  = getattr(self, 'overlay_corner', 'top-left'),
+                color   = getattr(self, 'overlay_color', (255, 255, 255)),
+                scale   = getattr(self, 'overlay_scale', 0.5),
+                is_bgr  = bool(frame.is_bgr),
+                is_gray = bool(frame.is_gray),
+            )
+            return Frame(rw.image, frame)
+        except Exception as exc:  # an overlay must never cost the stream
+            logger.warning('timing overlay failed, serving the frame undrawn: %s', exc)
+            return frame
+
     def process(self, frames):
         for topic, frame in frames.items():
             if frame.has_image:
+                # getattr, not attribute access: process() is reachable on an instance that never
+                # ran setup() (the endpoint tests drive it that way), same reason create_app guards
+                # enable_snapshot_payload.
+                if getattr(self, 'overlay_timings', False):
+                    frame = self._with_timing_overlay(frame)
                 with self._lock:
                     self.latest_frames[topic] = frame
                     self.current_data[topic] = frame.data
