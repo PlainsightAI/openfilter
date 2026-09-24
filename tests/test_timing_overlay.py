@@ -61,6 +61,20 @@ class TestTimingBlocks(unittest.TestCase):
         # point: the filters above it can all be fast while this one is not.
         self.assertRegex(blocks[-1][1][1], r'ts -> now\s+2[34]\d\dms')
 
+    def test_webvis_block_mirrors_the_others_when_it_stamps_its_own_arrival(self):
+        now = time.time()
+        data = {'meta': {'ts': now - 0.02, 'filter_timings': [
+            {'filter_name': 'VideoIn', 'time_in': now - 0.1, 'time_out': now - 0.01, 'duration_ms': 90.0},
+        ]}}
+
+        label, lines = timing_blocks(data, entered=now - 0.003)[-1]
+
+        self.assertEqual(label, 'webvis')
+        self.assertTrue(lines[0].startswith('in  '))    # same shape as every other block
+        self.assertTrue(lines[1].startswith('now '))    # 'now', not 'out': time_out does not exist yet
+        self.assertRegex(lines[1], r'\d+\.\dms')
+        self.assertTrue(lines[2].startswith('ts -> now'))
+
     def test_survives_a_frame_with_no_timings(self):
         for data in (None, {}, {'meta': {}}, {'meta': {'filter_timings': []}}):
             blocks = timing_blocks(data)

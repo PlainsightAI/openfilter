@@ -74,10 +74,21 @@ Filter.run_multi([
 
 ```
 VideoIn                                            webvis
-ts  2026-09-23 17:54:16.837                        now 2026-09-23 17:54:16.861
-in  2026-09-23 17:54:16.749                        ts -> now  24ms
-out 2026-09-23 17:54:16.842  93.2ms
+ts  2026-09-23 17:54:16.837                        in  2026-09-23 17:54:16.858
+in  2026-09-23 17:54:16.749                        now 2026-09-23 17:54:16.861  3.0ms
+out 2026-09-23 17:54:16.842  93.2ms                ts -> now  24ms
 ```
+
+Every block has the same shape. webvis reads `now` where the others read `out`
+because the overlay is drawn inside its `process()`, so its own time_out does
+not exist yet; `now` is the last instant the frame is ours, which is the value
+that matters here anyway.
+
+`in` on the source block predates its own `ts`: video_in's `process()` starts
+and then blocks waiting for the decoder, so most of its duration is the wait for
+the next frame at the configured rate, not work. Summing `duration_ms` across
+filters therefore overstates end-to-end latency; `ts` to webvis's `now` is the
+honest figure.
 
 One block per filter, from `meta['filter_timings']`, each in its own corner,
 plus a final block for webvis carrying the wall clock at the moment it drew.

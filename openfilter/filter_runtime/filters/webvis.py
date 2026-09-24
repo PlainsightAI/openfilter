@@ -337,7 +337,7 @@ class Webvis(Filter):
             daemon=True
         ).start()
 
-    def _with_timing_overlay(self, frame):
+    def _with_timing_overlay(self, frame, entered):
         """Return `frame` with its timing chain drawn on, or `frame` itself if that fails.
 
         Drawn here rather than in the MJPEG generator so the cost is paid once per frame instead of
@@ -351,7 +351,7 @@ class Webvis(Filter):
         try:
             rw = frame.rw
             draw_blocks(
-                rw.image, timing_blocks(frame.data),
+                rw.image, timing_blocks(frame.data, entered),
                 first_corner = getattr(self, 'overlay_corner', 'top-left'),
                 color        = getattr(self, 'overlay_color', (255, 255, 255)),
                 scale        = getattr(self, 'overlay_scale', 0.5),
@@ -364,13 +364,18 @@ class Webvis(Filter):
             return frame
 
     def process(self, frames):
+        # webvis's own arrival, stamped here because the framework's entry for this filter is only
+        # appended after process() returns, and the overlay is drawn inside it. Within a millisecond
+        # of the t_in that _inject_timings will record.
+        entered = time.time()
+
         for topic, frame in frames.items():
             if frame.has_image:
                 # getattr, not attribute access: process() is reachable on an instance that never
                 # ran setup() (the endpoint tests drive it that way), same reason create_app guards
                 # enable_snapshot_payload.
                 if getattr(self, 'overlay_timings', False):
-                    frame = self._with_timing_overlay(frame)
+                    frame = self._with_timing_overlay(frame, entered)
                 with self._lock:
                     self.latest_frames[topic] = frame
                     self.current_data[topic] = frame.data

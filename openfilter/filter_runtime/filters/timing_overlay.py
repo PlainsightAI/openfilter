@@ -67,7 +67,7 @@ def format_epoch(t: float | None, with_millis: bool = True) -> str:
     return f'{out}.{int((t % 1) * 1000):03d}' if with_millis else out
 
 
-def timing_blocks(data: dict | None) -> list[tuple[str, list[str]]]:
+def timing_blocks(data: dict | None, entered: float | None = None) -> list[tuple[str, list[str]]]:
     """One block per filter, in pipeline order, plus a final block for webvis itself.
 
     Kept as separate blocks rather than one list of lines so each filter can be
@@ -75,9 +75,12 @@ def timing_blocks(data: dict | None) -> list[tuple[str, list[str]]]:
     far apart in the picture, and a single stacked block puts them one line
     apart, where a 2-second gap looks the same as a 20-millisecond one.
 
-    The last block is webvis's own, and it carries the wall clock at draw time.
-    That value is not in `filter_timings` and cannot be: `_inject_timings`
-    appends webvis's entry only after `process()` returns.
+    The last block is webvis's own. It has the same `in` line as the others when
+    `entered` is passed (webvis stamping its own arrival), but `now` where the
+    others have `out`: the drawing happens inside `process()`, so webvis's real
+    time_out does not exist yet, and `_inject_timings` appends its entry only
+    after `process()` returns. `now` is the honest value there, and it is also
+    the one that matters, being the last instant the frame is ours.
     """
 
     meta = (data or {}).get('meta') or {}
@@ -96,7 +99,13 @@ def timing_blocks(data: dict | None) -> list[tuple[str, list[str]]]:
 
         blocks.append((str(entry.get('filter_name') or '?')[:24], lines))
 
-    webvis_lines = [f'now {format_epoch(now)}']
+    webvis_lines = []
+
+    if entered is not None:
+        webvis_lines.append(f'in  {format_epoch(entered)}')
+
+    webvis_lines.append(f'now {format_epoch(now)}'
+                        + (f'  {(now - entered) * 1000:.1f}ms' if entered is not None else ''))
 
     if ts is not None:
         webvis_lines.append(f'ts -> now  {(now - ts) * 1000:.0f}ms')
