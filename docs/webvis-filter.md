@@ -68,6 +68,11 @@ Filter.run_multi([
 
 ### Timing overlay
 
+The implementation lives in `openfilter_timings/`, outside the framework tree,
+along with a compose file that runs the probe end to end. See that folder's
+README. webvis imports it defensively: without it the options warn and do
+nothing.
+
 `timings` is off by default and turns on both halves at once: the chain is drawn
 into the picture and carried in the JPEG's own bytes. It renders in the
 `2026-09-22 15:22:53.123` format an IP camera burns into its image:

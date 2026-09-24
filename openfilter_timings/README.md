@@ -36,14 +36,29 @@ arrived. `read -> on screen` is the number a customer would recognise, and the
 clock at the top keeps running when frames stop, which is how a stalled stream
 tells on itself.
 
+## Removing it
+
+This is not part of the framework, which is why it sits outside
+`filter_runtime/`. Delete this folder and `tests/test_timings.py` and the
+feature is gone: webvis's import of it is guarded, so it keeps working and the
+`timings*` options warn once and do nothing. Reverting the webvis edits as well
+is tidier but not required, and verified: with this folder moved away, the
+webvis suite still passes and the filter still imports.
+
 ## Project Structure
 
 ```text
 .
+├── __init__.py
+│   └── What this is, and how to remove it
+├── overlay.py
+│   └── The chain as text on the picture and as JSON in the JPEG's COM segment
+├── page.py
+│   └── The browser page that reads it back and compares with the local clock
 ├── docker-compose.yaml
 │   └── video_in -> webvis, one exposed port
 ├── env.example
-│   └── Copy via `make env`, which fills in the timezone
+│   └── Copied by `make env`, which fills in this machine's timezone
 ├── Makefile
 │   └── env / up / down
 └── README.md

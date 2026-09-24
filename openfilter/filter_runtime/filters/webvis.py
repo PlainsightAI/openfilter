@@ -7,10 +7,16 @@ from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
 from openfilter.filter_runtime.frame import Frame
-from openfilter.filter_runtime.filters.timings_page import TIMINGS_PAGE
-from openfilter.filter_runtime.filters.timing_overlay import (
-    draw_blocks, insert_jpeg_comment, parse_placement, timing_blocks, timing_payload,
-)
+# Latency instrumentation, which is not part of the framework and lives outside it in
+# `openfilter_timings/`. Imported defensively so that deleting that folder leaves webvis working:
+# the options then parse as before and do nothing, rather than the filter failing to import.
+try:
+    from openfilter_timings import (
+        TIMINGS_PAGE, draw_blocks, insert_jpeg_comment, parse_placement, timing_blocks,
+        timing_payload,
+    )
+except ImportError:  # pragma: no cover - only when the folder has been removed
+    TIMINGS_PAGE = None
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
 
 __all__ = ['WebvisConfig', 'Webvis']
@@ -200,7 +206,7 @@ class Webvis(Filter):
                     media_type="application/json"
                 )
 
-        @app.get('/timings')
+        @app.get('/timings', include_in_schema=TIMINGS_PAGE is not None)
         def timings_page():
             """The browser side of the measurement.
 
@@ -209,7 +215,10 @@ class Webvis(Filter):
             is still reachable at '/timings/data' and through this page's ?topic= parameter.
             """
 
-            from fastapi.responses import HTMLResponse
+            from fastapi.responses import HTMLResponse, PlainTextResponse
+
+            if TIMINGS_PAGE is None:
+                return PlainTextResponse('openfilter_timings is not installed', status_code=404)
 
             return HTMLResponse(TIMINGS_PAGE)
 
@@ -327,8 +336,11 @@ class Webvis(Filter):
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
         self.enable_snapshot_payload = config.enable_snapshot_payload
-        self.timings = config.timings
-        self.timings_placement = parse_placement(config.timings_placement)
+        self.timings = config.timings and TIMINGS_PAGE is not None
+        self.timings_placement = parse_placement(config.timings_placement) if self.timings else {}
+
+        if config.timings and not self.timings:
+            logger.warning('timings requested but openfilter_timings is not installed, ignoring')
         self.timings_scale = config.timings_scale
 
         # Parse configured topics to know if we are in a static multi-topic configuration

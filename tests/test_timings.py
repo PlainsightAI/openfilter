@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 
 from openfilter.filter_runtime.utils import setLogLevelGlobal
-from openfilter.filter_runtime.filters.timing_overlay import (
+from openfilter_timings import (
     CORNER_COLORS, CORNERS, JPEG_COMMENT_LIMIT, corners_for, draw_blocks, draw_lines, format_epoch,
     insert_jpeg_comment, parse_color, parse_placement, placement_for, read_jpeg_comment,
     timing_blocks, timing_payload,
