@@ -31,6 +31,16 @@ TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 CORNERS = ('top-left', 'top-right', 'bottom-left', 'bottom-right')
 
+# One colour per corner, so two blocks are told apart by where they are AND by how they look. Green
+# and cyan for the two ends of the chain, which are the pair a reader compares; amber and magenta
+# for whatever sits between them.
+CORNER_COLORS = {
+    'top-left':     (0, 255, 0),
+    'top-right':    (0, 255, 255),
+    'bottom-left':  (255, 191, 0),
+    'bottom-right': (255, 0, 255),
+}
+
 # A COM segment carries a 2-byte big-endian length that counts itself, so the text cannot exceed
 # 65535 - 2. A timing chain is a few hundred bytes; the cap is here so a pathological one is
 # truncated rather than producing a segment whose length field lies about its own size.
@@ -191,14 +201,17 @@ def draw_lines(image, lines: list[str], corner: str = 'top-left', color=(255, 25
     return image
 
 
-def draw_blocks(image, blocks: list[tuple[str, list[str]]], first_corner: str = 'top-left',
-                color=(255, 255, 255), scale: float = 0.5, is_bgr: bool = True, is_gray: bool = False):
-    """Draw each block in its own corner, in place, and return the image."""
+def draw_blocks(image, blocks: list[tuple[str, list[str]]], spec: dict[str, list[str]] | None = None,
+                scale: float = 0.5, is_bgr: bool = True, is_gray: bool = False):
+    """Draw each block in its own corner and colour, in place, and return the image."""
 
-    corners = corners_for(len(blocks), first_corner)
+    spec = spec or {}
+    corners = corners_for(len(blocks))
 
-    for corner, (label, lines) in zip(corners, blocks):
-        draw_lines(image, [label, *lines], corner=corner, color=color, scale=scale,
+    for i, (label, lines) in enumerate(blocks):
+        corner, colour = placement_for(label, i, corners, spec)
+
+        draw_lines(image, [label, *lines], corner=corner, color=colour, scale=scale,
                    is_bgr=is_bgr, is_gray=is_gray)
 
     return image
@@ -280,3 +293,58 @@ def read_jpeg_comment(jpg: bytes) -> str | None:
         i += 2 + length
 
     return None
+
+
+def parse_placement(spec: str | None) -> dict[str, list[str]]:
+    """`'video_in=top-left:#0f0, webvis=bottom-right'` -> `{'videoin': ['top-left', '#0f0'], ...}`.
+
+    One spelling for corner and colour, since both are the same kind of statement
+    about one filter and two option formats double what a reader has to
+    remember. A value is a colour when it starts with `#` and a corner
+    otherwise, so order does not matter. Names match case-insensitively and
+    ignore underscores: the config says `video_in`, the timing chain says
+    `VideoIn`.
+
+    An unparseable entry is dropped with a warning rather than raising, so a typo
+    costs that block its placement instead of costing the run.
+    """
+
+    out: dict[str, list[str]] = {}
+
+    for part in (spec or '').split(','):
+        if not (part := part.strip()):
+            continue
+
+        name, sep, value = part.partition('=')
+
+        if not sep or not (value := value.strip()):
+            logger.warning('timings: ignoring %r, expected <filter>=<corner>[:#colour]', part)
+            continue
+
+        key = name.strip().replace('_', '').lower()
+        out.setdefault(key, []).extend(v.strip() for v in value.split(':') if v.strip())
+
+    return out
+
+
+def placement_for(name: str, index: int, corners: list[str],
+                  spec: dict[str, list[str]]) -> tuple[str, tuple[int, int, int]]:
+    """The corner and colour a block ends up with, after any per-filter override.
+
+    Unset, a block takes the corner its position in the chain gives it and the
+    colour that corner carries, so two filters never come out looking alike
+    without anyone having configured anything.
+    """
+
+    corner = corners[index]
+    colour = None
+
+    for value in spec.get(name.replace('_', '').lower(), []):
+        if value.startswith('#'):
+            colour = parse_color(value)
+        elif value in CORNERS:
+            corner = value
+        else:
+            logger.warning('timings: unknown corner %r for %s, keeping %s', value, name, corner)
+
+    return corner, colour if colour is not None else CORNER_COLORS.get(corner, (255, 255, 255))

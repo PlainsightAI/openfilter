@@ -8,7 +8,7 @@ from threading import Thread, RLock
 from openfilter.filter_runtime.filter import FilterConfig, Filter
 from openfilter.filter_runtime.frame import Frame
 from openfilter.filter_runtime.filters.timing_overlay import (
-    draw_blocks, insert_jpeg_comment, parse_color, timing_blocks, timing_payload,
+    draw_blocks, insert_jpeg_comment, parse_placement, timing_blocks, timing_payload,
 )
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
 
@@ -28,11 +28,9 @@ class WebvisConfig(FilterConfig):
     cors_origins: str | None = None
     access_log: bool = False
     enable_snapshot_payload: bool = False
-    overlay_timings: bool = False
-    embed_timings: bool = False
-    overlay_corner: str = 'top-left'
-    overlay_color: str = '#ffffff'
-    overlay_scale: float = 0.5
+    timings: bool = False
+    timings_placement: str | None = None
+    timings_scale: float = 0.5
 
 
 class Webvis(Filter):
@@ -70,39 +68,28 @@ class Webvis(Filter):
             Whether to enable the GET /snapshot-payload and /{topic}/snapshot-payload REST endpoints.
             Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
 
-        overlay_timings:
-            Draw this frame's timing chain into the picture as it is encoded for the wire: one
-            block per filter with its time in and out, plus video_in's read stamp at one end of the
-            chain and the instant the JPEG was served at the other, all in the
-            ``2026-09-22 15:22:53.123`` format a camera burns into its own image. With a camera
-            that stamps its own clock, both clocks then sit in one frame, so a screenshot measures
-            the camera-to-video_in leg that no filter times. Off by default, and drawn per connected
-            browser rather than per frame. Default ``False``. Also settable via
-            ``FILTER_OVERLAY_TIMINGS``.
+        timings:
+            Instrument this frame's timing chain, off by default. When on, the chain is both drawn
+            into the picture, one block per filter in its own corner and colour, and carried as
+            JSON in the served JPEG's COM segment, the format's free-text segment that every
+            decoder skips. Drawn in the ``2026-09-22 15:22:53.123`` format a camera burns into its
+            own image, so with a camera that stamps its own clock both clocks sit in one frame and
+            a screenshot measures the camera-to-video_in leg that no filter times; carried in the
+            bytes so a browser can compare each frame's own numbers against its own clock, which is
+            the webvis-to-browser leg, without trusting that the subject data on another URL
+            belongs to the frame on screen. Also settable via ``FILTER_TIMINGS``.
 
-        embed_timings:
-            Carry the same timing chain as JSON in the served JPEG's COM segment, the spec's
-            free-text segment that every decoder skips, so the picture is unchanged for anything
-            not looking for it. A browser that fetches the stream and parses the multipart itself
-            can then read each frame's own numbers and compare them against its own clock, which
-            measures the webvis-to-browser leg. It also removes an assumption: today the picture
-            comes from one URL and the subject data from another, with nothing tying a reading to
-            the frame on screen. Independent of ``overlay_timings``, so either can be tested alone.
-            Default ``False``. Also settable via ``FILTER_EMBED_TIMINGS``.
+        timings_placement:
+            Where each filter's block goes, when the defaults do not suit the picture. Unset, the
+            source takes the top left and the last filter the top right, each corner with its own
+            colour, so the two ends of the chain are always in the same two places and never look
+            alike. Override per filter as ``video_in=bottom-right:#0f0, webvis=top-left``: a value
+            starting with ``#`` is a colour, anything else a corner, and either may be given alone.
+            Also settable via ``FILTER_TIMINGS_PLACEMENT``.
 
-        overlay_corner:
-            Which corner to draw in: ``top-left`` (default), ``top-right``, ``bottom-left`` or
-            ``bottom-right``. Pick the corner the camera's own timestamp does not occupy.
-            Also settable via ``FILTER_OVERLAY_CORNER``.
-
-        overlay_color:
-            Text colour as ``#rgb`` or ``#rrggbb``, the spelling ``util`` already accepts. Default
-            white. The text is drawn over a dark outline, so it stays readable on any scene.
-            Also settable via ``FILTER_OVERLAY_COLOR``.
-
-        overlay_scale:
-            OpenCV font scale. Default ``0.5``. Raise it for 4K sources where the default is
-            unreadable. Also settable via ``FILTER_OVERLAY_SCALE``.
+        timings_scale:
+            OpenCV font scale for the drawn blocks. Default ``0.5``; raise it for 4K sources where
+            the default is unreadable. Also settable via ``FILTER_TIMINGS_SCALE``.
     """
 
     FILTER_TYPE = 'Output'
@@ -264,11 +251,9 @@ class Webvis(Filter):
             "cors_origins": str,
             "access_log": bool,
             "enable_snapshot_payload": bool,
-            "overlay_timings": bool,
-            "embed_timings": bool,
-            "overlay_corner": str,
-            "overlay_color": str,
-            "overlay_scale": float,
+            "timings": bool,
+            "timings_placement": str,
+            "timings_scale": float,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -294,8 +279,8 @@ class Webvis(Filter):
 
         # A bad corner or colour is warned about and falls back at draw time rather than refusing to
         # start: this is a debug overlay, and a run that dies over a typo in it measures nothing.
-        if config.overlay_scale <= 0:
-            raise ValueError(f'overlay scale must be greater than 0, got:{config.overlay_scale}')
+        if config.timings_scale <= 0:
+            raise ValueError(f'timings scale must be greater than 0, got:{config.timings_scale}')
 
         if outputs:  # convenience output "http://host:port" -> config.host / config.port
             if len(outputs) != 1:
@@ -328,11 +313,9 @@ class Webvis(Filter):
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
         self.enable_snapshot_payload = config.enable_snapshot_payload
-        self.overlay_timings = config.overlay_timings
-        self.embed_timings = config.embed_timings
-        self.overlay_corner = config.overlay_corner
-        self.overlay_color = parse_color(config.overlay_color)
-        self.overlay_scale = config.overlay_scale
+        self.timings = config.timings
+        self.timings_placement = parse_placement(config.timings_placement)
+        self.timings_scale = config.timings_scale
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()
@@ -372,33 +355,23 @@ class Webvis(Filter):
         enable_snapshot_payload.
         """
 
-        overlay = getattr(self, 'overlay_timings', False)
-        embed = getattr(self, 'embed_timings', False)
-
-        if not (overlay or embed):
+        if not getattr(self, 'timings', False):
             return frame.bgr.jpg
 
-        served = time.time()  # one stamp, so the drawn and embedded chains cannot disagree
+        served = time.time()  # one stamp, so the drawn and carried chains cannot disagree
 
         try:
-            if overlay:
-                rw = frame.bgr.rw
-                draw_blocks(
-                    rw.image, timing_blocks(frame.data, served),
-                    first_corner = getattr(self, 'overlay_corner', 'top-left'),
-                    color        = getattr(self, 'overlay_color', (255, 255, 255)),
-                    scale        = getattr(self, 'overlay_scale', 0.5),
-                    is_bgr       = True,
-                    is_gray      = False,
-                )
-                jpg = Frame(rw.image, frame, 'BGR').jpg
-            else:
-                jpg = frame.bgr.jpg
+            rw = frame.bgr.rw
+            draw_blocks(
+                rw.image, timing_blocks(frame.data, served),
+                spec    = getattr(self, 'timings_placement', None),
+                scale   = getattr(self, 'timings_scale', 0.5),
+                is_bgr  = True,
+                is_gray = False,
+            )
 
-            if embed:
-                jpg = insert_jpeg_comment(jpg, json.dumps(timing_payload(frame.data, served)))
-
-            return jpg
+            return insert_jpeg_comment(Frame(rw.image, frame, 'BGR').jpg,
+                                       json.dumps(timing_payload(frame.data, served)))
         except Exception as exc:  # instrumentation must never cost the stream
             logger.warning('timing instrumentation failed, serving the frame as it is: %s', exc)
             return frame.bgr.jpg

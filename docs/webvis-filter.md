@@ -59,18 +59,17 @@ Filter.run_multi([
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
         access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
-        overlay_timings=False, # Draw this frame's timing chain onto the image (default False)
-        embed_timings=False,   # Carry the same chain as JSON in the JPEG's COM segment (default False)
-        overlay_corner='top-left',  # top-left | top-right | bottom-left | bottom-right
-        overlay_color='#ffffff',    # '#rgb' or '#rrggbb'
-        overlay_scale=0.5,          # OpenCV font scale
+        timings=False,         # Draw and carry this frame's timing chain (default False)
+        timings_placement='video_in=top-left, webvis=top-right',  # optional per-filter override
+        timings_scale=0.5,     # OpenCV font scale
     )),
 ])
 ```
 
 ### Timing overlay
 
-`overlay_timings` draws the frame's own timing chain into the picture, in the
+`timings` is off by default and turns on both halves at once: the chain is drawn
+into the picture and carried in the JPEG's own bytes. It renders in the
 `2026-09-22 15:22:53.123` format an IP camera burns into its image:
 
 ```
@@ -86,10 +85,12 @@ Every filter reads the same three lines. Two values are not per filter and
 appear once each, at the ends of the chain: `ts`, when video_in read the frame,
 and `served`, when the JPEG went out to the browser.
 
-`overlay_corner` places the source; the last filter always takes the opposite
-corner on that same edge, and anything between them fills the other edge. The
-two ends are what a reader compares, so they keep their corners whether or not
-a detector sits in the middle. Blocks are kept apart rather than stacked because
+By default the source takes the top left and the last filter the top right, each
+corner in its own colour, so the two ends a reader compares are always in the
+same two places and never look alike; anything between them fills the bottom
+edge. `timings_placement` overrides that per filter,
+`video_in=bottom-right:#0f0, webvis=top-left`, where a value starting with `#`
+is a colour and anything else a corner, either given alone. Blocks are kept apart rather than stacked because
 a delay is read by comparing two numbers: one line apart, a two-second gap looks
 the same as a twenty-millisecond one.
 
@@ -102,8 +103,8 @@ instrumentation watched by one or two people.
 
 ### Timings inside the JPEG
 
-`embed_timings` writes the same chain as JSON into each served JPEG's COM
-segment, the JPEG spec's free-text segment:
+The same chain travels as JSON in each served JPEG's COM segment, the JPEG
+spec's free-text segment:
 
 ```json
 {"ts": 1790213037.9, "filters": [{"name": "VideoIn", "in": 1790213037.8,
@@ -126,8 +127,6 @@ Note that a plain `<img src>` cannot reach the segment: the browser paints the
 pixels and drops the rest. Reading it means fetching the stream, splitting the
 multipart parts and decoding each JPEG onto a canvas.
 
-The flag is independent of `overlay_timings`, so either can be run on its own.
-
 `in` on the source block predates its own `ts`: video_in's `process()` starts
 and then blocks waiting for the decoder, so most of its duration is the wait for
 the next frame at the configured rate, not work. Summing `duration_ms` across
@@ -149,11 +148,9 @@ export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
 export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
-export FILTER_OVERLAY_TIMINGS="false"
-export FILTER_EMBED_TIMINGS="false"
-export FILTER_OVERLAY_CORNER="top-left"
-export FILTER_OVERLAY_COLOR="#ffffff"
-export FILTER_OVERLAY_SCALE="0.5"
+export FILTER_TIMINGS="false"
+export FILTER_TIMINGS_PLACEMENT="video_in=top-left, webvis=top-right"
+export FILTER_TIMINGS_SCALE="0.5"
 ```
 
 ## Web Interface

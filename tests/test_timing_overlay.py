@@ -10,8 +10,9 @@ import numpy as np
 
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.timing_overlay import (
-    CORNERS, JPEG_COMMENT_LIMIT, corners_for, draw_blocks, draw_lines, format_epoch,
-    insert_jpeg_comment, parse_color, read_jpeg_comment, timing_blocks, timing_payload,
+    CORNER_COLORS, CORNERS, JPEG_COMMENT_LIMIT, corners_for, draw_blocks, draw_lines, format_epoch,
+    insert_jpeg_comment, parse_color, parse_placement, placement_for, read_jpeg_comment,
+    timing_blocks, timing_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ class TestDrawBlocks(unittest.TestCase):
         ]}}
         image = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        draw_blocks(image, timing_blocks(data, served=now), 'top-left')
+        draw_blocks(image, timing_blocks(data, served=now))
 
         ys, xs = np.nonzero(image.any(axis=2))
 
@@ -242,3 +243,42 @@ class TestJpegComment(unittest.TestCase):
 
     def test_payload_is_json_serialisable_for_an_empty_frame(self):
         self.assertEqual(json.loads(json.dumps(timing_payload(None)))['filters'], [])
+
+
+class TestPlacement(unittest.TestCase):
+    def test_defaults_put_the_two_ends_apart_and_in_different_colours(self):
+        corners = corners_for(2)
+
+        source = placement_for('VideoIn', 0, corners, {})
+        last = placement_for('Webvis', 1, corners, {})
+
+        self.assertEqual(source, ('top-left', CORNER_COLORS['top-left']))
+        self.assertEqual(last, ('top-right', CORNER_COLORS['top-right']))
+        self.assertNotEqual(source[1], last[1])
+
+    def test_corner_and_colour_share_one_spelling_in_either_order(self):
+        for spec in ('video_in=bottom-right:#0f0', 'video_in=#0f0:bottom-right'):
+            placement = placement_for('VideoIn', 0, corners_for(2), parse_placement(spec))
+
+            self.assertEqual(placement, ('bottom-right', (0, 255, 0)), spec)
+
+    def test_either_may_be_given_alone(self):
+        corners = corners_for(2)
+
+        self.assertEqual(placement_for('VideoIn', 0, corners, parse_placement('video_in=#f0f')),
+                         ('top-left', (255, 0, 255)))
+        self.assertEqual(placement_for('VideoIn', 0, corners, parse_placement('video_in=bottom-left')),
+                         ('bottom-left', CORNER_COLORS['bottom-left']))
+
+    def test_names_match_across_the_configs_spelling_and_the_chains(self):
+        # The config says `video_in`, `filter_timings` says `VideoIn`.
+        for name in ('video_in', 'VideoIn', 'VIDEO_IN'):
+            spec = parse_placement(f'{name}=bottom-right')
+
+            self.assertEqual(placement_for('VideoIn', 0, corners_for(2), spec)[0], 'bottom-right', name)
+
+    def test_a_typo_costs_that_block_its_placement_not_the_run(self):
+        for spec in ('video_in', 'video_in=', 'video_in=middle', ''):
+            placement = placement_for('VideoIn', 0, corners_for(2), parse_placement(spec))
+
+            self.assertEqual(placement, ('top-left', CORNER_COLORS['top-left']), spec)
