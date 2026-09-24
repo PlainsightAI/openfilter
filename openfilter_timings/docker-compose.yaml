@@ -20,9 +20,7 @@ services:
       TZ: ${TZ:-UTC}
       FILTER_SOURCES: tcp://video-in:5550
       FILTER_OUTPUTS: http://0.0.0.0:8000
-      FILTER_TIMINGS: "true"
-      FILTER_TIMINGS_SCALE: "0.8"
-      FILTER_TIMINGS_PLACEMENT: ${PLACEMENT:-}
+      FILTER_TIMINGS: ${TIMINGS:-bottom-left}  # true, or a corner: top-left, bottom-right, ...
     ports:
       - "${WEB_PORT:-8000}:8000"
     depends_on:

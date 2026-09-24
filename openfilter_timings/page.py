@@ -24,16 +24,28 @@ TIMINGS_PAGE = """<!doctype html>
 <style>
   :root { color-scheme: light dark; }
   body { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-         display: grid; grid-template-columns: minmax(0, 1fr) 22rem; min-height: 100vh; }
-  @media (max-width: 800px) { body { grid-template-columns: 1fr; } }
+         display: grid; grid-template-columns: minmax(0, 1fr) 6px var(--panel, 30rem);
+         min-height: 100vh; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; } #split { display: none; } }
   canvas { width: 100%; height: auto; display: block; background: #111; }
-  aside { padding: 1rem; border-left: 1px solid rgba(128,128,128,.35); }
+  aside { padding: 1rem; overflow-x: hidden; }
+  /* The table is wider than any sensible default, so the split is draggable rather than guessed:
+     the reader gives the numbers the room they need and the picture keeps the rest. */
+  #split { cursor: col-resize; background: rgba(128,128,128,.35); }
+  #split:hover, #split.dragging { background: rgba(128,128,128,.7); }
+  body.dragging { user-select: none; }
   h1 { font-size: 1rem; margin: 0 0 .75rem; }
-  table { width: 100%; border-collapse: collapse; }
-  td { padding: .15rem 0; vertical-align: top; }
-  td:last-child { text-align: right; white-space: nowrap; }
-  tr.gap td { font-weight: 700; }
-  .label { opacity: .65; }
+  pre { margin: 0 0 .5rem; overflow-x: auto; font: inherit; }
+  /* No horizontal scrolling inside the log: a column you have to drag a bar to see is a column
+     you stop reading. Widen the panel instead, which is what the split handle is for. */
+  #chain { max-height: 46vh; overflow-y: auto; overflow-x: hidden;
+           border: 1px solid rgba(128,128,128,.35); padding: .5rem; }
+  #chain pre { overflow: visible; width: max-content; margin: 0; }
+  #chain .head { position: sticky; top: -.5rem; background: Canvas; padding-bottom: .15rem; }
+  #chain .frame { border-top: 1px solid rgba(128,128,128,.25); padding-top: .25rem;
+                  margin-top: .25rem; }
+  .controls { display: flex; gap: 1rem; margin-bottom: .35rem; opacity: .8; }
+  .controls label { display: flex; align-items: center; gap: .3rem; cursor: pointer; }
   h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em;
        opacity: .65; margin: 1.25rem 0 .35rem; font-weight: 600; }
   h2.src { color: var(--c); opacity: 1; }
@@ -47,19 +59,24 @@ TIMINGS_PAGE = """<!doctype html>
   .age.stale { opacity: 1; font-weight: 700; }
 </style>
 <canvas id="view"></canvas>
+<div id="split" title="drag to resize"></div>
 <aside>
   <h1>frame timings</h1>
   <div id="live">
-    <h2>system clock <span id="zone"></span></h2>
+    <h2>browser clock <span id="zone"></span></h2>
     <div class="clock" id="clock">--:--:--.---</div>
     <div class="age" id="age">waiting for a frame</div>
   </div>
-  <div id="chain"></div>
-  <h2>webvis &rarr; browser, last 200 frames</h2>
-  <table id="stats"></table>
-  <p class="note">The clock above is this machine's, running on its own. Every
-  other number is the frame's own, read out of its JPEG and shown in this
-  browser's zone; the blocks drawn on the picture use the container's.</p>
+  <div class="controls">
+    <label><input type="checkbox" id="follow" checked> follow</label>
+    <label><input type="checkbox" id="newest"> newest on top</label>
+  </div>
+  <div id="chain"><pre class="head"></pre></div>
+  <h2>served to this browser, last 200 frames</h2>
+  <pre id="stats"></pre>
+  <p class="note">The table is the frame's own, read out of its JPEG, in the same
+  columns as the subject data. The last two rows are what no filter can record:
+  when this browser received the frame, and how far that is from the read.</p>
 </aside>
 <script>
 const canvas = document.getElementById('view');
@@ -73,20 +90,61 @@ const clock = t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour12: fals
                    '.' + String(Math.floor((t % 1) * 1000)).padStart(3, '0');
 const ms = v => (v >= 1000 ? (v / 1000).toFixed(2) + ' s' : Math.round(v) + ' ms');
 
-function rows(table, pairs) {
-  table.innerHTML = pairs.map(([label, value, cls]) =>
-    `<tr class="${cls || ''}"><td class="label">${label}</td><td>${value}</td></tr>`).join('');
+const NL = String.fromCharCode(10);
+const pad = (v, w, right) => right ? String(v).padStart(w) : String(v).padEnd(w);
+
+// Same columns the terminal script prints from the subject data, so the two can be read side by
+// side without converting anything. Raw epoch, not a clock, for the same reason.
+// One block per frame, appended, so the panel reads like the log it mirrors: you watch the numbers
+// move rather than watching one row rewrite itself. Older frames are dropped once there are more
+// than KEEP of them, and the view follows the bottom unless the reader has scrolled up to look at
+// something, which is the one time auto-scrolling is a nuisance.
+const KEEP = 60;
+const COLS = [4, 8, 19, 19, 10];
+const HEADER = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS'];
+const line = cells => cells.map((cell, c) => pad(cell, COLS[c], c >= 2)).join('  ');
+
+function render(t, browser) {
+  const filters = t.filters || [];
+
+  if (!filters.length) return 'no timings in this frame';
+
+  const id = String(t.id != null ? t.id : '-');
+  const total = ((filters[filters.length - 1].out - filters[0]['in']) * 1000).toFixed(3);
+  const rows = filters.map(f =>
+    line([id, String(f.name || '?'), f['in'].toFixed(6), f.out.toFixed(6), total]));
+
+  if (t.served != null) rows.push(line([id, 'served', t.served.toFixed(6), '', '']));
+
+  rows.push(line([id, 'browser', browser.toFixed(6), '',
+                  t.ts != null ? ((browser - t.ts) * 1000).toFixed(3) : '']));
+
+  return rows.join(NL);
 }
 
-function table(pairs) {
-  return '<table>' + pairs.map(([label, value, cls]) =>
-    `<tr class="${cls || ''}"><td class="label">${label}</td><td>${value}</td></tr>`).join('') +
-    '</table>';
-}
+// `follow` off freezes the view where the reader left it while frames keep arriving, which is the
+// only way to read a row that is three seconds old on a live stream. `newest on top` puts the
+// arriving frame where the eye already is, so following needs no scrolling at all.
+function append(text) {
+  const follow = document.getElementById('follow').checked;
+  const newest = document.getElementById('newest').checked;
+  const head = chain.querySelector('.head');
+  const block = document.createElement('pre');
 
-// The block colours the overlay draws, so a section in the panel and its block in the picture are
-// recognisably the same filter.
-const CORNER_COLORS = ['#00ff00', '#00ffff', '#ffbf00', '#ff00ff'];
+  block.className = 'frame';
+  block.textContent = text;
+
+  if (newest) {
+    head.after(block);
+  } else {
+    chain.appendChild(block);
+  }
+
+  const frames = chain.querySelectorAll('.frame');
+
+  for (let i = KEEP; i < frames.length; i++) frames[newest ? i : frames.length - 1 - i].remove();
+  if (follow) chain.scrollTop = newest ? 0 : chain.scrollHeight;
+}
 
 // The JPEG spec's COM segment (0xFFFE): walk the markers from SOI, skip the ones that carry no
 // length, and stop at SOS, after which there are no more headers, only entropy-coded data.
@@ -112,55 +170,25 @@ function show(bytes, arrived) {
     bitmap.close();
   });
 
-  if (!raw) {
-    chain.innerHTML = table([['no timings in this frame', 'set FILTER_TIMINGS=true']]);
-    return;
-  }
+  if (!raw) return;
 
   const t = JSON.parse(raw);
   const browser = arrived / 1000;
   lastTs = t.ts != null ? t.ts : null;
-  const filters = t.filters || [];
-  let html = '';
 
-  // One section per filter, in pipeline order, so the panel is read the same way the picture is:
-  // who did what, and when. Anything that is not a filter's own number lives in its own section
-  // below, rather than being mixed in where it would look like one.
-  filters.forEach((f, i) => {
-    const pairs = [];
+  append(render(t, browser));
 
-    if (i === 0 && t.ts != null) pairs.push(['read (ts)', clock(t.ts)]);
-
-    pairs.push(['in', clock(f['in'])]);
-    pairs.push(['out', clock(f.out)]);
-    pairs.push(['took', ms(f.duration_ms)]);
-
-    if (i === filters.length - 1 && t.served != null) pairs.push(['served', clock(t.served)]);
-
-    html += `<section><h2 class="src" style="--c:${CORNER_COLORS[i % 4]}">${f.name}</h2>` +
-            table(pairs) + '</section>';
-  });
-
-  const gaps = [];
-
-  if (t.ts != null && t.served != null) gaps.push(['inside the pipeline', ms((t.served - t.ts) * 1000)]);
   if (t.served != null) {
-    const delta = (browser - t.served) * 1000;
-    gaps.push(['served \u2192 this browser', ms(delta)]);
-    deltas.push(delta);
+    deltas.push((browser - t.served) * 1000);
     if (deltas.length > 200) deltas.shift();
     const sorted = [...deltas].sort((a, b) => a - b);
-    rows(stats, [
-      ['samples', deltas.length],
-      ['min', ms(sorted[0])],
-      ['median', ms(sorted[sorted.length >> 1])],
-      ['max', ms(sorted[sorted.length - 1])],
-    ]);
+    stats.textContent = [
+      'samples  ' + deltas.length,
+      'min      ' + ms(sorted[0]),
+      'median   ' + ms(sorted[sorted.length >> 1]),
+      'max      ' + ms(sorted[sorted.length - 1]),
+    ].join('\\n');
   }
-  if (t.ts != null) gaps.push(['read \u2192 on screen', ms((browser - t.ts) * 1000), 'gap']);
-
-  html += '<section><h2>gaps</h2>' + table(gaps) + '</section>';
-  chain.innerHTML = html;
 }
 
 // Split the multipart stream by SOI/EOI rather than by the boundary string: the boundary is only
@@ -223,6 +251,32 @@ function tick() {
   }
   requestAnimationFrame(tick);
 }
+
+chain.querySelector('.head').textContent = line(HEADER);
+
+// Width survives a reload, because the first thing anyone does on this page is widen the panel and
+// nobody wants to do it twice.
+const saved = localStorage.getItem('panel');
+if (saved) document.body.style.setProperty('--panel', saved);
+
+document.getElementById('split').addEventListener('mousedown', down => {
+  down.preventDefault();
+  document.body.classList.add('dragging');
+
+  const move = e => {
+    const width = Math.min(Math.max(window.innerWidth - e.clientX, 240), window.innerWidth - 120);
+    document.body.style.setProperty('--panel', width + 'px');
+  };
+  const up = () => {
+    document.body.classList.remove('dragging');
+    localStorage.setItem('panel', document.body.style.getPropertyValue('--panel'));
+    removeEventListener('mousemove', move);
+    removeEventListener('mouseup', up);
+  };
+
+  addEventListener('mousemove', move);
+  addEventListener('mouseup', up);
+});
 
 const STREAM_URL = new URL(window.location.href).searchParams.get('topic') || '/';
 tick();

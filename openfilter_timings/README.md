@@ -5,9 +5,21 @@ already records when a frame entered and left it, so the pipeline can account
 for itself, but the two legs at the ends are outside all of it: camera to
 video_in, and webvis to browser.
 
-This stack makes both visible. `FILTER_TIMINGS` draws each filter's block into
-the picture and carries the same numbers inside the JPEG, and `/timings` reads
-them back in the browser and compares them with the machine's own clock.
+The chain always travels inside the served JPEG, so a frame carries its own
+numbers and cannot be paired with another frame's. `FILTER_TIMINGS` additionally
+draws them on the picture, and `/timings` reads them back in the browser and
+compares them with the machine's own clock.
+
+```
+ID    FILTER    TIME IN            TIME OUT           TOTAL MS
+3247  VideoIn   1790273007.697044  1790273007.714762    43.013
+3247  Webvis    1790273007.740037  1790273007.740057    43.013
+```
+
+One row per filter, for the frame on screen. Times are raw epoch seconds, the
+same numbers a script reading the subject data prints, so the two line up
+without converting anything. TOTAL MS is the frame's own, first filter in to
+last filter out.
 
 ## Run
 
@@ -23,18 +35,15 @@ SOURCE='rtsp://user:pass@host:554/path!resize=1280x720!maxfps=10'
 ```
 
 A camera that burns its own clock into the picture gives you that leg for free:
-its timestamp and video_in's read stamp are then in the same frame. Use
-`PLACEMENT` to keep the drawn blocks off it, for example
-`video_in=bottom-left, webvis=bottom-right`.
+its timestamp and video_in's read stamp are then in the same frame. Set `TIMINGS` to a corner to keep the
+table off it, for example `TIMINGS=bottom-left`.
 
 ## What you are looking at
 
-The picture carries one block per filter, each in its own corner and colour. The
-panel repeats those numbers, read out of the frame's own JPEG rather than from
-another endpoint, and adds what only the browser knows: when the frame actually
-arrived. `read -> on screen` is the number a customer would recognise, and the
-clock at the top keeps running when frames stop, which is how a stalled stream
-tells on itself.
+The panel repeats the table, read out of the frame's own JPEG rather than from
+another endpoint, and adds two rows no filter can record: when this browser
+received the frame, and how far that is from the read. The clock at the top
+keeps running when frames stop, which is how a stalled stream tells on itself.
 
 ## Removing it
 

@@ -31,16 +31,6 @@ TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 CORNERS = ('top-left', 'top-right', 'bottom-left', 'bottom-right')
 
-# One colour per corner, so two blocks are told apart by where they are AND by how they look. Green
-# and cyan for the two ends of the chain, which are the pair a reader compares; amber and magenta
-# for whatever sits between them.
-CORNER_COLORS = {
-    'top-left':     (0, 255, 0),
-    'top-right':    (0, 255, 255),
-    'bottom-left':  (255, 191, 0),
-    'bottom-right': (255, 0, 255),
-}
-
 # A COM segment carries a 2-byte big-endian length that counts itself, so the text cannot exceed
 # 65535 - 2. A timing chain is a few hundred bytes; the cap is here so a pathological one is
 # truncated rather than producing a segment whose length field lies about its own size.
@@ -84,142 +74,41 @@ def format_epoch(t: float | None, with_millis: bool = True) -> str:
     return f'{out}.{int((t % 1) * 1000):03d}' if with_millis else out
 
 
-def timing_blocks(data: dict | None, served: float | None = None) -> list[tuple[str, list[str]]]:
-    """One block per filter, in pipeline order, every block the same three lines.
+def timing_rows(data: dict | None) -> tuple[list[str], list[list[str]]]:
+    """The chain as a header and one row per filter, the shape a log already reads in.
 
-    Kept as separate blocks rather than one list of lines so each filter can be
-    drawn in its own corner: reading a delay means comparing two numbers that are
-    far apart in the picture, and a single stacked block puts them one line
-    apart, where a 2-second gap looks the same as a 20-millisecond one.
+    Columns are `ID FILTER TIME IN TIME OUT TOTAL MS`, with the times as raw
+    epoch seconds rather than a formatted clock: this is read next to a terminal
+    printing the same numbers out of the subject data, and a reader should not
+    have to convert between the two to line them up.
 
-    Read the blocks at serve time, not inside `process()`: a filter's own entry
-    is appended to `filter_timings` only after its `process()` returns
-    (`filter.py`), so webvis's own in/out exist by the time a frame is encoded
-    for the wire but not while it is being handled. `served`, the instant the
-    JPEG goes out, is the one value no filter records, and it closes the chain.
+    TOTAL MS is the frame's total, first filter in to last filter out, repeated
+    on every row. Per-filter durations are mostly the wait for the next frame,
+    so a column of them answers a question nobody asked; the total is the one
+    that moves when a pipeline gets slower.
     """
 
     meta = (data or {}).get('meta') or {}
-    ts = meta.get('ts')
-    blocks = []
+    timings = meta.get('filter_timings') or []
 
-    zone = time.strftime('%Z')  # the container's, which is rarely the reader's
+    if not timings:
+        return [], []
 
-    for i, entry in enumerate(meta.get('filter_timings') or []):
-        lines = [
-            f'in  {format_epoch(entry.get("time_in"))}',
-            f'out {format_epoch(entry.get("time_out"))}  {entry.get("duration_ms", 0):.1f}ms',
+    frame_id = str(meta.get('id', '-'))
+    total_ms = (timings[-1].get('time_out', 0) - timings[0].get('time_in', 0)) * 1000
+    header = ['ID', 'FILTER', 'TIME IN', 'TIME OUT', 'TOTAL MS']
+    rows = [
+        [
+            frame_id,
+            str(entry.get('filter_name') or '?')[:20],
+            f'{entry.get("time_in", 0):.6f}',
+            f'{entry.get("time_out", 0):.6f}',
+            f'{total_ms:.3f}',
         ]
+        for entry in timings
+    ]
 
-        if i == 0 and ts is not None:  # the source's read stamp belongs with the source
-            lines.insert(0, f'ts  {format_epoch(ts)}')
-
-        # The zone rides on the label rather than on every line: it is the same for all of them,
-        # and without it a reader comparing these against their own screen silently compares two
-        # different clocks.
-        blocks.append((f'{str(entry.get("filter_name") or "?")[:24]}  {zone}', lines))
-
-    # The serve stamp joins the last filter's block rather than forming its own: it happens in
-    # that filter, and a separate block would push the last filter out of the corner opposite the
-    # source, which is where a reader looks for the other end of the chain.
-    if served is not None:
-        lines = [f'served {format_epoch(served)}']
-
-        if ts is not None:
-            lines.append(f'ts -> served  {(served - ts) * 1000:.0f}ms')
-
-        if blocks:
-            blocks[-1][1].extend(lines)
-        else:
-            blocks.append(('served', lines))
-
-    return blocks
-
-
-def corners_for(count: int, first: str = 'top-left') -> list[str]:
-    """Place `count` blocks: the source at `first`, webvis opposite it on the same edge.
-
-    The two ends are what a reader compares, so they keep the same two corners
-    however many filters sit between them; anything in between fills the other
-    edge. With more blocks than corners the extras wrap, which is ugly but still
-    readable, and beats dropping a filter's numbers silently.
-    """
-
-    if first not in CORNERS:
-        logger.warning('timing overlay: unknown corner %r, using top-left', first)
-        first = 'top-left'
-
-    edge, side = first.split('-')
-    opposite = f'{edge}-{"right" if side == "left" else "left"}'
-    other_edge = 'bottom' if edge == 'top' else 'top'
-    middles = [f'{other_edge}-{side}', f'{other_edge}-{"right" if side == "left" else "left"}']
-
-    if count <= 1:
-        return [first]
-
-    return [first] + [middles[i % 2] for i in range(count - 2)] + [opposite]
-
-
-def draw_lines(image, lines: list[str], corner: str = 'top-left', color=(255, 255, 255),
-               scale: float = 0.5, is_bgr: bool = True, is_gray: bool = False):
-    """Draw `lines` in one corner of `image`, in place, and return it.
-
-    `image` must already be writable (`frame.rw.image`); this does not copy.
-    """
-
-    import cv2
-
-    if not lines:
-        return image
-
-    if is_gray:
-        color = round(sum(color) / 3)
-    elif is_bgr:
-        color = color[::-1]
-
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    thickness = max(1, round(scale * 2))
-    height, width = image.shape[:2]
-    margin = 10
-
-    sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in lines]
-    line_h = max(h for _, h in sizes) + 8
-    block_h = line_h * len(lines)
-    block_w = max(w for w, _ in sizes)
-
-    if corner not in CORNERS:
-        logger.warning('timing overlay: unknown corner %r, using top-left', corner)
-        corner = 'top-left'
-
-    x = margin if corner.endswith('left') else max(margin, width - block_w - margin)
-    y = margin + line_h if corner.startswith('top') else max(line_h, height - block_h - margin) + line_h
-
-    for i, line in enumerate(lines):
-        org = (x, y + i * line_h)
-        # Dark outline first, light glyph over it: the same legibility trick the
-        # cameras use for their own burned-in clock, so the overlay survives a
-        # white box or a bright floor without a background rectangle hiding the
-        # scene behind it.
-        cv2.putText(image, line, org, font, scale, (0, 0, 0) if not is_gray else 0, thickness + 2, cv2.LINE_AA)
-        cv2.putText(image, line, org, font, scale, color, thickness, cv2.LINE_AA)
-
-    return image
-
-
-def draw_blocks(image, blocks: list[tuple[str, list[str]]], spec: dict[str, list[str]] | None = None,
-                scale: float = 0.5, is_bgr: bool = True, is_gray: bool = False):
-    """Draw each block in its own corner and colour, in place, and return the image."""
-
-    spec = spec or {}
-    corners = corners_for(len(blocks))
-
-    for i, (label, lines) in enumerate(blocks):
-        corner, colour = placement_for(label, i, corners, spec)
-
-        draw_lines(image, [label, *lines], corner=corner, color=colour, scale=scale,
-                   is_bgr=is_bgr, is_gray=is_gray)
-
-    return image
+    return header, rows
 
 
 def timing_payload(data: dict | None, served: float | None = None) -> dict:
@@ -233,6 +122,7 @@ def timing_payload(data: dict | None, served: float | None = None) -> dict:
 
     meta = (data or {}).get('meta') or {}
     payload = {
+        'id': meta.get('id'),
         'ts': meta.get('ts'),
         'filters': [
             {
@@ -300,56 +190,67 @@ def read_jpeg_comment(jpg: bytes) -> str | None:
     return None
 
 
-def parse_placement(spec: str | None) -> dict[str, list[str]]:
-    """`'video_in=top-left:#0f0, webvis=bottom-right'` -> `{'videoin': ['top-left', '#0f0'], ...}`.
 
-    One spelling for corner and colour, since both are the same kind of statement
-    about one filter and two option formats double what a reader has to
-    remember. A value is a colour when it starts with `#` and a corner
-    otherwise, so order does not matter. Names match case-insensitively and
-    ignore underscores: the config says `video_in`, the timing chain says
-    `VideoIn`.
 
-    An unparseable entry is dropped with a warning rather than raising, so a typo
-    costs that block its placement instead of costing the run.
+def draw_table(image, header: list[str], rows: list[list[str]], corner: str = 'top-left',
+               color=(0, 255, 0), scale: float | None = None, is_bgr: bool = True,
+               is_gray: bool = False):
+    """Draw the chain as an aligned table, in place, and return the image.
+
+    Columns are laid out on measured widths rather than padded with spaces:
+    OpenCV's Hershey fonts are proportional, so a space-padded row that lines up
+    in a terminal comes out ragged on a frame.
+
+    `scale` defaults to the frame's width, so the table stays the same physical
+    size on a 720p preview and on a 4K source instead of turning into a smear on
+    one of them.
     """
 
-    out: dict[str, list[str]] = {}
+    import cv2
 
-    for part in (spec or '').split(','):
-        if not (part := part.strip()):
-            continue
+    if not rows:
+        return image
 
-        name, sep, value = part.partition('=')
+    if corner not in CORNERS:
+        logger.warning('timings: unknown corner %r, using top-left', corner)
+        corner = 'top-left'
 
-        if not sep or not (value := value.strip()):
-            logger.warning('timings: ignoring %r, expected <filter>=<corner>[:#colour]', part)
-            continue
+    if is_gray:
+        color = round(sum(color) / 3)
+    elif is_bgr:
+        color = color[::-1]
 
-        key = name.strip().replace('_', '').lower()
-        out.setdefault(key, []).extend(v.strip() for v in value.split(':') if v.strip())
+    height, width = image.shape[:2]
+    scale = scale if scale is not None else max(0.4, round(width / 1600, 2))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    thickness = max(1, round(scale * 2))
+    gap = round(18 * scale)
+    margin = round(20 * scale)
 
-    return out
+    table = [header, *rows]
+    widths = [
+        max(cv2.getTextSize(row[col], font, scale, thickness)[0][0] for row in table)
+        for col in range(len(header))
+    ]
+    line_h = cv2.getTextSize('0', font, scale, thickness)[0][1] + round(14 * scale)
+    block_w = sum(widths) + gap * (len(widths) - 1)
+    block_h = line_h * len(table)
 
+    x0 = margin if corner.endswith('left') else max(margin, width - block_w - margin)
+    y0 = margin + line_h if corner.startswith('top') else max(line_h, height - block_h - margin) + line_h
 
-def placement_for(name: str, index: int, corners: list[str],
-                  spec: dict[str, list[str]]) -> tuple[str, tuple[int, int, int]]:
-    """The corner and colour a block ends up with, after any per-filter override.
+    for r, row in enumerate(table):
+        x = x0
+        for col, cell in enumerate(row):
+            # Numbers right-aligned in their column, text left: the same reason a log does it,
+            # digits that do not line up cannot be compared down the column.
+            offset = widths[col] - cv2.getTextSize(cell, font, scale, thickness)[0][0] if col >= 2 else 0
+            org = (x + offset, y0 + r * line_h)
 
-    Unset, a block takes the corner its position in the chain gives it and the
-    colour that corner carries, so two filters never come out looking alike
-    without anyone having configured anything.
-    """
+            cv2.putText(image, cell, org, font, scale, (0, 0, 0) if not is_gray else 0,
+                        thickness + 2, cv2.LINE_AA)
+            cv2.putText(image, cell, org, font, scale, color, thickness, cv2.LINE_AA)
 
-    corner = corners[index]
-    colour = None
+            x += widths[col] + gap
 
-    for value in spec.get(name.replace('_', '').lower(), []):
-        if value.startswith('#'):
-            colour = parse_color(value)
-        elif value in CORNERS:
-            corner = value
-        else:
-            logger.warning('timings: unknown corner %r for %s, keeping %s', value, name, corner)
-
-    return corner, colour if colour is not None else CORNER_COLORS.get(corner, (255, 255, 255))
+    return image

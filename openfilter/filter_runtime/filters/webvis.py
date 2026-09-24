@@ -12,8 +12,7 @@ from openfilter.filter_runtime.frame import Frame
 # the options then parse as before and do nothing, rather than the filter failing to import.
 try:
     from openfilter_timings import (
-        TIMINGS_PAGE, draw_blocks, insert_jpeg_comment, parse_placement, timing_blocks,
-        timing_payload,
+        TIMINGS_PAGE, draw_table, insert_jpeg_comment, timing_payload, timing_rows,
     )
 except ImportError:  # pragma: no cover - only when the folder has been removed
     TIMINGS_PAGE = None
@@ -35,9 +34,7 @@ class WebvisConfig(FilterConfig):
     cors_origins: str | None = None
     access_log: bool = False
     enable_snapshot_payload: bool = False
-    timings: bool = False
-    timings_placement: str | None = None
-    timings_scale: float = 0.5
+    timings: str | bool = False
 
 
 class Webvis(Filter):
@@ -76,27 +73,17 @@ class Webvis(Filter):
             Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
 
         timings:
-            Instrument this frame's timing chain, off by default. When on, the chain is both drawn
-            into the picture, one block per filter in its own corner and colour, and carried as
-            JSON in the served JPEG's COM segment, the format's free-text segment that every
-            decoder skips. Drawn in the ``2026-09-22 15:22:53.123`` format a camera burns into its
-            own image, so with a camera that stamps its own clock both clocks sit in one frame and
-            a screenshot measures the camera-to-video_in leg that no filter times; carried in the
-            bytes so a browser can compare each frame's own numbers against its own clock, which is
-            the webvis-to-browser leg, without trusting that the subject data on another URL
-            belongs to the frame on screen. Also settable via ``FILTER_TIMINGS``.
+            Draw this frame's timing chain onto the picture, off by default. `true` puts the table
+            in the top left; a corner name (`top-left`, `top-right`, `bottom-left`,
+            `bottom-right`) puts it where the camera's own timestamp is not. One row per filter,
+            columns `ID FILTER TIME IN TIME OUT TOTAL MS`, times as raw epoch seconds so they line
+            up with the same numbers printed from the subject data, and TOTAL MS the frame's total
+            from the first filter in to the last filter out. Also settable via ``FILTER_TIMINGS``.
 
-        timings_placement:
-            Where each filter's block goes, when the defaults do not suit the picture. Unset, the
-            source takes the top left and the last filter the top right, each corner with its own
-            colour, so the two ends of the chain are always in the same two places and never look
-            alike. Override per filter as ``video_in=bottom-right:#0f0, webvis=top-left``: a value
-            starting with ``#`` is a colour, anything else a corner, and either may be given alone.
-            Also settable via ``FILTER_TIMINGS_PLACEMENT``.
-
-        timings_scale:
-            OpenCV font scale for the drawn blocks. Default ``0.5``; raise it for 4K sources where
-            the default is unreadable. Also settable via ``FILTER_TIMINGS_SCALE``.
+            The chain travels in the served JPEG's COM segment whether or not this is on: a frame
+            that carries its own timings cannot be paired with another frame's, which is the risk
+            when the picture comes from one URL and the subject data from another. Drawing is the
+            part that is optional, because it writes on the picture.
     """
 
     FILTER_TYPE = 'Output'
@@ -274,9 +261,7 @@ class Webvis(Filter):
             "cors_origins": str,
             "access_log": bool,
             "enable_snapshot_payload": bool,
-            "timings": bool,
-            "timings_placement": str,
-            "timings_scale": float,
+            "timings": str,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -300,10 +285,15 @@ class Webvis(Filter):
         if config.sleep_interval <= 0:
             raise ValueError('sleep interval must be greater than 0, got:{config.sleep_interval}')
 
-        # A bad corner or colour is warned about and falls back at draw time rather than refusing to
-        # start: this is a debug overlay, and a run that dies over a typo in it measures nothing.
-        if config.timings_scale <= 0:
-            raise ValueError(f'timings scale must be greater than 0, got:{config.timings_scale}')
+        # A bad corner is warned about and falls back at draw time rather than refusing to start:
+        # this is debug instrumentation, and a run that dies over a typo in it measures nothing.
+        if isinstance(config.timings, str):
+            config.timings = config.timings.strip().lower()
+
+            if config.timings in ('false', 'no', '0', ''):
+                config.timings = False
+            elif config.timings in ('true', 'yes', '1'):
+                config.timings = True
 
         if outputs:  # convenience output "http://host:port" -> config.host / config.port
             if len(outputs) != 1:
@@ -336,10 +326,10 @@ class Webvis(Filter):
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
         self.enable_snapshot_payload = config.enable_snapshot_payload
-        self.timings = config.timings and TIMINGS_PAGE is not None
-        self.timings_placement = parse_placement(config.timings_placement) if self.timings else {}
+        self.instrumented = TIMINGS_PAGE is not None
+        self.timings = config.timings if self.instrumented else False
 
-        if config.timings and not self.timings:
+        if config.timings and not self.instrumented:
             logger.warning('timings requested but openfilter_timings is not installed, ignoring')
         self.timings_scale = config.timings_scale
 
@@ -381,23 +371,23 @@ class Webvis(Filter):
         enable_snapshot_payload.
         """
 
-        if not getattr(self, 'timings', False):
+        if not getattr(self, 'instrumented', False):
             return frame.bgr.jpg
 
+        drawn = getattr(self, 'timings', False)
         served = time.time()  # one stamp, so the drawn and carried chains cannot disagree
 
         try:
-            rw = frame.bgr.rw
-            draw_blocks(
-                rw.image, timing_blocks(frame.data, served),
-                spec    = getattr(self, 'timings_placement', None),
-                scale   = getattr(self, 'timings_scale', 0.5),
-                is_bgr  = True,
-                is_gray = False,
-            )
+            if drawn:
+                rw = frame.bgr.rw
+                header, rows = timing_rows(frame.data)
+                draw_table(rw.image, header, rows,
+                           corner = drawn if isinstance(drawn, str) else 'top-left')
+                jpg = Frame(rw.image, frame, 'BGR').jpg
+            else:
+                jpg = frame.bgr.jpg
 
-            return insert_jpeg_comment(Frame(rw.image, frame, 'BGR').jpg,
-                                       json.dumps(timing_payload(frame.data, served)))
+            return insert_jpeg_comment(jpg, json.dumps(timing_payload(frame.data, served)))
         except Exception as exc:  # instrumentation must never cost the stream
             logger.warning('timing instrumentation failed, serving the frame as it is: %s', exc)
             return frame.bgr.jpg
