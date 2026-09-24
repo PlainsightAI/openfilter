@@ -7,7 +7,7 @@ from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
 from openfilter.filter_runtime.frame import Frame
-from openfilter.filter_runtime.filters.timing_overlay import draw_lines, parse_color, timing_lines
+from openfilter.filter_runtime.filters.timing_overlay import draw_blocks, parse_color, timing_blocks
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
 
 __all__ = ['WebvisConfig', 'Webvis']
@@ -350,13 +350,13 @@ class Webvis(Filter):
 
         try:
             rw = frame.rw
-            draw_lines(
-                rw.image, timing_lines(frame.data),
-                corner  = getattr(self, 'overlay_corner', 'top-left'),
-                color   = getattr(self, 'overlay_color', (255, 255, 255)),
-                scale   = getattr(self, 'overlay_scale', 0.5),
-                is_bgr  = bool(frame.is_bgr),
-                is_gray = bool(frame.is_gray),
+            draw_blocks(
+                rw.image, timing_blocks(frame.data),
+                first_corner = getattr(self, 'overlay_corner', 'top-left'),
+                color        = getattr(self, 'overlay_color', (255, 255, 255)),
+                scale        = getattr(self, 'overlay_scale', 0.5),
+                is_bgr       = bool(frame.is_bgr),
+                is_gray      = bool(frame.is_gray),
             )
             return Frame(rw.image, frame)
         except Exception as exc:  # an overlay must never cost the stream

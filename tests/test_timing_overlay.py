@@ -9,7 +9,7 @@ import numpy as np
 
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.timing_overlay import (
-    CORNERS, draw_lines, format_epoch, parse_color, timing_lines,
+    CORNERS, corners_for, draw_blocks, draw_lines, format_epoch, parse_color, timing_blocks,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,30 +43,53 @@ class TestFormatEpoch(unittest.TestCase):
         self.assertEqual(format_epoch(None), '-')
 
 
-class TestTimingLines(unittest.TestCase):
-    def test_one_line_per_filter_plus_the_two_clocks(self):
+class TestTimingBlocks(unittest.TestCase):
+    def test_one_block_per_filter_plus_webvis(self):
         now = time.time()
         data = {'meta': {'ts': now - 2.4, 'filter_timings': [
             {'filter_name': 'VideoIn', 'time_in': now - 2.4, 'time_out': now - 2.37, 'duration_ms': 35.2},
             {'filter_name': 'RtDetr', 'time_in': now - 2.37, 'time_out': now - 2.3, 'duration_ms': 70.0},
         ]}}
 
-        lines = timing_lines(data)
+        blocks = timing_blocks(data)
 
-        self.assertEqual(len(lines), 5)  # ts, two filters, now, ts->now
-        self.assertIn('VideoIn', lines[1])
-        self.assertIn('35.2ms', lines[1])
-        self.assertIn('RtDetr', lines[2])
-        self.assertTrue(lines[3].startswith('webvis now'))
+        self.assertEqual([label for label, _ in blocks], ['VideoIn', 'RtDetr', 'webvis'])
+        self.assertTrue(blocks[0][1][0].startswith('ts  '))   # read stamp sits with the source
+        self.assertFalse(any(line.startswith('ts  ') for line in blocks[1][1]))
+        self.assertIn('35.2ms', blocks[0][1][2])
         # The gap between the frame's read time and the wall clock is the whole
         # point: the filters above it can all be fast while this one is not.
-        self.assertRegex(lines[4], r'ts -> now\s+2[34]\d\dms')
+        self.assertRegex(blocks[-1][1][1], r'ts -> now\s+2[34]\d\dms')
 
     def test_survives_a_frame_with_no_timings(self):
         for data in (None, {}, {'meta': {}}, {'meta': {'filter_timings': []}}):
-            lines = timing_lines(data)
+            blocks = timing_blocks(data)
 
-            self.assertTrue(any(line.startswith('webvis now') for line in lines), data)
+            self.assertEqual([label for label, _ in blocks], ['webvis'], data)
+
+
+class TestCornersFor(unittest.TestCase):
+    def test_source_and_webvis_keep_the_same_two_corners(self):
+        # However many filters sit between them, the two ends a reader compares
+        # stay put, so the eye learns one place to look.
+        for count in range(2, 7):
+            corners = corners_for(count)
+
+            self.assertEqual(corners[0], 'top-left', count)
+            self.assertEqual(corners[-1], 'top-right', count)
+            self.assertEqual(len(corners), count, count)
+
+    def test_middles_fill_the_opposite_edge(self):
+        self.assertEqual(corners_for(4), ['top-left', 'bottom-left', 'bottom-right', 'top-right'])
+
+    def test_first_corner_moves_the_whole_layout(self):
+        self.assertEqual(corners_for(2, 'bottom-right'), ['bottom-right', 'bottom-left'])
+
+    def test_a_single_block_just_takes_the_first_corner(self):
+        self.assertEqual(corners_for(1, 'bottom-left'), ['bottom-left'])
+
+    def test_unknown_corner_falls_back_instead_of_raising(self):
+        self.assertEqual(corners_for(2, 'middle'), ['top-left', 'top-right'])
 
 
 class TestDrawLines(unittest.TestCase):
@@ -126,6 +149,23 @@ class TestDrawLines(unittest.TestCase):
         draw_lines(image, [])
 
         self.assertEqual(image.sum(), 0)
+
+
+class TestDrawBlocks(unittest.TestCase):
+    def test_two_filters_land_in_opposite_top_corners(self):
+        now = time.time()
+        data = {'meta': {'ts': now, 'filter_timings': [
+            {'filter_name': 'VideoIn', 'time_in': now, 'time_out': now, 'duration_ms': 1.0},
+        ]}}
+        image = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        draw_blocks(image, timing_blocks(data), 'top-left')
+
+        ys, xs = np.nonzero(image.any(axis=2))
+
+        self.assertLess(ys.mean(), 240)                     # both in the top half
+        self.assertGreater(xs.max(), 320)                   # one block reaches the right side
+        self.assertLess(xs.min(), 320)                      # and one the left
 
 
 if __name__ == '__main__':

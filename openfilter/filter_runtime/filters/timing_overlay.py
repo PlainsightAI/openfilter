@@ -20,7 +20,8 @@ over any scene, the same trick the cameras use.
 import logging
 import time
 
-__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'parse_color', 'format_epoch', 'timing_lines', 'draw_lines']
+__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'parse_color', 'format_epoch', 'timing_blocks', 'corners_for',
+           'draw_lines', 'draw_blocks']
 
 logger = logging.getLogger(__name__)
 
@@ -66,35 +67,67 @@ def format_epoch(t: float | None, with_millis: bool = True) -> str:
     return f'{out}.{int((t % 1) * 1000):03d}' if with_millis else out
 
 
-def timing_lines(data: dict | None) -> list[str]:
-    """The lines to draw for one frame: the read timestamp, then one line per filter.
+def timing_blocks(data: dict | None) -> list[tuple[str, list[str]]]:
+    """One block per filter, in pipeline order, plus a final block for webvis itself.
 
-    `now` is last on purpose: it is the only value that is not carried by the
-    frame, so the gap between it and the line above is what this whole overlay
-    exists to show.
+    Kept as separate blocks rather than one list of lines so each filter can be
+    drawn in its own corner: reading a delay means comparing two numbers that are
+    far apart in the picture, and a single stacked block puts them one line
+    apart, where a 2-second gap looks the same as a 20-millisecond one.
+
+    The last block is webvis's own, and it carries the wall clock at draw time.
+    That value is not in `filter_timings` and cannot be: `_inject_timings`
+    appends webvis's entry only after `process()` returns.
     """
 
     meta = (data or {}).get('meta') or {}
     now = time.time()
-    lines = []
+    ts = meta.get('ts')
+    blocks = []
 
-    if (ts := meta.get('ts')) is not None:
-        lines.append(f'video_in ts   {format_epoch(ts)}')
+    for i, entry in enumerate(meta.get('filter_timings') or []):
+        lines = [
+            f'in  {format_epoch(entry.get("time_in"))}',
+            f'out {format_epoch(entry.get("time_out"))}  {entry.get("duration_ms", 0):.1f}ms',
+        ]
 
-    for entry in meta.get('filter_timings') or []:
-        name = entry.get('filter_name') or '?'
-        lines.append(
-            f'{name[:18]:<18} in {format_epoch(entry.get("time_in"))}'
-            f'  out {format_epoch(entry.get("time_out"))}'
-            f'  {entry.get("duration_ms", 0):.1f}ms'
-        )
+        if i == 0 and ts is not None:  # the source's read stamp belongs with the source
+            lines.insert(0, f'ts  {format_epoch(ts)}')
 
-    lines.append(f'webvis now    {format_epoch(now)}')
+        blocks.append((str(entry.get('filter_name') or '?')[:24], lines))
 
-    if (ts := meta.get('ts')) is not None:
-        lines.append(f'ts -> now     {(now - ts) * 1000:.0f}ms')
+    webvis_lines = [f'now {format_epoch(now)}']
 
-    return lines
+    if ts is not None:
+        webvis_lines.append(f'ts -> now  {(now - ts) * 1000:.0f}ms')
+
+    blocks.append(('webvis', webvis_lines))
+
+    return blocks
+
+
+def corners_for(count: int, first: str = 'top-left') -> list[str]:
+    """Place `count` blocks: the source at `first`, webvis opposite it on the same edge.
+
+    The two ends are what a reader compares, so they keep the same two corners
+    however many filters sit between them; anything in between fills the other
+    edge. With more blocks than corners the extras wrap, which is ugly but still
+    readable, and beats dropping a filter's numbers silently.
+    """
+
+    if first not in CORNERS:
+        logger.warning('timing overlay: unknown corner %r, using top-left', first)
+        first = 'top-left'
+
+    edge, side = first.split('-')
+    opposite = f'{edge}-{"right" if side == "left" else "left"}'
+    other_edge = 'bottom' if edge == 'top' else 'top'
+    middles = [f'{other_edge}-{side}', f'{other_edge}-{"right" if side == "left" else "left"}']
+
+    if count <= 1:
+        return [first]
+
+    return [first] + [middles[i % 2] for i in range(count - 2)] + [opposite]
 
 
 def draw_lines(image, lines: list[str], corner: str = 'top-left', color=(255, 255, 255),
@@ -139,5 +172,18 @@ def draw_lines(image, lines: list[str], corner: str = 'top-left', color=(255, 25
         # scene behind it.
         cv2.putText(image, line, org, font, scale, (0, 0, 0) if not is_gray else 0, thickness + 2, cv2.LINE_AA)
         cv2.putText(image, line, org, font, scale, color, thickness, cv2.LINE_AA)
+
+    return image
+
+
+def draw_blocks(image, blocks: list[tuple[str, list[str]]], first_corner: str = 'top-left',
+                color=(255, 255, 255), scale: float = 0.5, is_bgr: bool = True, is_gray: bool = False):
+    """Draw each block in its own corner, in place, and return the image."""
+
+    corners = corners_for(len(blocks), first_corner)
+
+    for corner, (label, lines) in zip(corners, blocks):
+        draw_lines(image, [label, *lines], corner=corner, color=color, scale=scale,
+                   is_bgr=is_bgr, is_gray=is_gray)
 
     return image

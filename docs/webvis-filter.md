@@ -73,14 +73,21 @@ Filter.run_multi([
 `2026-09-22 15:22:53.123` format an IP camera burns into its image:
 
 ```
-video_in ts   2026-09-23 17:18:48.876
-VideoIn            in 2026-09-23 17:18:48.756  out 2026-09-23 17:18:48.882  126.0ms
-webvis now    2026-09-23 17:18:48.900
-ts -> now     24ms
+VideoIn                                            webvis
+ts  2026-09-23 17:54:16.837                        now 2026-09-23 17:54:16.861
+in  2026-09-23 17:54:16.749                        ts -> now  24ms
+out 2026-09-23 17:54:16.842  93.2ms
 ```
 
-One line per filter, from `meta['filter_timings']`, plus video_in's read
-timestamp and the wall clock at the moment webvis drew it.
+One block per filter, from `meta['filter_timings']`, each in its own corner,
+plus a final block for webvis carrying the wall clock at the moment it drew.
+
+`overlay_corner` places the source; webvis always takes the opposite corner on
+that same edge, and any filter between them fills the other edge. The two ends
+are what a reader compares, so they keep their corners whether or not there is a
+detector in the middle. Blocks are kept apart rather than stacked because a
+delay is read by comparing two numbers: one line apart, a two-second gap looks
+the same as a twenty-millisecond one.
 
 It answers a question the per-filter durations cannot. Those cover the pipeline
 from video_in's read to the last filter's return, so a pipeline whose numbers
