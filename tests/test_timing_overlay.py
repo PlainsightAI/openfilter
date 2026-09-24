@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import json
 import logging
 import os
 import time
@@ -9,7 +10,8 @@ import numpy as np
 
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter.filter_runtime.filters.timing_overlay import (
-    CORNERS, corners_for, draw_blocks, draw_lines, format_epoch, parse_color, timing_blocks,
+    CORNERS, JPEG_COMMENT_LIMIT, corners_for, draw_blocks, draw_lines, format_epoch,
+    insert_jpeg_comment, parse_color, read_jpeg_comment, timing_blocks, timing_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,5 +192,53 @@ class TestDrawBlocks(unittest.TestCase):
         self.assertLess(xs.min(), 320)                      # and one the left
 
 
-if __name__ == '__main__':
-    unittest.main()
+class TestJpegComment(unittest.TestCase):
+    def _jpg(self):
+        import cv2
+
+        ok, buf = cv2.imencode('.jpg', np.zeros((64, 64, 3), dtype=np.uint8))
+
+        self.assertTrue(ok)
+
+        return bytes(buf)
+
+    def test_round_trips_and_leaves_the_picture_decodable(self):
+        import cv2
+
+        jpg = self._jpg()
+
+        out = insert_jpeg_comment(jpg, '{"ts": 1.5}')
+
+        self.assertEqual(read_jpeg_comment(out), '{"ts": 1.5}')
+        # The point of COM: every decoder skips it, so the image itself is unaffected.
+        self.assertIsNotNone(cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_COLOR))
+        self.assertEqual(len(out), len(jpg) + len('{"ts": 1.5}') + 4)
+
+    def test_a_jpeg_without_a_comment_reads_as_none(self):
+        self.assertIsNone(read_jpeg_comment(self._jpg()))
+
+    def test_non_jpeg_input_is_returned_untouched(self):
+        # Instrumentation on the serving path must not raise on a surprise.
+        self.assertEqual(insert_jpeg_comment(b'not a jpeg', 'x'), b'not a jpeg')
+
+    def test_oversized_text_is_truncated_to_what_the_length_field_can_describe(self):
+        out = insert_jpeg_comment(self._jpg(), 'x' * (JPEG_COMMENT_LIMIT + 100))
+
+        self.assertEqual(len(read_jpeg_comment(out)), JPEG_COMMENT_LIMIT)
+
+    def test_payload_carries_the_chain_and_both_ends(self):
+        now = time.time()
+        data = {'meta': {'ts': now - 2.4, 'filter_timings': [
+            {'filter_name': 'VideoIn', 'time_in': now - 2.4, 'time_out': now - 2.3, 'duration_ms': 90.0},
+        ]}}
+
+        payload = timing_payload(data, served=now)
+
+        self.assertEqual(payload['ts'], now - 2.4)
+        self.assertEqual(payload['served'], now)
+        self.assertEqual(payload['filters'], [
+            {'name': 'VideoIn', 'in': now - 2.4, 'out': now - 2.3, 'duration_ms': 90.0},
+        ])
+
+    def test_payload_is_json_serialisable_for_an_empty_frame(self):
+        self.assertEqual(json.loads(json.dumps(timing_payload(None)))['filters'], [])

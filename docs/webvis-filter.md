@@ -60,6 +60,7 @@ Filter.run_multi([
         access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
         overlay_timings=False, # Draw this frame's timing chain onto the image (default False)
+        embed_timings=False,   # Carry the same chain as JSON in the JPEG's COM segment (default False)
         overlay_corner='top-left',  # top-left | top-right | bottom-left | bottom-right
         overlay_color='#ffffff',    # '#rgb' or '#rrggbb'
         overlay_scale=0.5,          # OpenCV font scale
@@ -99,6 +100,34 @@ incomplete while every other one was whole. The cost is therefore per connected
 browser rather than per frame, which is the right trade for debug
 instrumentation watched by one or two people.
 
+### Timings inside the JPEG
+
+`embed_timings` writes the same chain as JSON into each served JPEG's COM
+segment, the JPEG spec's free-text segment:
+
+```json
+{"ts": 1790213037.9, "filters": [{"name": "VideoIn", "in": 1790213037.8,
+ "out": 1790213037.9, "duration_ms": 90.0}], "served": 1790213037.92}
+```
+
+Every decoder skips COM, so the picture is unchanged for anything not looking
+for it, and nothing is re-encoded: the segment is prepended after the SOI
+marker, costing a few hundred bytes.
+
+It exists for the one leg the pipeline cannot see: a browser that fetches the
+stream and parses the multipart itself can read each frame's own numbers and
+compare them with its own clock, which is webvis to browser. It also removes an
+assumption that is easy to miss, that the subject data on `/data` belongs to the
+frame currently on screen. They come from different URLs and nothing ties them
+together; carried in the frame's bytes, the numbers cannot be about another
+frame.
+
+Note that a plain `<img src>` cannot reach the segment: the browser paints the
+pixels and drops the rest. Reading it means fetching the stream, splitting the
+multipart parts and decoding each JPEG onto a canvas.
+
+The flag is independent of `overlay_timings`, so either can be run on its own.
+
 `in` on the source block predates its own `ts`: video_in's `process()` starts
 and then blocks waiting for the decoder, so most of its duration is the wait for
 the next frame at the configured rate, not work. Summing `duration_ms` across
@@ -121,6 +150,7 @@ export FILTER_SLEEP_INTERVAL="0.1"
 export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
 export FILTER_OVERLAY_TIMINGS="false"
+export FILTER_EMBED_TIMINGS="false"
 export FILTER_OVERLAY_CORNER="top-left"
 export FILTER_OVERLAY_COLOR="#ffffff"
 export FILTER_OVERLAY_SCALE="0.5"

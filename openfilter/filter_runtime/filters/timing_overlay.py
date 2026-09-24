@@ -17,17 +17,24 @@ The text is drawn with a dark outline under a light glyph so it stays legible
 over any scene, the same trick the cameras use.
 """
 
+import json
 import logging
 import time
 
-__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'parse_color', 'format_epoch', 'timing_blocks', 'corners_for',
-           'draw_lines', 'draw_blocks']
+__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'JPEG_COMMENT_LIMIT', 'parse_color', 'format_epoch', 'timing_blocks',
+           'corners_for', 'draw_lines', 'draw_blocks', 'timing_payload', 'insert_jpeg_comment',
+           'read_jpeg_comment']
 
 logger = logging.getLogger(__name__)
 
 TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 CORNERS = ('top-left', 'top-right', 'bottom-left', 'bottom-right')
+
+# A COM segment carries a 2-byte big-endian length that counts itself, so the text cannot exceed
+# 65535 - 2. A timing chain is a few hundred bytes; the cap is here so a pathological one is
+# truncated rather than producing a segment whose length field lies about its own size.
+JPEG_COMMENT_LIMIT = 65533
 
 
 def parse_color(color: str | None) -> tuple[int, int, int]:
@@ -195,3 +202,81 @@ def draw_blocks(image, blocks: list[tuple[str, list[str]]], first_corner: str = 
                    is_bgr=is_bgr, is_gray=is_gray)
 
     return image
+
+
+def timing_payload(data: dict | None, served: float | None = None) -> dict:
+    """The timing chain as plain data, for travelling inside the JPEG itself.
+
+    The browser gets the picture on one URL and the subject data on another, and
+    nothing ties one to the other: a reading of "this frame took N seconds" is
+    only as good as the assumption that the numbers belong to the frame on
+    screen. Carried in the frame's own bytes, that assumption is gone.
+    """
+
+    meta = (data or {}).get('meta') or {}
+    payload = {
+        'ts': meta.get('ts'),
+        'filters': [
+            {
+                'name': entry.get('filter_name'),
+                'in': entry.get('time_in'),
+                'out': entry.get('time_out'),
+                'duration_ms': entry.get('duration_ms'),
+            }
+            for entry in meta.get('filter_timings') or []
+        ],
+    }
+
+    if served is not None:
+        payload['served'] = served
+
+    return payload
+
+
+def insert_jpeg_comment(jpg: bytes, text: str) -> bytes:
+    """Return `jpg` with `text` in a COM segment right after the SOI marker.
+
+    COM (0xFFFE) is the JPEG spec's free-text segment: every decoder skips it, so
+    the picture is byte-for-byte the same image to anything that does not look
+    for it, and nothing is re-encoded here, only prepended.
+
+    A payload that is not valid JPEG comes back untouched rather than raising,
+    for the same reason the drawing path swallows its errors: this rides on the
+    serving path, and instrumentation must not cost the stream.
+    """
+
+    data = bytes(jpg)
+
+    if not data.startswith(b'\xff\xd8'):
+        logger.warning('jpeg comment: not a JPEG (no SOI), leaving the frame untouched')
+        return data
+
+    payload = text.encode('utf8')[:JPEG_COMMENT_LIMIT]
+    segment = b'\xff\xfe' + (len(payload) + 2).to_bytes(2, 'big') + payload
+
+    return data[:2] + segment + data[2:]
+
+
+def read_jpeg_comment(jpg: bytes) -> str | None:
+    """The text of the first COM segment, or None. The reader half of `insert_jpeg_comment`."""
+
+    data = bytes(jpg)
+    i = 2
+
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+
+        if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:  # standalone markers carry no length
+            i += 2
+            continue
+
+        length = int.from_bytes(data[i + 2:i + 4], 'big')
+
+        if marker == 0xFE:
+            return data[i + 4:i + 2 + length].decode('utf8', 'replace')
+        if marker == 0xDA:  # start of scan: entropy-coded data follows, stop looking
+            return None
+
+        i += 2 + length
+
+    return None
