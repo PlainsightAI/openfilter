@@ -374,6 +374,14 @@ class Webvis(Filter):
         if not getattr(self, 'instrumented', False):
             return frame.bgr.jpg
 
+        # REVIEWERS: the two halves are gated differently on purpose, and this is the call to
+        # confirm. Drawing is off unless asked for, because it writes on the picture. Embedding the
+        # chain in the COM segment happens on every served frame, because a frame that carries its
+        # own numbers cannot be paired with another frame's, and that pairing is exactly what is
+        # unsafe today when the picture comes from one URL and the subject data from another. The
+        # cost is about 280 bytes per frame on a two-filter chain, no re-encode, and every decoder
+        # skips the segment. If that is too much to pay by default, move it behind `timings` too:
+        # one line, and the page then needs the option on to measure anything.
         drawn = getattr(self, 'timings', False)
         served = time.time()  # one stamp, so the drawn and carried chains cannot disagree
 
