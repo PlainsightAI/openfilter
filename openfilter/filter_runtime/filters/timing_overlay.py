@@ -103,6 +103,8 @@ def timing_blocks(data: dict | None, served: float | None = None) -> list[tuple[
     ts = meta.get('ts')
     blocks = []
 
+    zone = time.strftime('%Z')  # the container's, which is rarely the reader's
+
     for i, entry in enumerate(meta.get('filter_timings') or []):
         lines = [
             f'in  {format_epoch(entry.get("time_in"))}',
@@ -112,7 +114,10 @@ def timing_blocks(data: dict | None, served: float | None = None) -> list[tuple[
         if i == 0 and ts is not None:  # the source's read stamp belongs with the source
             lines.insert(0, f'ts  {format_epoch(ts)}')
 
-        blocks.append((str(entry.get('filter_name') or '?')[:24], lines))
+        # The zone rides on the label rather than on every line: it is the same for all of them,
+        # and without it a reader comparing these against their own screen silently compares two
+        # different clocks.
+        blocks.append((f'{str(entry.get("filter_name") or "?")[:24]}  {zone}', lines))
 
     # The serve stamp joins the last filter's block rather than forming its own: it happens in
     # that filter, and a separate block would push the last filter out of the corner opposite the

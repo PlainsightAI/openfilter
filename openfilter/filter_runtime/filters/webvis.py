@@ -7,6 +7,7 @@ from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
 from openfilter.filter_runtime.frame import Frame
+from openfilter.filter_runtime.filters.timings_page import TIMINGS_PAGE
 from openfilter.filter_runtime.filters.timing_overlay import (
     draw_blocks, insert_jpeg_comment, parse_placement, timing_blocks, timing_payload,
 )
@@ -198,6 +199,19 @@ class Webvis(Filter):
                     content=json.dumps(response_body, default=str),
                     media_type="application/json"
                 )
+
+        @app.get('/timings')
+        def timings_page():
+            """The browser side of the measurement.
+
+            Registered before '/{topic}' so the name resolves here rather than being read as a
+            topic, the same shadowing '/snapshot-payload' has. A topic genuinely named 'timings'
+            is still reachable at '/timings/data' and through this page's ?topic= parameter.
+            """
+
+            from fastapi.responses import HTMLResponse
+
+            return HTMLResponse(TIMINGS_PAGE)
 
         @app.get('/data')
         async def get_data_default():

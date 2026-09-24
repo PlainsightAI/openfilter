@@ -56,7 +56,7 @@ class TestTimingBlocks(unittest.TestCase):
 
         blocks = timing_blocks(data)
 
-        self.assertEqual([label for label, _ in blocks], ['VideoIn', 'RtDetr'])
+        self.assertEqual([label.split()[0] for label, _ in blocks], ['VideoIn', 'RtDetr'])
         self.assertTrue(blocks[0][1][0].startswith('ts  '))   # read stamp sits with the source
         self.assertFalse(any(line.startswith('ts  ') for line in blocks[1][1]))
         self.assertIn('35.2ms', blocks[0][1][2])
@@ -73,7 +73,7 @@ class TestTimingBlocks(unittest.TestCase):
         label, lines = timing_blocks(data, served=now)[-1]
 
         # It rides with the last filter, so that filter keeps the corner opposite the source.
-        self.assertEqual(label, 'VideoIn')
+        self.assertEqual(label.split()[0], 'VideoIn')
         self.assertTrue(lines[-2].startswith('served '))
         self.assertRegex(lines[-1], r'ts -> served\s+2[34]\d\dms')
 
@@ -83,7 +83,7 @@ class TestTimingBlocks(unittest.TestCase):
             {'filter_name': 'VideoIn', 'time_in': now, 'time_out': now, 'duration_ms': 1.0},
         ]}}
 
-        self.assertEqual([label for label, _ in timing_blocks(data)], ['VideoIn'])
+        self.assertEqual([label.split()[0] for label, _ in timing_blocks(data)], ['VideoIn'])
         self.assertEqual(len(timing_blocks(data)[0][1]), 3)  # ts, in, out and nothing else
 
     def test_survives_a_frame_with_no_timings(self):
