@@ -67,24 +67,22 @@ def format_epoch(t: float | None, with_millis: bool = True) -> str:
     return f'{out}.{int((t % 1) * 1000):03d}' if with_millis else out
 
 
-def timing_blocks(data: dict | None, entered: float | None = None) -> list[tuple[str, list[str]]]:
-    """One block per filter, in pipeline order, plus a final block for webvis itself.
+def timing_blocks(data: dict | None, served: float | None = None) -> list[tuple[str, list[str]]]:
+    """One block per filter, in pipeline order, every block the same three lines.
 
     Kept as separate blocks rather than one list of lines so each filter can be
     drawn in its own corner: reading a delay means comparing two numbers that are
     far apart in the picture, and a single stacked block puts them one line
     apart, where a 2-second gap looks the same as a 20-millisecond one.
 
-    The last block is webvis's own. It has the same `in` line as the others when
-    `entered` is passed (webvis stamping its own arrival), but `now` where the
-    others have `out`: the drawing happens inside `process()`, so webvis's real
-    time_out does not exist yet, and `_inject_timings` appends its entry only
-    after `process()` returns. `now` is the honest value there, and it is also
-    the one that matters, being the last instant the frame is ours.
+    Read the blocks at serve time, not inside `process()`: a filter's own entry
+    is appended to `filter_timings` only after its `process()` returns
+    (`filter.py`), so webvis's own in/out exist by the time a frame is encoded
+    for the wire but not while it is being handled. `served`, the instant the
+    JPEG goes out, is the one value no filter records, and it closes the chain.
     """
 
     meta = (data or {}).get('meta') or {}
-    now = time.time()
     ts = meta.get('ts')
     blocks = []
 
@@ -99,18 +97,19 @@ def timing_blocks(data: dict | None, entered: float | None = None) -> list[tuple
 
         blocks.append((str(entry.get('filter_name') or '?')[:24], lines))
 
-    webvis_lines = []
+    # The serve stamp joins the last filter's block rather than forming its own: it happens in
+    # that filter, and a separate block would push the last filter out of the corner opposite the
+    # source, which is where a reader looks for the other end of the chain.
+    if served is not None:
+        lines = [f'served {format_epoch(served)}']
 
-    if entered is not None:
-        webvis_lines.append(f'in  {format_epoch(entered)}')
+        if ts is not None:
+            lines.append(f'ts -> served  {(served - ts) * 1000:.0f}ms')
 
-    webvis_lines.append(f'now {format_epoch(now)}'
-                        + (f'  {(now - entered) * 1000:.1f}ms' if entered is not None else ''))
-
-    if ts is not None:
-        webvis_lines.append(f'ts -> now  {(now - ts) * 1000:.0f}ms')
-
-    blocks.append(('webvis', webvis_lines))
+        if blocks:
+            blocks[-1][1].extend(lines)
+        else:
+            blocks.append(('served', lines))
 
     return blocks
 

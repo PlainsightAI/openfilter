@@ -68,13 +68,14 @@ class Webvis(Filter):
             Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
 
         overlay_timings:
-            Draw this frame's timing chain onto the image before it is encoded: video_in's read
-            timestamp, one line per filter with its time in/out and duration, and the wall clock at
-            the moment webvis served it, all in the ``2026-09-22 15:22:53.123`` format a camera burns
-            into its own picture. With a camera that stamps its own clock, both clocks then sit in
-            one frame, so a screenshot measures the camera-to-video_in leg that no filter times.
-            Costs one putText pass per line per frame, so it is off by default. Default ``False``.
-            Also settable via ``FILTER_OVERLAY_TIMINGS``.
+            Draw this frame's timing chain into the picture as it is encoded for the wire: one
+            block per filter with its time in and out, plus video_in's read stamp at one end of the
+            chain and the instant the JPEG was served at the other, all in the
+            ``2026-09-22 15:22:53.123`` format a camera burns into its own image. With a camera
+            that stamps its own clock, both clocks then sit in one frame, so a screenshot measures
+            the camera-to-video_in leg that no filter times. Off by default, and drawn per connected
+            browser rather than per frame. Default ``False``. Also settable via
+            ``FILTER_OVERLAY_TIMINGS``.
 
         overlay_corner:
             Which corner to draw in: ``top-left`` (default), ``top-right``, ``bottom-left`` or
@@ -217,7 +218,8 @@ class Webvis(Filter):
 
             def gen():
                 while True:
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + queue.get().bgr.jpg + b'\r\n')
+                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'
+                           + self._jpg_with_timings(queue.get()) + b'\r\n')
 
             return StreamingResponse(gen(), media_type='multipart/x-mixed-replace; boundary=frame')
 
@@ -337,45 +339,46 @@ class Webvis(Filter):
             daemon=True
         ).start()
 
-    def _with_timing_overlay(self, frame, entered):
-        """Return `frame` with its timing chain drawn on, or `frame` itself if that fails.
+    def _jpg_with_timings(self, frame):
+        """The frame's JPEG, with its timing chain drawn on when the overlay is enabled.
 
-        Drawn here rather than in the MJPEG generator so the cost is paid once per frame instead of
-        once per connected browser, and so `/snapshot-payload` and the stream show the same pixels.
+        Drawn at serve time rather than in `process()` so webvis's own entry is there to draw:
+        `_inject_timings` appends a filter's in/out to `filter_timings` only after its `process()`
+        returns, so inside `process()` every block would be complete except webvis's own. Here the
+        chain is whole and every filter reads the same three lines, plus one block for the instant
+        the JPEG goes out, which is the one value no filter records.
 
-        webvis's own time_in/time_out are not in `filter_timings` yet: `_inject_timings` appends them
-        after `process()` returns. The line the overlay adds instead is the wall clock at draw time,
-        which is the number that matters here, since it is the last instant the frame is ours.
+        The cost is per connected browser rather than per frame. That is the price of the last
+        block being real rather than self-reported, and this is debug instrumentation serving one
+        or two watchers, not a fan-out path.
+
+        getattr, not attribute access: this is reachable on an instance that never ran setup()
+        (the endpoint tests drive it that way), the same reason create_app guards
+        enable_snapshot_payload.
         """
 
+        if not getattr(self, 'overlay_timings', False):
+            return frame.bgr.jpg
+
         try:
-            rw = frame.rw
+            bgr = frame.bgr
+            rw = bgr.rw
             draw_blocks(
-                rw.image, timing_blocks(frame.data, entered),
+                rw.image, timing_blocks(frame.data, time.time()),
                 first_corner = getattr(self, 'overlay_corner', 'top-left'),
                 color        = getattr(self, 'overlay_color', (255, 255, 255)),
                 scale        = getattr(self, 'overlay_scale', 0.5),
-                is_bgr       = bool(frame.is_bgr),
-                is_gray      = bool(frame.is_gray),
+                is_bgr       = True,
+                is_gray      = False,
             )
-            return Frame(rw.image, frame)
+            return Frame(rw.image, frame, 'BGR').jpg
         except Exception as exc:  # an overlay must never cost the stream
             logger.warning('timing overlay failed, serving the frame undrawn: %s', exc)
-            return frame
+            return frame.bgr.jpg
 
     def process(self, frames):
-        # webvis's own arrival, stamped here because the framework's entry for this filter is only
-        # appended after process() returns, and the overlay is drawn inside it. Within a millisecond
-        # of the t_in that _inject_timings will record.
-        entered = time.time()
-
         for topic, frame in frames.items():
             if frame.has_image:
-                # getattr, not attribute access: process() is reachable on an instance that never
-                # ran setup() (the endpoint tests drive it that way), same reason create_app guards
-                # enable_snapshot_payload.
-                if getattr(self, 'overlay_timings', False):
-                    frame = self._with_timing_overlay(frame, entered)
                 with self._lock:
                     self.latest_frames[topic] = frame
                     self.current_data[topic] = frame.data

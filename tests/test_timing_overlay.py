@@ -53,33 +53,41 @@ class TestTimingBlocks(unittest.TestCase):
 
         blocks = timing_blocks(data)
 
-        self.assertEqual([label for label, _ in blocks], ['VideoIn', 'RtDetr', 'webvis'])
+        self.assertEqual([label for label, _ in blocks], ['VideoIn', 'RtDetr'])
         self.assertTrue(blocks[0][1][0].startswith('ts  '))   # read stamp sits with the source
         self.assertFalse(any(line.startswith('ts  ') for line in blocks[1][1]))
         self.assertIn('35.2ms', blocks[0][1][2])
         # The gap between the frame's read time and the wall clock is the whole
         # point: the filters above it can all be fast while this one is not.
-        self.assertRegex(blocks[-1][1][1], r'ts -> now\s+2[34]\d\dms')
+        self.assertEqual(len(blocks[1][1]), 2)  # every filter reads the same lines
 
-    def test_webvis_block_mirrors_the_others_when_it_stamps_its_own_arrival(self):
+    def test_served_is_its_own_block_holding_the_value_no_filter_records(self):
         now = time.time()
-        data = {'meta': {'ts': now - 0.02, 'filter_timings': [
-            {'filter_name': 'VideoIn', 'time_in': now - 0.1, 'time_out': now - 0.01, 'duration_ms': 90.0},
+        data = {'meta': {'ts': now - 2.4, 'filter_timings': [
+            {'filter_name': 'VideoIn', 'time_in': now - 2.4, 'time_out': now - 2.3, 'duration_ms': 90.0},
         ]}}
 
-        label, lines = timing_blocks(data, entered=now - 0.003)[-1]
+        label, lines = timing_blocks(data, served=now)[-1]
 
-        self.assertEqual(label, 'webvis')
-        self.assertTrue(lines[0].startswith('in  '))    # same shape as every other block
-        self.assertTrue(lines[1].startswith('now '))    # 'now', not 'out': time_out does not exist yet
-        self.assertRegex(lines[1], r'\d+\.\dms')
-        self.assertTrue(lines[2].startswith('ts -> now'))
+        # It rides with the last filter, so that filter keeps the corner opposite the source.
+        self.assertEqual(label, 'VideoIn')
+        self.assertTrue(lines[-2].startswith('served '))
+        self.assertRegex(lines[-1], r'ts -> served\s+2[34]\d\dms')
+
+    def test_without_a_serve_time_there_is_no_served_block(self):
+        now = time.time()
+        data = {'meta': {'ts': now, 'filter_timings': [
+            {'filter_name': 'VideoIn', 'time_in': now, 'time_out': now, 'duration_ms': 1.0},
+        ]}}
+
+        self.assertEqual([label for label, _ in timing_blocks(data)], ['VideoIn'])
+        self.assertEqual(len(timing_blocks(data)[0][1]), 3)  # ts, in, out and nothing else
 
     def test_survives_a_frame_with_no_timings(self):
         for data in (None, {}, {'meta': {}}, {'meta': {'filter_timings': []}}):
             blocks = timing_blocks(data)
 
-            self.assertEqual([label for label, _ in blocks], ['webvis'], data)
+            self.assertEqual([label for label, _ in blocks], [], data)
 
 
 class TestCornersFor(unittest.TestCase):
@@ -173,7 +181,7 @@ class TestDrawBlocks(unittest.TestCase):
         ]}}
         image = np.zeros((480, 640, 3), dtype=np.uint8)
 
-        draw_blocks(image, timing_blocks(data), 'top-left')
+        draw_blocks(image, timing_blocks(data, served=now), 'top-left')
 
         ys, xs = np.nonzero(image.any(axis=2))
 

@@ -73,44 +73,37 @@ Filter.run_multi([
 `2026-09-22 15:22:53.123` format an IP camera burns into its image:
 
 ```
-VideoIn                                            webvis
-ts  2026-09-23 17:54:16.837                        in  2026-09-23 17:54:16.858
-in  2026-09-23 17:54:16.749                        now 2026-09-23 17:54:16.861  3.0ms
-out 2026-09-23 17:54:16.842  93.2ms                ts -> now  24ms
+VideoIn                                  Webvis
+ts  2026-09-23 18:16:28.705              in  2026-09-23 18:16:28.718
+in  2026-09-23 18:16:28.617              out 2026-09-23 18:16:28.718  0.1ms
+out 2026-09-23 18:16:28.710  92.4ms      served 2026-09-23 18:16:28.725
+                                         ts -> served  20ms
 ```
 
-Every block has the same shape. webvis reads `now` where the others read `out`
-because the overlay is drawn inside its `process()`, so its own time_out does
-not exist yet; `now` is the last instant the frame is ours, which is the value
-that matters here anyway.
+One block per filter, from `meta['filter_timings']`, each in its own corner.
+Every filter reads the same three lines. Two values are not per filter and
+appear once each, at the ends of the chain: `ts`, when video_in read the frame,
+and `served`, when the JPEG went out to the browser.
+
+`overlay_corner` places the source; the last filter always takes the opposite
+corner on that same edge, and anything between them fills the other edge. The
+two ends are what a reader compares, so they keep their corners whether or not
+a detector sits in the middle. Blocks are kept apart rather than stacked because
+a delay is read by comparing two numbers: one line apart, a two-second gap looks
+the same as a twenty-millisecond one.
+
+The overlay is drawn when a frame is encoded for the wire, not inside
+`process()`. A filter's own in/out reaches `filter_timings` only after its
+`process()` returns, so drawing earlier would leave webvis's own block
+incomplete while every other one was whole. The cost is therefore per connected
+browser rather than per frame, which is the right trade for debug
+instrumentation watched by one or two people.
 
 `in` on the source block predates its own `ts`: video_in's `process()` starts
 and then blocks waiting for the decoder, so most of its duration is the wait for
 the next frame at the configured rate, not work. Summing `duration_ms` across
-filters therefore overstates end-to-end latency; `ts` to webvis's `now` is the
-honest figure.
-
-One block per filter, from `meta['filter_timings']`, each in its own corner,
-plus a final block for webvis carrying the wall clock at the moment it drew.
-
-`overlay_corner` places the source; webvis always takes the opposite corner on
-that same edge, and any filter between them fills the other edge. The two ends
-are what a reader compares, so they keep their corners whether or not there is a
-detector in the middle. Blocks are kept apart rather than stacked because a
-delay is read by comparing two numbers: one line apart, a two-second gap looks
-the same as a twenty-millisecond one.
-
-It answers a question the per-filter durations cannot. Those cover the pipeline
-from video_in's read to the last filter's return, so a pipeline whose numbers
-all look healthy can still show a picture that is seconds old: the legs before
-video_in reads and after webvis serves are outside every filter's measurement.
-With a camera that stamps its own clock, both clocks are then in one frame, and
-a screenshot measures the first leg. Choose `overlay_corner` so the block does
-not land on the camera's own timestamp.
-
-Note that `ts` is stamped when video_in *reads* a frame, not when the camera
-captured it. When a stream stalls, that read happens late and the stale picture
-carries a fresh `ts`, which is exactly the case the camera's own clock exposes.
+filters therefore overstates end-to-end latency; `ts` to `served` is the honest
+figure.
 
 The overlay costs one `putText` pass per line per frame and is off by default.
 
