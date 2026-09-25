@@ -4,8 +4,6 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
-## v1.5.0 - 2026-09-24
-
 ### Added
 
 - **`Webvis`: `timings`, a per-frame timing chain drawn on the picture and carried inside the
@@ -25,7 +23,9 @@ OpenFilter Library release notes
   pairing them is an assumption.
 
   `GET /timings` serves a page that reads those numbers back in the browser and puts them beside
-  the machine's clock, which closes the leg no filter can see.
+  the machine's clock, which closes the leg no filter can see. `served` is stamped once the bytes
+  are encoded, so what the page reports as webvis-to-browser is the network rather than our own
+  drawing and encoding.
 
   The implementation lives in `openfilter_timings/`, outside the framework tree. webvis imports it
   defensively, so removing that folder leaves the filter working and the option warning once.

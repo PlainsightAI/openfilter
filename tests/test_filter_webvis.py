@@ -3,6 +3,7 @@
 import logging
 import os
 import unittest
+import time
 from time import sleep
 from unittest.mock import patch
 
@@ -736,3 +737,135 @@ class TestWebvisNewEndpoints(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestWebvisTimings(unittest.TestCase):
+    """The half of the instrumentation that lives inside the framework.
+
+    `tests/test_timings.py` covers the helpers in `openfilter_timings`. What is exercised here is
+    what webvis does with them: the option's spellings, the two branches of `_jpg_with_timings`,
+    and the route. This is also the half that changes default behaviour for every webvis user,
+    since the COM segment goes into every served frame whether or not drawing is on.
+    """
+
+    def _make_webvis(self, timings=False, instrumented=True):
+        webvis = object.__new__(Webvis)
+        webvis.streams = {}
+        webvis.enable_json = False
+        webvis.sleep_interval = 1.0
+        webvis.current_data = {}
+        webvis.latest_frames = {}
+        webvis.configured_topics = set()
+        webvis.is_multi_topic_static = False
+        webvis.enable_snapshot_payload = False
+        webvis.instrumented = instrumented
+        webvis.timings = timings
+        return webvis
+
+    def _frame(self, now=1790273007.697044):
+        import numpy as np
+        from openfilter.filter_runtime.frame import Frame
+
+        return Frame(
+            image=np.zeros((120, 160, 3), dtype=np.uint8),
+            data={'meta': {'id': 3247, 'ts': now, 'filter_timings': [
+                {'filter_name': 'VideoIn', 'time_in': now, 'time_out': now + 0.0177,
+                 'duration_ms': 17.7},
+            ]}},
+            format='BGR',
+        )
+
+    def test_config_accepts_both_a_flag_and_a_corner(self):
+        for given, expected in [(True, True), ('true', True), ('yes', True), ('1', True),
+                                (False, False), ('false', False), ('no', False), ('0', False),
+                                ('', False), ('bottom-right', 'bottom-right')]:
+            config = Webvis.normalize_config({'sources': 'tcp://x', 'timings': given})
+
+            self.assertEqual(config.timings, expected, given)
+
+    def test_off_by_default(self):
+        self.assertIs(Webvis.normalize_config({'sources': 'tcp://x'}).timings, False)
+
+    def test_the_chain_rides_in_every_served_frame_even_undrawn(self):
+        from openfilter_timings import read_jpeg_comment
+        import json
+
+        webvis = self._make_webvis(timings=False)
+
+        payload = json.loads(read_jpeg_comment(webvis._jpg_with_timings(self._frame())))
+
+        self.assertEqual(payload['id'], 3247)
+        self.assertEqual([f['name'] for f in payload['filters']], ['VideoIn'])
+        self.assertIn('served', payload)
+
+    def test_drawing_writes_on_the_picture_and_still_carries_the_chain(self):
+        import cv2
+        import numpy as np
+        from openfilter_timings import read_jpeg_comment
+
+        frame = self._frame()
+        plain = self._make_webvis(timings=False)._jpg_with_timings(frame)
+        drawn = self._make_webvis(timings='bottom-left')._jpg_with_timings(frame)
+
+        decoded = cv2.imdecode(np.frombuffer(bytes(drawn), np.uint8), cv2.IMREAD_COLOR)
+
+        self.assertGreater(decoded.sum(), 0)              # the frame started black
+        self.assertLess(decoded[:60].sum(), decoded[60:].sum())  # drawn at the bottom, as asked
+        self.assertIsNotNone(read_jpeg_comment(bytes(plain)))
+        self.assertIsNotNone(read_jpeg_comment(bytes(drawn)))
+
+    def test_served_is_stamped_after_the_draw_and_encode_not_before_them(self):
+        # The page reads `served` as the moment the bytes went out, so whatever still happens to
+        # the frame after the stamp is charged to the network rather than to us. Drawing and
+        # encoding are exactly that, and on a 4K frame they are not small.
+        #
+        # A large frame is what makes this assertion mean anything: stamped first, `served` lands
+        # at the very start of the call and most of the elapsed time falls after it.
+        import json
+        import numpy as np
+        from openfilter.filter_runtime.frame import Frame
+        from openfilter_timings import read_jpeg_comment
+
+        now = 1790273007.697044
+        big = Frame(
+            image=np.random.randint(0, 255, (2160, 3840, 3), dtype=np.uint8),
+            data={'meta': {'id': 1, 'ts': now, 'filter_timings': [
+                {'filter_name': 'VideoIn', 'time_in': now, 'time_out': now, 'duration_ms': 1.0},
+            ]}},
+            format='BGR',
+        )
+        webvis = self._make_webvis(timings='top-left')
+
+        before = time.time()
+        payload = json.loads(read_jpeg_comment(bytes(webvis._jpg_with_timings(big))))
+        after = time.time()
+        elapsed = after - before
+
+        self.assertGreater(elapsed, 0.01, 'frame too cheap to encode for this to prove anything')
+        self.assertGreaterEqual(payload['served'], before)
+        self.assertLessEqual(payload['served'], after)
+        self.assertGreater(payload['served'] - before, elapsed / 2)
+
+    def test_without_the_package_the_frame_is_served_untouched(self):
+        from openfilter_timings import read_jpeg_comment
+
+        webvis = self._make_webvis(timings=True, instrumented=False)
+
+        self.assertIsNone(read_jpeg_comment(bytes(webvis._jpg_with_timings(self._frame()))))
+
+    def test_the_page_is_served_and_404s_without_the_package(self):
+        from fastapi.testclient import TestClient
+        import openfilter.filter_runtime.filters.webvis as mod
+
+        client = TestClient(self._make_webvis().create_app())
+
+        res = client.get('/timings')
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('frame timings', res.text)
+
+        page, mod.TIMINGS_PAGE = mod.TIMINGS_PAGE, None
+        try:
+            self.assertEqual(TestClient(self._make_webvis().create_app()).get('/timings').status_code, 404)
+        finally:
+            mod.TIMINGS_PAGE = page

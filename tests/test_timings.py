@@ -10,8 +10,8 @@ import numpy as np
 
 from openfilter.filter_runtime.utils import setLogLevelGlobal
 from openfilter_timings import (
-    CORNERS, JPEG_COMMENT_LIMIT, draw_table, format_epoch, insert_jpeg_comment, parse_color,
-    read_jpeg_comment, timing_payload, timing_rows,
+    CORNERS, JPEG_COMMENT_LIMIT, draw_table, format_epoch, insert_jpeg_comment, read_jpeg_comment,
+    timing_payload, timing_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -19,19 +19,6 @@ logger = logging.getLogger(__name__)
 log_level = int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper()))
 
 setLogLevelGlobal(log_level)
-
-
-class TestParseColor(unittest.TestCase):
-    def test_both_hex_spellings(self):
-        self.assertEqual(parse_color('#0f0'), (0, 255, 0))
-        self.assertEqual(parse_color('#00ff00'), (0, 255, 0))
-        self.assertEqual(parse_color('00ff00'), (0, 255, 0))  # '#' optional
-
-    def test_falls_back_to_white_rather_than_raising(self):
-        # A debug overlay that refuses to start over a typo measures nothing, so
-        # every bad spelling has to keep the pipeline running.
-        for bad in (None, '', 'green', '#12', '#gggggg', '#1234567'):
-            self.assertEqual(parse_color(bad), (255, 255, 255), bad)
 
 
 class TestFormatEpoch(unittest.TestCase):

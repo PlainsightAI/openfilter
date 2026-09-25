@@ -21,9 +21,8 @@ import json
 import logging
 import time
 
-__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'JPEG_COMMENT_LIMIT', 'parse_color', 'format_epoch', 'timing_blocks',
-           'corners_for', 'draw_lines', 'draw_blocks', 'timing_payload', 'insert_jpeg_comment',
-           'read_jpeg_comment']
+__all__ = ['TIMESTAMP_FORMAT', 'CORNERS', 'JPEG_COMMENT_LIMIT', 'format_epoch', 'timing_rows',
+           'draw_table', 'timing_payload', 'insert_jpeg_comment', 'read_jpeg_comment']
 
 logger = logging.getLogger(__name__)
 
@@ -35,32 +34,6 @@ CORNERS = ('top-left', 'top-right', 'bottom-left', 'bottom-right')
 # 65535 - 2. A timing chain is a few hundred bytes; the cap is here so a pathological one is
 # truncated rather than producing a segment whose length field lies about its own size.
 JPEG_COMMENT_LIMIT = 65533
-
-
-def parse_color(color: str | None) -> tuple[int, int, int]:
-    """`#rgb` or `#rrggbb` -> an (r, g, b) tuple, the spelling `util.py` already accepts.
-
-    Returns white for None or anything unparseable, because an overlay that is
-    the wrong colour is still a usable measurement while a filter that refused
-    to start over a typo in a debug option is not.
-    """
-
-    if not color:
-        return (255, 255, 255)
-
-    c = color.strip().lstrip('#')
-
-    try:
-        if len(c) == 3:
-            return (int(c[0] * 2, 16), int(c[1] * 2, 16), int(c[2] * 2, 16))
-        if len(c) == 6:
-            return (int(c[:2], 16), int(c[2:4], 16), int(c[4:], 16))
-    except ValueError:
-        pass
-
-    logger.warning('timing overlay: unparseable color %r, falling back to white', color)
-
-    return (255, 255, 255)
 
 
 def format_epoch(t: float | None, with_millis: bool = True) -> str:

@@ -22,12 +22,11 @@ the feature is gone; webvis keeps working without them.
 
 from openfilter_timings.overlay import (
     CORNERS, JPEG_COMMENT_LIMIT, TIMESTAMP_FORMAT, draw_table, format_epoch, insert_jpeg_comment,
-    parse_color, read_jpeg_comment, timing_payload, timing_rows,
+    read_jpeg_comment, timing_payload, timing_rows,
 )
 from openfilter_timings.page import TIMINGS_PAGE
 
 __all__ = [
     'CORNERS', 'JPEG_COMMENT_LIMIT', 'TIMESTAMP_FORMAT', 'TIMINGS_PAGE', 'draw_table',
-    'format_epoch', 'insert_jpeg_comment', 'parse_color', 'read_jpeg_comment', 'timing_payload',
-    'timing_rows',
+    'format_epoch', 'insert_jpeg_comment', 'read_jpeg_comment', 'timing_payload', 'timing_rows',
 ]

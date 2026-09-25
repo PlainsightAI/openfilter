@@ -176,7 +176,17 @@ function show(bytes, arrived) {
 
   if (!raw) return;
 
-  const t = JSON.parse(raw);
+  // A truncated or malformed payload must not take the page down with it: show() runs inside the
+  // reader loop, so an uncaught throw here rejects run() and the picture freezes for good, with
+  // the clock still ticking beside it. That is the exact symptom this page exists to tell apart
+  // from a stalled pipeline.
+  let t;
+  try {
+    t = JSON.parse(raw);
+  } catch (err) {
+    return;
+  }
+
   const browser = arrived / 1000;
   lastTs = t.ts != null ? t.ts : null;
 
@@ -284,6 +294,9 @@ document.getElementById('split').addEventListener('mousedown', down => {
 
 const STREAM_URL = new URL(window.location.href).searchParams.get('topic') || '/';
 tick();
-run();
+run().catch(err => {
+  document.getElementById('age').textContent = 'stream ended: ' + err;
+  document.getElementById('age').className = 'age stale';
+});
 </script>
 """

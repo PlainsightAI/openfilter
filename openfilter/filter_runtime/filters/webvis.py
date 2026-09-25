@@ -357,13 +357,12 @@ class Webvis(Filter):
 
         Drawn at serve time rather than in `process()` so webvis's own entry is there to draw:
         `_inject_timings` appends a filter's in/out to `filter_timings` only after its `process()`
-        returns, so inside `process()` every block would be complete except webvis's own. Here the
-        chain is whole and every filter reads the same three lines, plus one block for the instant
-        the JPEG goes out, which is the one value no filter records.
+        returns, so inside `process()` every row would be there except webvis's own. Here the chain
+        is whole, and the table carries one row per filter.
 
-        The cost is per connected browser rather than per frame. That is the price of the last
-        block being real rather than self-reported, and this is debug instrumentation serving one
-        or two watchers, not a fan-out path.
+        The cost is per served frame, not per browser: `self.streams` holds one queue per topic and
+        every connection on that topic pops from it, so a frame is drawn and encoded once however
+        many browsers are attached.
 
         getattr, not attribute access: this is reachable on an instance that never ran setup()
         (the endpoint tests drive it that way), the same reason create_app guards
@@ -382,7 +381,6 @@ class Webvis(Filter):
         # skips the segment. If that is too much to pay by default, move it behind `timings` too:
         # one line, and the page then needs the option on to measure anything.
         drawn = getattr(self, 'timings', False)
-        served = time.time()  # one stamp, so the drawn and carried chains cannot disagree
 
         try:
             if drawn:
@@ -393,6 +391,11 @@ class Webvis(Filter):
                 jpg = Frame(rw.image, frame, 'BGR').jpg
             else:
                 jpg = frame.bgr.jpg
+
+            # Stamped here, with the bytes already encoded, because the page reads it as the moment
+            # the frame went out: anything still to happen to it after this stamp is charged to the
+            # network instead. Drawing and encoding are exactly that, and they are not small.
+            served = time.time()
 
             return insert_jpeg_comment(jpg, json.dumps(timing_payload(frame.data, served)))
         except Exception as exc:  # instrumentation must never cost the stream
