@@ -6,6 +6,16 @@ from queue import Queue
 from threading import Thread, RLock
 
 from openfilter.filter_runtime.filter import FilterConfig, Filter
+from openfilter.filter_runtime.frame import Frame
+# Latency instrumentation, which is not part of the framework and lives outside it in
+# `openfilter_timings/`. Imported defensively so that deleting that folder leaves webvis working:
+# the options then parse as before and do nothing, rather than the filter failing to import.
+try:
+    from openfilter_timings import (
+        TIMINGS_PAGE, draw_table, insert_jpeg_comment, timing_payload, timing_rows,
+    )
+except ImportError:  # pragma: no cover - only when the folder has been removed
+    TIMINGS_PAGE = None
 from openfilter.filter_runtime.utils import dict_without, split_commas_maybe
 
 __all__ = ['WebvisConfig', 'Webvis']
@@ -24,6 +34,7 @@ class WebvisConfig(FilterConfig):
     cors_origins: str | None = None
     access_log: bool = False
     enable_snapshot_payload: bool = False
+    timings: str | bool = False
 
 
 class Webvis(Filter):
@@ -60,6 +71,19 @@ class Webvis(Filter):
         enable_snapshot_payload:
             Whether to enable the GET /snapshot-payload and /{topic}/snapshot-payload REST endpoints.
             Default ``False``. Also settable via ``FILTER_ENABLE_SNAPSHOT_PAYLOAD`` env var.
+
+        timings:
+            Draw this frame's timing chain onto the picture, off by default. `true` puts the table
+            in the top left; a corner name (`top-left`, `top-right`, `bottom-left`,
+            `bottom-right`) puts it where the camera's own timestamp is not. One row per filter,
+            columns `ID FILTER TIME IN TIME OUT TOTAL MS`, times as raw epoch seconds so they line
+            up with the same numbers printed from the subject data, and TOTAL MS the frame's total
+            from the first filter in to the last filter out. Also settable via ``FILTER_TIMINGS``.
+
+            The chain travels in the served JPEG's COM segment whether or not this is on: a frame
+            that carries its own timings cannot be paired with another frame's, which is the risk
+            when the picture comes from one URL and the subject data from another. Drawing is the
+            part that is optional, because it writes on the picture.
     """
 
     FILTER_TYPE = 'Output'
@@ -169,6 +193,22 @@ class Webvis(Filter):
                     media_type="application/json"
                 )
 
+        @app.get('/timings', include_in_schema=TIMINGS_PAGE is not None)
+        def timings_page():
+            """The browser side of the measurement.
+
+            Registered before '/{topic}' so the name resolves here rather than being read as a
+            topic, the same shadowing '/snapshot-payload' has. A topic genuinely named 'timings'
+            is still reachable at '/timings/data' and through this page's ?topic= parameter.
+            """
+
+            from fastapi.responses import HTMLResponse, PlainTextResponse
+
+            if TIMINGS_PAGE is None:
+                return PlainTextResponse('openfilter_timings is not installed', status_code=404)
+
+            return HTMLResponse(TIMINGS_PAGE)
+
         @app.get('/data')
         async def get_data_default():
             return await stream_data(topic=None)
@@ -188,7 +228,8 @@ class Webvis(Filter):
 
             def gen():
                 while True:
-                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + queue.get().bgr.jpg + b'\r\n')
+                    yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n'
+                           + self._jpg_with_timings(queue.get()) + b'\r\n')
 
             return StreamingResponse(gen(), media_type='multipart/x-mixed-replace; boundary=frame')
 
@@ -220,6 +261,7 @@ class Webvis(Filter):
             "cors_origins": str,
             "access_log": bool,
             "enable_snapshot_payload": bool,
+            "timings": str,
         }
         for key, expected_type in env_mapping.items():
             env_key = f"FILTER_{key.upper()}"
@@ -242,6 +284,16 @@ class Webvis(Filter):
 
         if config.sleep_interval <= 0:
             raise ValueError('sleep interval must be greater than 0, got:{config.sleep_interval}')
+
+        # A bad corner is warned about and falls back at draw time rather than refusing to start:
+        # this is debug instrumentation, and a run that dies over a typo in it measures nothing.
+        if isinstance(config.timings, str):
+            config.timings = config.timings.strip().lower()
+
+            if config.timings in ('false', 'no', '0', ''):
+                config.timings = False
+            elif config.timings in ('true', 'yes', '1'):
+                config.timings = True
 
         if outputs:  # convenience output "http://host:port" -> config.host / config.port
             if len(outputs) != 1:
@@ -274,6 +326,11 @@ class Webvis(Filter):
         self.sleep_interval = config.sleep_interval
         self.access_log = config.access_log
         self.enable_snapshot_payload = config.enable_snapshot_payload
+        self.instrumented = TIMINGS_PAGE is not None
+        self.timings = config.timings if self.instrumented else False
+
+        if config.timings and not self.instrumented:
+            logger.warning('timings requested but openfilter_timings is not installed, ignoring')
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()
@@ -294,6 +351,56 @@ class Webvis(Filter):
             args=(config.host, config.port, config.auth_token, config.cors_origins, config.access_log),
             daemon=True
         ).start()
+
+    def _jpg_with_timings(self, frame):
+        """The frame's JPEG, with its timing chain drawn on it and/or carried in a COM segment.
+
+        Drawn at serve time rather than in `process()` so webvis's own entry is there to draw:
+        `_inject_timings` appends a filter's in/out to `filter_timings` only after its `process()`
+        returns, so inside `process()` every row would be there except webvis's own. Here the chain
+        is whole, and the table carries one row per filter.
+
+        The cost is per served frame, not per browser: `self.streams` holds one queue per topic and
+        every connection on that topic pops from it, so a frame is drawn and encoded once however
+        many browsers are attached.
+
+        getattr, not attribute access: this is reachable on an instance that never ran setup()
+        (the endpoint tests drive it that way), the same reason create_app guards
+        enable_snapshot_payload.
+        """
+
+        if not getattr(self, 'instrumented', False):
+            return frame.bgr.jpg
+
+        # REVIEWERS: the two halves are gated differently on purpose, and this is the call to
+        # confirm. Drawing is off unless asked for, because it writes on the picture. Embedding the
+        # chain in the COM segment happens on every served frame, because a frame that carries its
+        # own numbers cannot be paired with another frame's, and that pairing is exactly what is
+        # unsafe today when the picture comes from one URL and the subject data from another. The
+        # cost is about 280 bytes per frame on a two-filter chain, no re-encode, and every decoder
+        # skips the segment. If that is too much to pay by default, move it behind `timings` too:
+        # one line, and the page then needs the option on to measure anything.
+        drawn = getattr(self, 'timings', False)
+
+        try:
+            if drawn:
+                rw = frame.bgr.rw
+                header, rows = timing_rows(frame.data)
+                draw_table(rw.image, header, rows,
+                           corner = drawn if isinstance(drawn, str) else 'top-left')
+                jpg = Frame(rw.image, frame, 'BGR').jpg
+            else:
+                jpg = frame.bgr.jpg
+
+            # Stamped here, with the bytes already encoded, because the page reads it as the moment
+            # the frame went out: anything still to happen to it after this stamp is charged to the
+            # network instead. Drawing and encoding are exactly that, and they are not small.
+            served = time.time()
+
+            return insert_jpeg_comment(jpg, json.dumps(timing_payload(frame.data, served)))
+        except Exception as exc:  # instrumentation must never cost the stream
+            logger.warning('timing instrumentation failed, serving the frame as it is: %s', exc)
+            return frame.bgr.jpg
 
     def process(self, frames):
         for topic, frame in frames.items():

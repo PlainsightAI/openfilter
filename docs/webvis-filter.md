@@ -59,9 +59,79 @@ Filter.run_multi([
         sleep_interval=0.1,    # Sleep in seconds before sending subject data
         access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
+        timings=False,         # Draw and carry this frame's timing chain (default False)
     )),
 ])
 ```
+
+### Timing overlay
+
+The implementation lives in `openfilter_timings/`, outside the framework tree,
+along with a compose file that runs the probe end to end. See that folder's
+README. webvis imports it defensively: without it the options warn and do
+nothing.
+
+`timings` is off by default. Set it to `true`, or to a corner (`top-left`,
+`top-right`, `bottom-left`, `bottom-right`) to keep the table off the camera's
+own timestamp:
+
+```
+ID    FILTER    TIME IN            TIME OUT           TOTAL MS  CLOCK
+3247  VideoIn   1790273007.697044  1790273007.714762    43.013  15:23:27.697
+3247  Webvis    1790273007.740037  1790273007.740057    43.013  15:23:27.740
+```
+
+One row per filter, from `meta['filter_timings']`, for the frame on screen.
+Times are raw epoch seconds, the same numbers a script reading the subject data
+prints, so the two line up without converting anything. `CLOCK` is that same
+instant on a wall clock, which is what compares against a camera's own burned-in
+timestamp. `TOTAL MS` is the frame's total, first filter in to last filter out,
+repeated on each row: per-filter durations are mostly the wait for the next
+frame rather than work, so a column of them answers a question nobody asked.
+
+The font scales with the frame, so a 4K source and a 720p preview read the same.
+
+The table is drawn when a frame is encoded for the wire, not inside `process()`.
+A filter's own in/out reaches `filter_timings` only after its `process()`
+returns, so drawing earlier would leave webvis the one filter with no numbers.
+The cost is therefore per connected browser rather than per frame, which is the
+right trade for instrumentation watched by one or two people.
+
+### Timings inside the JPEG
+
+The chain travels as JSON in every served JPEG's COM segment, the JPEG spec's
+free-text segment, whether or not the table is drawn:
+
+```json
+{"id": 3247, "ts": 1790273007.697044,
+ "filters": [{"name": "VideoIn", "in": 1790273007.697044,
+              "out": 1790273007.714762, "duration_ms": 17.718}],
+ "served": 1790273007.740057}
+```
+
+Every decoder skips COM, so the picture is unchanged for anything not looking
+for it, and nothing is re-encoded: the segment is prepended after the SOI
+marker, about 280 bytes for a two-filter chain.
+
+It is not behind the flag because the alternative is an assumption. The picture
+comes from one URL and the subject data on `/data` from another, and nothing
+ties a reading to the frame on screen; carried in the frame's bytes, the numbers
+cannot be about another frame. It also closes the one leg the pipeline cannot
+see: a browser that reads them can compare against its own clock, which is
+webvis to browser.
+
+Note that a plain `<img src>` cannot reach the segment: the browser paints the
+pixels and drops the rest. Reading it means fetching the stream, splitting the
+multipart parts and decoding each JPEG onto a canvas, which is what `/timings`
+does.
+
+`TIME IN` on the source row predates its own read stamp: video_in's `process()`
+starts and then blocks waiting for the decoder, so most of its duration is the
+wait for the next frame at the configured rate, not work. Summing `duration_ms`
+across filters therefore overstates end-to-end latency, which is why the table
+carries the frame total instead.
+
+The overlay costs one `putText` pass per line per frame and is off by default.
 
 ### Environment Variables
 
@@ -76,6 +146,7 @@ export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
 export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
+export FILTER_TIMINGS="false"   # or a corner: bottom-left, top-right, ...
 ```
 
 ## Web Interface
