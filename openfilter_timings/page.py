@@ -57,6 +57,7 @@ TIMINGS_PAGE = """<!doctype html>
   .clock { font-size: 1.6rem; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
   .age { opacity: .65; }
   .age.stale { opacity: 1; font-weight: 700; }
+  .warn { margin: .25rem 0 0; font-weight: 700; }
 </style>
 <canvas id="view"></canvas>
 <div id="split" title="drag to resize"></div>
@@ -74,6 +75,7 @@ TIMINGS_PAGE = """<!doctype html>
   <div id="chain"><pre class="head"></pre></div>
   <h2>served to this browser, last 200 frames</h2>
   <pre id="stats"></pre>
+  <p id="warn" class="warn" hidden></p>
   <p class="note">The table is the frame's own, read out of its JPEG, in the same
   columns as the subject data. The last two rows are what no filter can record:
   when this browser received the frame, and how far that is from the read.</p>
@@ -83,6 +85,7 @@ const canvas = document.getElementById('view');
 const ctx = canvas.getContext('2d');
 const chain = document.getElementById('chain');
 const stats = document.getElementById('stats');
+const warn = document.getElementById('warn');
 const deltas = [];
 let lastTs = null;   // the read stamp of the frame on screen, for the age readout
 
@@ -196,6 +199,18 @@ function show(bytes, arrived) {
     deltas.push((browser - t.served) * 1000);
     if (deltas.length > 200) deltas.shift();
     const sorted = [...deltas].sort((a, b) => a - b);
+
+    // A frame cannot arrive before it was sent, so a negative delta is not latency: it is the two
+    // clocks disagreeing, and by at least this much. Worth saying outright, because the number
+    // looks perfectly reasonable when the offset happens to be positive, and then the whole
+    // measurement is quietly wrong by the same amount. Containers are a common source of this:
+    // they do not inherit the host's clock discipline.
+    const skew = sorted[0] < 0;
+    warn.textContent = skew
+      ? 'clocks differ by at least ' + ms(-sorted[0]) + '; this leg needs both ends on NTP'
+      : '';
+    warn.hidden = !skew;
+
     stats.textContent = [
       'samples  ' + deltas.length,
       'min      ' + ms(sorted[0]),

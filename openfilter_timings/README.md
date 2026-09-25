@@ -54,6 +54,21 @@ feature is gone: webvis's import of it is guarded, so it keeps working and the
 is tidier but not required, and verified: with this folder moved away, the
 webvis suite still passes and the filter still imports.
 
+## Both ends need the same clock
+
+The last leg compares a stamp taken in the pipeline against one taken in the
+browser, so it is only as good as the agreement between those two clocks. A
+container does not inherit the host's clock discipline, and on this setup the
+two differed by tens of milliseconds, which is the same size as the thing being
+measured.
+
+The page says so rather than letting you read the offset as latency: a negative
+`served -> browser` is impossible, so when it sees one it reports how far apart
+the clocks are instead. Put both ends on NTP before trusting that row.
+
+Everything else on the page is immune, because it compares stamps taken on one
+machine.
+
 ## Project Structure
 
 ```text
