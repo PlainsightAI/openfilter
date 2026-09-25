@@ -331,7 +331,6 @@ class Webvis(Filter):
 
         if config.timings and not self.instrumented:
             logger.warning('timings requested but openfilter_timings is not installed, ignoring')
-        self.timings_scale = config.timings_scale
 
         # Parse configured topics to know if we are in a static multi-topic configuration
         self.configured_topics = set()

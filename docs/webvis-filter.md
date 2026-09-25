@@ -60,8 +60,6 @@ Filter.run_multi([
         access_log=False,      # Enable/disable uvicorn access logging (default False)
         enable_snapshot_payload=False, # Enable/disable GET /snapshot-payload endpoint (default False)
         timings=False,         # Draw and carry this frame's timing chain (default False)
-        timings_placement='video_in=top-left, webvis=top-right',  # optional per-filter override
-        timings_scale=0.5,     # OpenCV font scale
     )),
 ])
 ```
@@ -73,70 +71,65 @@ along with a compose file that runs the probe end to end. See that folder's
 README. webvis imports it defensively: without it the options warn and do
 nothing.
 
-`timings` is off by default and turns on both halves at once: the chain is drawn
-into the picture and carried in the JPEG's own bytes. It renders in the
-`2026-09-22 15:22:53.123` format an IP camera burns into its image:
+`timings` is off by default. Set it to `true`, or to a corner (`top-left`,
+`top-right`, `bottom-left`, `bottom-right`) to keep the table off the camera's
+own timestamp:
 
 ```
-VideoIn                                  Webvis
-ts  2026-09-23 18:16:28.705              in  2026-09-23 18:16:28.718
-in  2026-09-23 18:16:28.617              out 2026-09-23 18:16:28.718  0.1ms
-out 2026-09-23 18:16:28.710  92.4ms      served 2026-09-23 18:16:28.725
-                                         ts -> served  20ms
+ID    FILTER    TIME IN            TIME OUT           TOTAL MS  CLOCK
+3247  VideoIn   1790273007.697044  1790273007.714762    43.013  15:23:27.697
+3247  Webvis    1790273007.740037  1790273007.740057    43.013  15:23:27.740
 ```
 
-One block per filter, from `meta['filter_timings']`, each in its own corner.
-Every filter reads the same three lines. Two values are not per filter and
-appear once each, at the ends of the chain: `ts`, when video_in read the frame,
-and `served`, when the JPEG went out to the browser.
+One row per filter, from `meta['filter_timings']`, for the frame on screen.
+Times are raw epoch seconds, the same numbers a script reading the subject data
+prints, so the two line up without converting anything. `CLOCK` is that same
+instant on a wall clock, which is what compares against a camera's own burned-in
+timestamp. `TOTAL MS` is the frame's total, first filter in to last filter out,
+repeated on each row: per-filter durations are mostly the wait for the next
+frame rather than work, so a column of them answers a question nobody asked.
 
-By default the source takes the top left and the last filter the top right, each
-corner in its own colour, so the two ends a reader compares are always in the
-same two places and never look alike; anything between them fills the bottom
-edge. `timings_placement` overrides that per filter,
-`video_in=bottom-right:#0f0, webvis=top-left`, where a value starting with `#`
-is a colour and anything else a corner, either given alone. Blocks are kept apart rather than stacked because
-a delay is read by comparing two numbers: one line apart, a two-second gap looks
-the same as a twenty-millisecond one.
+The font scales with the frame, so a 4K source and a 720p preview read the same.
 
-The overlay is drawn when a frame is encoded for the wire, not inside
-`process()`. A filter's own in/out reaches `filter_timings` only after its
-`process()` returns, so drawing earlier would leave webvis's own block
-incomplete while every other one was whole. The cost is therefore per connected
-browser rather than per frame, which is the right trade for debug
-instrumentation watched by one or two people.
+The table is drawn when a frame is encoded for the wire, not inside `process()`.
+A filter's own in/out reaches `filter_timings` only after its `process()`
+returns, so drawing earlier would leave webvis the one filter with no numbers.
+The cost is therefore per connected browser rather than per frame, which is the
+right trade for instrumentation watched by one or two people.
 
 ### Timings inside the JPEG
 
-The same chain travels as JSON in each served JPEG's COM segment, the JPEG
-spec's free-text segment:
+The chain travels as JSON in every served JPEG's COM segment, the JPEG spec's
+free-text segment, whether or not the table is drawn:
 
 ```json
-{"ts": 1790213037.9, "filters": [{"name": "VideoIn", "in": 1790213037.8,
- "out": 1790213037.9, "duration_ms": 90.0}], "served": 1790213037.92}
+{"id": 3247, "ts": 1790273007.697044,
+ "filters": [{"name": "VideoIn", "in": 1790273007.697044,
+              "out": 1790273007.714762, "duration_ms": 17.718}],
+ "served": 1790273007.740057}
 ```
 
 Every decoder skips COM, so the picture is unchanged for anything not looking
 for it, and nothing is re-encoded: the segment is prepended after the SOI
-marker, costing a few hundred bytes.
+marker, about 280 bytes for a two-filter chain.
 
-It exists for the one leg the pipeline cannot see: a browser that fetches the
-stream and parses the multipart itself can read each frame's own numbers and
-compare them with its own clock, which is webvis to browser. It also removes an
-assumption that is easy to miss, that the subject data on `/data` belongs to the
-frame currently on screen. They come from different URLs and nothing ties them
-together; carried in the frame's bytes, the numbers cannot be about another
-frame.
+It is not behind the flag because the alternative is an assumption. The picture
+comes from one URL and the subject data on `/data` from another, and nothing
+ties a reading to the frame on screen; carried in the frame's bytes, the numbers
+cannot be about another frame. It also closes the one leg the pipeline cannot
+see: a browser that reads them can compare against its own clock, which is
+webvis to browser.
 
 Note that a plain `<img src>` cannot reach the segment: the browser paints the
 pixels and drops the rest. Reading it means fetching the stream, splitting the
-multipart parts and decoding each JPEG onto a canvas.
+multipart parts and decoding each JPEG onto a canvas, which is what `/timings`
+does.
 
-`in` on the source block predates its own `ts`: video_in's `process()` starts
-and then blocks waiting for the decoder, so most of its duration is the wait for
-the next frame at the configured rate, not work. Summing `duration_ms` across
-filters therefore overstates end-to-end latency; `ts` to `served` is the honest
-figure.
+`TIME IN` on the source row predates its own read stamp: video_in's `process()`
+starts and then blocks waiting for the decoder, so most of its duration is the
+wait for the next frame at the configured rate, not work. Summing `duration_ms`
+across filters therefore overstates end-to-end latency, which is why the table
+carries the frame total instead.
 
 The overlay costs one `putText` pass per line per frame and is off by default.
 
@@ -153,9 +146,7 @@ export FILTER_ENABLE_JSON="true"
 export FILTER_SLEEP_INTERVAL="0.1"
 export FILTER_ACCESS_LOG="false"
 export FILTER_ENABLE_SNAPSHOT_PAYLOAD="false"
-export FILTER_TIMINGS="false"
-export FILTER_TIMINGS_PLACEMENT="video_in=top-left, webvis=top-right"
-export FILTER_TIMINGS_SCALE="0.5"
+export FILTER_TIMINGS="false"   # or a corner: bottom-left, top-right, ...
 ```
 
 ## Web Interface
