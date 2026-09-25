@@ -735,10 +735,6 @@ class TestWebvisNewEndpoints(unittest.TestCase):
             self.assertEqual(res.status_code, 500)
             self.assertEqual(res.content, b"JPEG encoding failed")
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class TestWebvisTimings(unittest.TestCase):
     """The half of the instrumentation that lives inside the framework.
 
@@ -869,3 +865,7 @@ class TestWebvisTimings(unittest.TestCase):
             self.assertEqual(TestClient(self._make_webvis().create_app()).get('/timings').status_code, 404)
         finally:
             mod.TIMINGS_PAGE = page
+
+
+if __name__ == '__main__':
+    unittest.main()

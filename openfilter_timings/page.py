@@ -88,6 +88,7 @@ const stats = document.getElementById('stats');
 const warn = document.getElementById('warn');
 const deltas = [];
 let lastTs = null;   // the read stamp of the frame on screen, for the age readout
+let fatal = null;    // set once the stream is over, for whatever reason; tick() reports it
 
 const clock = t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour12: false }) +
                    '.' + String(Math.floor((t % 1) * 1000)).padStart(3, '0');
@@ -270,7 +271,12 @@ function tick() {
   document.getElementById('clock').textContent = clock(now);
 
   const age = document.getElementById('age');
-  if (lastTs === null) {
+  if (fatal !== null) {
+    // Checked before the age readout because this loop owns #age: anything written there from
+    // outside survives one animation frame. A dead stream must not read as a slow one.
+    age.textContent = fatal;
+    age.className = 'age stale';
+  } else if (lastTs === null) {
     age.textContent = 'waiting for a frame';
     age.className = 'age';
   } else {
@@ -309,9 +315,12 @@ document.getElementById('split').addEventListener('mousedown', down => {
 
 const STREAM_URL = new URL(window.location.href).searchParams.get('topic') || '/';
 tick();
-run().catch(err => {
-  document.getElementById('age').textContent = 'stream ended: ' + err;
-  document.getElementById('age').className = 'age stale';
-});
+// Both endings are reported, not just the failure: a stream that ends cleanly leaves the same
+// frozen picture beside the same ticking clock, and saying nothing there is the exact confusion
+// this page exists to remove.
+run().then(
+  () => { fatal = 'stream ended'; },
+  err => { fatal = 'stream failed: ' + err; },
+);
 </script>
 """
