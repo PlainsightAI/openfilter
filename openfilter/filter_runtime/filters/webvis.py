@@ -76,9 +76,11 @@ class Webvis(Filter):
             Draw this frame's timing chain onto the picture, off by default. `true` puts the table
             in the top left; a corner name (`top-left`, `top-right`, `bottom-left`,
             `bottom-right`) puts it where the camera's own timestamp is not. One row per filter,
-            columns `ID FILTER TIME IN TIME OUT TOTAL MS`, times as raw epoch seconds so they line
-            up with the same numbers printed from the subject data, and TOTAL MS the frame's total
-            from the first filter in to the last filter out. Also settable via ``FILTER_TIMINGS``.
+            columns `ID FILTER TIME IN TIME OUT TOTAL MS CLOCK`, the times as raw epoch seconds so
+            they line up with the same numbers printed from the subject data, CLOCK the same
+            instant on a wall clock for comparing against a camera's burned-in timestamp, and
+            TOTAL MS the frame's total from the first filter in to the last filter out. Also
+            settable via ``FILTER_TIMINGS``.
 
             The chain travels in the served JPEG's COM segment whether or not this is on: a frame
             that carries its own timings cannot be paired with another frame's, which is the risk

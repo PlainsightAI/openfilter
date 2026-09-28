@@ -94,8 +94,9 @@ The font scales with the frame, so a 4K source and a 720p preview read the same.
 The table is drawn when a frame is encoded for the wire, not inside `process()`.
 A filter's own in/out reaches `filter_timings` only after its `process()`
 returns, so drawing earlier would leave webvis the one filter with no numbers.
-The cost is therefore per connected browser rather than per frame, which is the
-right trade for instrumentation watched by one or two people.
+The cost is per served frame, not per browser: `self.streams` holds one queue
+per topic and every connection on that topic pops from it, so a frame is drawn
+and encoded once however many browsers are attached.
 
 ### Timings inside the JPEG
 
