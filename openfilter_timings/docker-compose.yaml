@@ -1,0 +1,27 @@
+services:
+  video-in:
+    image: ${IMAGE:-plainsightai/openfilter-dev:dev}
+    environment:
+      FILTER: video_in
+      # Containers start in UTC whatever the host is set to, and a drawn clock that disagrees with
+      # the one on screen is worse than no clock. `make env` writes this machine's zone into .env.
+      TZ: ${TZ:-UTC}
+      # An RTSP camera here stalled for 30s over the default UDP transport and the reader gave up.
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
+      FILTER_SOURCES: ${SOURCE}
+      FILTER_OUTPUTS: tcp://*:5550
+    volumes:
+      - ${VIDEO_DIR:-/tmp}:/videos:ro
+
+  webvis:
+    image: ${IMAGE:-plainsightai/openfilter-dev:dev}
+    environment:
+      FILTER: webvis
+      TZ: ${TZ:-UTC}
+      FILTER_SOURCES: tcp://video-in:5550
+      FILTER_OUTPUTS: http://0.0.0.0:8000
+      FILTER_TIMINGS: ${TIMINGS:-bottom-left}  # true, or a corner: top-left, bottom-right, ...
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      - video-in
