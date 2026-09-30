@@ -1075,8 +1075,18 @@ class VideoIn(Filter):
 
     Emitted frame meta:
         Every frame carries meta['id'] (delivery counter, rate depends on the consuming chain), meta['ts'] (wall-clock
-        seconds at read), meta['src'] and meta['src_fps']. File sources (file:// and s3://) additionally carry the
-        decoder position of the delivered frame - the video offset that cannot be reconstructed downstream:
+        seconds at read), meta['src'], meta['src_fps'], meta['width'] and meta['height'].
+
+        meta['width'] / meta['height'] are the dimensions of the image as emitted, i.e. AFTER `maxsize` or `resize`
+        has been applied, so they are the pixel space every downstream coordinate (detection boxes, keypoints, crop
+        regions) is expressed in. They are NOT the source video's dimensions, and under `maxsize` they are not the
+        configured cap either: `maxsize='1280x720'` preserves aspect ratio, so a 2592x1520 source is emitted at
+        1227x720 and only the constrained axis reaches the cap. A consumer mapping boxes back onto the original
+        video therefore cannot derive this from the source resolution or from the pipeline config - it has to read
+        it off the frame. A filter that resizes mid-graph is expected to update both keys.
+
+        File sources (file:// and s3://) additionally carry the decoder position of the delivered frame - the video
+        offset that cannot be reconstructed downstream:
 
             meta['src_frame']   - 0-based source frame index (CAP_PROP_POS_FRAMES sampled before the read, exact).
             meta['src_seconds'] - the frame's position WITHIN the source, in seconds: src_frame / container fps
@@ -1207,10 +1217,12 @@ class VideoIn(Filter):
             self._camera_connected = 1
             self.id = id = self.id + 1
 
-            def meta(vid, tfrm, extras):
+            def meta(vid, tfrm, extras, img):
                 src = extras.get('source', vid.source) if extras else vid.source
                 src_fps = extras.get('fps', vid.fps) if extras else vid.fps
-                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else src, 'src_fps': src_fps}
+                height, width = img.shape[:2]  # AFTER maxsize/resize: the frame downstream coordinates are in
+                meta = {'id': id, 'ts': tfrm / 1_000_000_000, 'src': self.override_source_uri if self._apply_override else src, 'src_fps': src_fps,
+                    'width': width, 'height': height}
 
                 if extras and 'frame_n' in extras:  # file sources: decoder position of this frame = the video offset jump-to-frame needs
                     meta['src_frame'] = extras['frame_n']
@@ -1221,7 +1233,7 @@ class VideoIn(Filter):
                 return meta
 
             return {topic: Frame(img,
-                {'meta': meta(vid, tfrm, extras)},
+                {'meta': meta(vid, tfrm, extras, img)},
                 'GRAY' if len(img.shape) == 2 else 'BGR' if vid.as_bgr else 'RGB'
             ) for (topic, vid), (img, tfrm, extras) in zip(self.tops_n_vids, image_n_tframes)}
 

@@ -29,6 +29,16 @@ OpenFilter Library release notes
 
   The implementation lives in `openfilter_timings/`, outside the framework tree. webvis imports it
   defensively, so removing that folder leaves the filter working and the option warning once.
+- **`VideoIn`: `meta['width']` and `meta['height']` on every emitted frame.** Downstream coordinates
+  (detection boxes, keypoints, crop regions) are expressed in the pixel space of the frame as emitted,
+  and until now nothing on the frame said what that space was. A consumer could not reconstruct it:
+  it is not the source video's resolution once `maxsize`/`resize` is in play, and under `maxsize` it is
+  not the configured cap either, because `maxsize='1280x720'` preserves aspect ratio - a 2592x1520
+  source is emitted at 1227x720 and only the constrained axis reaches the cap. Reading the cap out of
+  the pipeline config therefore gives the wrong answer for any source whose aspect ratio differs from
+  it. Both keys are now stamped after the resize, so any consumer rendering boxes over the original
+  video can normalise by them and scale to whatever size it is displaying at. A filter that resizes
+  mid-graph is expected to update both keys.
 
 ## v1.4.0 - 2026-09-23
 
