@@ -725,6 +725,44 @@ class TestVideoIn(unittest.TestCase):
             queue.close()
 
 
+    def test_meta_frame_dimensions(self):
+        """meta['width']/meta['height'] report the frame as emitted, not the source and not the maxsize cap.
+
+        The 320x200 test video under a 160x80 cap is emitted at 128x80: `maxsize=WxH` preserves aspect
+        ratio, so only the constrained axis reaches the cap. A consumer mapping downstream coordinates
+        back onto the source can derive 128 neither from the source resolution nor from the config, which
+        is the whole reason these keys have to travel on the frame.
+        """
+        for source_opts, (exp_w, exp_h) in (
+            ('',                 (320, 200)),  # no resize: the source's own dimensions
+            ('!maxsize=160x80',  (128,  80)),  # aspect preserved, width lands under the cap
+            ('!maxsize=160+80',  (160,  80)),  # '+' squashes, both axes hit the cap
+            ('!maxsize=640x400', (320, 200)),  # cap above the source, nothing resized
+        ):
+            with self.subTest(source_opts=source_opts):
+                runner = Filter.Runner([
+                    (VideoIn, dict(
+                        sources = f'file://{TEST_VIDEO_FNM}!sync{source_opts}',
+                        outputs = 'ipc://test-VideoIn',
+                    )),
+                    (FiltersToQueue, dict(
+                        sources = 'ipc://test-VideoIn',
+                        queue   = (queue := FiltersToQueue.Queue()).child_queue,
+                    )),
+                ], exit_time=3)
+
+                try:
+                    frame = queue.get()['main']
+                    self.assertEqual(frame.data['meta']['width'], exp_w)
+                    self.assertEqual(frame.data['meta']['height'], exp_h)
+                    # the keys describe the image actually shipped alongside them
+                    self.assertEqual(frame.shape[:2], (exp_h, exp_w))
+
+                finally:
+                    runner.stop()
+                    queue.close()
+
+
     def test_multiple_videos(self):
         runner = Filter.Runner([
             (VideoIn, dict(
