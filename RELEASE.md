@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.0 - 2026-09-30
+
 ### Added
 
 - **`Webvis`: `timings`, a per-frame timing chain drawn on the picture and carried inside the
@@ -39,6 +41,13 @@ OpenFilter Library release notes
   it. Both keys are now stamped after the resize, so any consumer rendering boxes over the original
   video can normalise by them and scale to whatever size it is displaying at. A filter that resizes
   mid-graph is expected to update both keys.
+
+### Internal
+
+Nothing here changes the published library or images.
+
+- Bumped `trufflesecurity/trufflehog` 3.97.5 → 3.97.9 across the actions group.
+- Bumped `urllib3` 2.7.0 → 2.8.0 in the lockfile.
 
 ## v1.4.0 - 2026-09-23
 
