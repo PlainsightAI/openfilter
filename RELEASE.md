@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.1 - 2026-10-01
+
 ### Fixed
 
 - **`Util`: re-stamp `meta['width']` / `meta['height']` when an xform changes the image size.**
