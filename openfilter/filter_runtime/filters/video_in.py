@@ -588,6 +588,19 @@ class VideoReader:
             return True
 
         while True:
+            # With maxfps_by_index the stride already knows, before any decoding, that
+            # this frame will be dropped. grab() advances the file without rebuilding
+            # the image, which is the expensive half: a 1 h 30 fps clip otherwise
+            # decodes 108000 frames to hand 3600 downstream, and the run becomes
+            # decode-bound rather than GPU-bound.
+            if (stride := self.index_stride) is not None and self.frame_i % stride:
+                self.frame_i += 1
+
+                if not self.cap.grab():
+                    break
+
+                continue
+
             ret, image = self._cap_read()
 
             if not ret or image is None:
