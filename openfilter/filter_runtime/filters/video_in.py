@@ -596,12 +596,20 @@ class VideoReader:
             if (stride := self.index_stride) is not None and self.frame_i % stride:
                 self.frame_i += 1
 
-                if not self.cap.grab():
-                    break
+                if self.cap.grab():
+                    continue
 
-                continue
+                # A failed grab() is EOF, and EOF on a skipped frame is the common
+                # case: the last frame of a file lands off-stride (stride-1)/stride
+                # of the time. Leaving the loop here would reach `return image`
+                # with image unbound, killing the reader thread before it appends
+                # the EOF sentinel, so the consumer would block forever. Falling
+                # through instead keeps the directory transition, the loop restart
+                # and wait(is_eof=True) on the skip path too.
+                ret, image = False, None
 
-            ret, image = self._cap_read()
+            else:
+                ret, image = self._cap_read()
 
             if not ret or image is None:
                 if not self.is_file:
