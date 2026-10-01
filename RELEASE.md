@@ -4,6 +4,20 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Util`: re-stamp `meta['width']` / `meta['height']` when an xform changes the image size.**
+  `VideoIn` stamps the frame it emits (v1.5.0) and downstream coordinates - detection boxes,
+  keypoints, crop regions - are expressed in that pixel space, but `Util` rebuilt the frame with
+  `Frame(image, frame)`, which aliases the source frame's data dict, so the pair survived the
+  transform unchanged and then described an image that no longer existed. Every box drawn from
+  it landed on the wrong pixels, silently, because stale dimensions still look plausible.
+  `resize`, `maxsize` and `minsize` change the size outright; `rotcw` and `rotccw` swap the two,
+  which a resize-only fix would miss, so the re-stamp runs once after the whole xform chain and
+  covers any future xform as well. Only frames that already carry the keys are re-stamped - a
+  source that never set them is not claiming anything - and the new pair is written to a copy,
+  since one source topic can fan out to several outputs with their own xforms.
+
 ## v1.5.0 - 2026-09-30
 
 ### Added
