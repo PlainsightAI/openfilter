@@ -18,6 +18,16 @@ OpenFilter Library release notes
   source that never set them is not claiming anything - and the new pair is written to a copy,
   since one source topic can fan out to several outputs with their own xforms.
 
+### Changed
+
+- **`VideoIn`: `maxfps_by_index` no longer decodes the frames it is about to drop.** The stride
+  already knows, before any decoding, that a frame will not be delivered; it was decoded anyway and
+  the result thrown away. Advancing those frames with `grab()` moves the capture position without
+  rebuilding the image. Measured on an A10 over a 1 h 30 fps 2592x1520 source at stride 30, the
+  reader goes from 345.8 to 638.7 frames/s, so an hour of footage reads in 2.8 min instead of 5.2.
+  `src_frame` is unchanged: compared over the first 40 delivered frames it is identical with and
+  without the change, and delivery stays on the same stride phase.
+
 ## v1.5.0 - 2026-09-30
 
 ### Added

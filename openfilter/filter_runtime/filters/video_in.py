@@ -588,7 +588,28 @@ class VideoReader:
             return True
 
         while True:
-            ret, image = self._cap_read()
+            # With maxfps_by_index the stride already knows, before any decoding, that
+            # this frame will be dropped. grab() advances the file without rebuilding
+            # the image, which is the expensive half: a 1 h 30 fps clip otherwise
+            # decodes 108000 frames to hand 3600 downstream, and the run becomes
+            # decode-bound rather than GPU-bound.
+            if (stride := self.index_stride) is not None and self.frame_i % stride:
+                self.frame_i += 1
+
+                if self.cap.grab():
+                    continue
+
+                # A failed grab() is EOF, and EOF on a skipped frame is the common
+                # case: the last frame of a file lands off-stride (stride-1)/stride
+                # of the time. Leaving the loop here would reach `return image`
+                # with image unbound, killing the reader thread before it appends
+                # the EOF sentinel, so the consumer would block forever. Falling
+                # through instead keeps the directory transition, the loop restart
+                # and wait(is_eof=True) on the skip path too.
+                ret, image = False, None
+
+            else:
+                ret, image = self._cap_read()
 
             if not ret or image is None:
                 if not self.is_file:
