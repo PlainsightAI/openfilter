@@ -249,9 +249,36 @@ class Util(Filter):
             else:
                 raise ValueError(f'unknown xform {action!r}')
 
-        topic_xform.frame = frame
+        topic_xform.frame = self.restamp_dimensions(frame)
 
         return topic_xform
+
+    @staticmethod
+    def restamp_dimensions(frame):
+        """Keep meta['width'] / meta['height'] describing the image actually emitted.
+
+        VideoIn stamps the frame it emits and downstream coordinates (detection boxes,
+        keypoints, crop regions) are expressed in that pixel space, so an xform that
+        changes the image size has to re-stamp or every one of those lands on the wrong
+        pixels - silently, since the stale numbers still look plausible. `resize`,
+        `maxsize` and `minsize` change it outright; `rotcw` and `rotccw` swap the two.
+
+        Only frames that already carry the keys are re-stamped: a source that never set
+        them is not claiming anything, so there is nothing to correct. The data dict is
+        shared with the pre-xform frame (`Frame(image, frame)` aliases it) and one source
+        topic can fan out to several outputs with their own xforms, so this copies rather
+        than mutating in place.
+        """
+        if not frame.has_image or not isinstance(data := frame.data, dict):
+            return frame
+        if not isinstance(meta := data.get('meta'), dict):
+            return frame
+        if 'width' not in meta and 'height' not in meta:
+            return frame
+        if meta.get('width') == frame.width and meta.get('height') == frame.height:
+            return frame
+
+        return Frame(frame.image, {**data, 'meta': {**meta, 'width': frame.width, 'height': frame.height}}, frame.format)
 
     def execute_xform_size(self, xform, frame):
         width  = xform.width

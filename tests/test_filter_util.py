@@ -409,6 +409,86 @@ class TestUtil(unittest.TestCase):
             self.assertEqual(runner.wait(), [0, 0, 0])
 
 
+    def test_restamp_dimensions(self):
+        """An xform that changes the image size must re-stamp meta['width'] / meta['height'].
+
+        VideoIn stamps those and downstream coordinates live in that pixel space, so a
+        stale pair puts every box on the wrong pixels - and plausibly enough to read as a
+        model problem rather than a coordinate one.
+        """
+        stamped = lambda img: Frame(img, {'meta': {'id': 7, 'width': 320, 'height': 200}}, 'BGR')
+
+        # resized: both keys follow the new image
+        out = Util.restamp_dimensions(Frame(cv2.resize(IMAGE, (160, 100)), stamped(IMAGE)))
+        self.assertEqual((out.data['meta']['width'], out.data['meta']['height']), (160, 100))
+        self.assertEqual(out.data['meta']['id'], 7)  # the rest of meta is carried through
+
+        # rotated a quarter turn: the two swap, which a resize-only fix would miss
+        out = Util.restamp_dimensions(
+            Frame(cv2.rotate(IMAGE, cv2.ROTATE_90_CLOCKWISE), stamped(IMAGE)))
+        self.assertEqual((out.data['meta']['width'], out.data['meta']['height']), (200, 320))
+
+        # unchanged size: same frame back, nothing copied
+        src = stamped(IMAGE)
+        self.assertIs(Util.restamp_dimensions(src), src)
+
+        # no keys upstream: nothing is being claimed, so nothing to correct
+        src = Frame(cv2.resize(IMAGE, (160, 100)), {'meta': {'id': 7}}, 'BGR')
+        self.assertIs(Util.restamp_dimensions(src), src)
+        src = Frame(cv2.resize(IMAGE, (160, 100)), {}, 'BGR')
+        self.assertIs(Util.restamp_dimensions(src), src)
+
+        # the pre-xform frame's meta must not be touched: Frame(image, frame) aliases the
+        # data dict, and one source topic can fan out to several outputs with their own
+        # xforms, so writing in place would corrupt the others.
+        original = stamped(IMAGE)
+        out = Util.restamp_dimensions(Frame(cv2.resize(IMAGE, (160, 100)), original))
+        self.assertEqual((original.data['meta']['width'], original.data['meta']['height']), (320, 200))
+        self.assertIsNot(out.data['meta'], original.data['meta'])
+
+
+    def test_xforms_resize_restamps_meta(self):
+        with RunnerContext([
+            (QueueToFilters, dict(
+                outputs     = 'ipc://test-Q2F',
+                outputs_jpg = False,
+                queue       = (qin := mp.Queue()),
+            )),
+            (Util, dict(
+                sources     = 'ipc://test-Q2F',
+                outputs     = 'ipc://test-util',
+                outputs_jpg = False,
+                xforms      = 'resize 160x100;small, rotcw;turned, flipx;flipped',
+            )),
+            (FiltersToQueue, dict(
+                sources = 'ipc://test-util',
+                queue   = (qout := FiltersToQueue.Queue()).child_queue,
+            )),
+        ], [qin, qout], exit_time=3) as runner:
+
+            stamped = Frame(IMAGE, {'meta': {'width': 320, 'height': 200}}, 'BGR')
+            qin.put(dict(small=stamped, turned=stamped, flipped=stamped))
+            qin.put(False)
+
+            frames = qout.get()
+
+            small = frames['small']
+            self.assertEqual(str(small), 'Frame(160x100xBGR-ro)')
+            self.assertEqual((small.data['meta']['width'], small.data['meta']['height']), (160, 100))
+
+            turned = frames['turned']
+            self.assertEqual(str(turned), 'Frame(200x320xBGR-ro)')
+            self.assertEqual((turned.data['meta']['width'], turned.data['meta']['height']), (200, 320))
+
+            # a size-preserving xform leaves the stamp alone
+            flipped = frames['flipped']
+            self.assertEqual(str(flipped), 'Frame(320x200xBGR-ro)')
+            self.assertEqual((flipped.data['meta']['width'], flipped.data['meta']['height']), (320, 200))
+
+            self.assertFalse(qout.get())
+            self.assertEqual(runner.wait(), [0, 0, 0])
+
+
     def test_xforms_resize_interp(self):
         """The 'near' / 'lin' / 'cub' size suffixes must select the matching cv2 interpolation.
 
