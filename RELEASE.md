@@ -4,6 +4,31 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Fixed
+
+- **A filter that forwards zero frames no longer leaves its downstream waiting forever.** The exit
+  message a filter publishes on its way out is how the downstream learns the stream ended, and it
+  goes over a PUB socket, which discards silently while the SUB side of a client is still
+  connecting. A filter that never called `send()` has also never run the HELLO handshake that
+  proves the link, so its single publish can reach nobody: the downstream then sits in `recv()`
+  for as long as the pipeline is allowed to live. Reported from a `video-in -> frame-dedup -> sam3`
+  annotation job on clips under five seconds, where the dedup drops every frame and the job only
+  ended on its four-hour timeout, holding a GPU the whole time. `send_exit_msg` now lingers: when
+  no client was ever confirmed, the sender keeps republishing the exit for `ZMQ_EXIT_LINGER` ms
+  (default 60000) each time a request arrives on its PULL socket. A client resends its unanswered
+  request every `ZMQ_POLL_TIMEOUT` ms, so anything genuinely there announces itself inside that
+  window. The window is sized for a downstream that is slow to come up rather than for the
+  subscribe handshake: a filter carrying a model reaches its own `init()`, and so creates its
+  receiver, tens of seconds after the container starts (20.0 s measured for
+  `openfilter-sam3-detector:0.1.25` on imports alone, before any model load). It is also the
+  weaker of the two waits openfilter already does, since the data path blocks in `_send_frames`
+  until a consumer appears with no limit by default, and the message is idempotent so the extra copies cost nothing. It returns as soon as
+  every client it heard from has closed, and every declared `outputs_required` client is among
+  them, so a fast output on a fan-out cannot end the wait for a slower sibling that has not
+  announced itself yet. Nothing is paid on the
+  normal path: a sender that delivered at least one frame has a confirmed client and still
+  publishes exactly once, and the last filter in a pipeline has no sender at all.
+
 ## v1.5.1 - 2026-10-01
 
 ### Fixed

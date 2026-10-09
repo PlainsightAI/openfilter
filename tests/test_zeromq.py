@@ -7,7 +7,7 @@ import unittest
 from queue import Queue
 from random import randint
 from threading import Thread
-from time import sleep
+from time import sleep, time_ns
 
 import zmq
 from openfilter.filter_runtime.zeromq import ZMQStateRecv, ZMQStateSend, ZMQReceiver, ZMQSender, logger as zeromq_logger
@@ -1282,6 +1282,203 @@ class TestZeroMQIPC(TestZeroMQTCP):
     #     finally:
     #         sendr.destroy()
 
+
+class TestExitMsgLateSubscriber(unittest.TestCase):
+    """A sender that never sent data still has to reach a subscriber that is still connecting.
+
+    `MQ.send_exit_msg` is how a filter tells its downstream the stream ended, and it goes out on a PUB socket, which
+    discards silently while the SUB side is still connecting. A filter that forwards zero frames (an ultra-short clip,
+    a dedup that drops every frame) never runs the send() handshake that would prove the link, so a single publish can
+    reach nobody and the downstream waits forever.
+    """
+
+    PORT    = 5597
+    ADDR    = f'tcp://127.0.0.1:{PORT}'
+    EXIT    = ['clean']
+    LATE_MS = 400  # how long after the publish the subscriber shows up
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, linger):
+        """Publish an OOB before any subscriber exists, bring one up `LATE_MS` later, return what it received."""
+
+        queue_oob = Queue()
+        ready     = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server')
+
+            try:
+                ready.put(None)
+                sendr.send_oob(self.EXIT, linger=linger)  # no send() first: nothing is connected and nothing is confirmed
+            finally:
+                sendr.destroy()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')  # starts the zmq.Context in this thread, as the other tests here do
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            ready.get()
+
+            sleep(self.LATE_MS / 1000)
+
+            recvr = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'late',
+                lambda m: queue_oob.put(_materialize_parts(m)))
+
+            try:
+                deadline = 2.5
+
+                while deadline > 0 and queue_oob.empty():
+                    recvr.recv(timeout=100)
+
+                    deadline -= 0.1
+
+                return None if queue_oob.empty() else queue_oob.get()
+
+            finally:
+                recvr.destroy()
+
+        finally:
+            sendt.join()
+
+    def test_exit_msg_reaches_a_late_subscriber(self):
+        self.assertEqual(self.EXIT, self._run(linger=2000))
+
+    def test_without_linger_it_is_lost(self):
+        """The bug, pinned: one publish into a socket nobody has subscribed to yet goes nowhere."""
+
+        self.assertIsNone(self._run(linger=0))
+
+    def test_returns_when_the_subscriber_closes(self):
+        """The wait is not a fixed cost: once the client has the message and goes away, the sender stops waiting."""
+
+        linger   = 6000
+        elapsed  = []
+        queue    = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server')
+
+            try:
+                queue.put(None)
+
+                t0 = time_ns()
+
+                sendr.send_oob(self.EXIT, linger=linger)
+
+                elapsed.append((time_ns() - t0) // 1_000_000)
+
+            finally:
+                sendr.destroy()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            queue.get()
+
+            sleep(self.LATE_MS / 1000)
+
+            got   = Queue()
+            recvr = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'late', lambda m: got.put(_materialize_parts(m)))
+
+            for _ in range(25):
+                if not got.empty():
+                    break
+
+                recvr.recv(timeout=100)
+
+            recvr.destroy()  # what a filter does once it has honored the exit, and what releases the sender
+
+            self.assertFalse(got.empty())
+
+        finally:
+            sendt.join()
+
+        self.assertLess(elapsed[0], linger // 2, f'sender waited {elapsed[0]} ms of a {linger} ms budget')
+
+    def test_reaches_a_subscriber_that_is_seconds_late(self):
+        """The gap to cover is a downstream still importing, not the subscribe handshake.
+
+        A filter carrying a model reaches its own `init()`, and so creates its receiver, tens of seconds after the
+        container starts. 2.5 s here keeps the suite quick while being orders of magnitude past any handshake.
+        """
+
+        self.LATE_MS, saved = 2500, self.LATE_MS
+
+        try:
+            self.assertEqual(self.EXIT, self._run(linger=10000))
+        finally:
+            self.LATE_MS = saved
+
+    def test_a_fast_output_closing_does_not_strand_a_required_slow_one(self):
+        """On a fan-out, the first client to take the exit and go away must not end the wait for its siblings.
+
+        A `??`-free tee declares its outputs with `outs_required`. One of them can connect, receive the exit and
+        close while the other is still coming up, and returning at that point would strand the slow one on exactly
+        the hang this function exists to prevent.
+        """
+
+        fast_got = Queue()
+        slow_got = Queue()
+        started  = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server', outs_required=['fast', 'slow'])
+
+            try:
+                started.put(None)
+                sendr.send_oob(self.EXIT, linger=6000)
+            finally:
+                sendr.destroy()
+
+        def pump(recvr, got, rounds):
+            for _ in range(rounds):
+                if not got.empty():
+                    return True
+
+                recvr.recv(timeout=100)
+
+            return not got.empty()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            started.get()
+
+            fast = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'fast', lambda m: fast_got.put(_materialize_parts(m)))
+
+            self.assertTrue(pump(fast, fast_got, 25), 'the early output never got the exit')
+
+            fast.destroy()  # CLOSE, which on its own used to end the wait
+
+            sleep(0.5)  # the slow sibling is still coming up all this time
+
+            slow = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'slow', lambda m: slow_got.put(_materialize_parts(m)))
+
+            try:
+                self.assertTrue(pump(slow, slow_got, 25), 'the slow required output was stranded')
+                self.assertEqual(self.EXIT, slow_got.get())
+
+            finally:
+                slow.destroy()
+
+        finally:
+            sendt.join()
 
 if __name__ == '__main__':
     unittest.main()

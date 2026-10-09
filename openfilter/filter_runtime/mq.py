@@ -33,7 +33,7 @@ from .frame import Frame
 from .metrics import Metrics
 from .shm_transport import SHMAttachCache, SHMPool, shm_enabled
 from .utils import JSONType, json_getval, rndstr
-from .zeromq import ZMQ_POLL_TIMEOUT as POLL_TIMEOUT_MS, is_zeromq_addr as is_mq_addr, ZMQMessage, ZMQSender, ZMQReceiver
+from .zeromq import ZMQ_EXIT_LINGER, ZMQ_POLL_TIMEOUT as POLL_TIMEOUT_MS, is_zeromq_addr as is_mq_addr, ZMQMessage, ZMQSender, ZMQReceiver
 
 __all__ = ['is_mq_addr', 'MQ', 'MQSender', 'MQReceiver']
 
@@ -190,13 +190,21 @@ class MQ:
             self.metrics_sender = None
 
     def send_exit_msg(self, reason: str = ''):
+        """Tell every neighbour this filter is going away.
+
+        Upstream is reached over PUSH, which queues, so it needs nothing special. Downstream is reached over PUB,
+        which discards while a subscriber is still connecting, so the send lingers: a filter that forwarded zero
+        frames has never confirmed its subscriber and a single publish can reach nobody, leaving the downstream
+        waiting forever on a stream that already ended. See `ZMQSender._republish_oob`.
+        """
+
         reason = [reason]
 
         if self.receiver is not None:
             self.receiver.send_oob(reason)
 
         if self.sender is not None:
-            self.sender.send_oob(reason)
+            self.sender.send_oob(reason, linger=ZMQ_EXIT_LINGER)
 
         if self.metrics_sender is not None:
             self.metrics_sender.send_oob(reason)
