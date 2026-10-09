@@ -113,7 +113,7 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
-ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 2000)     # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables. Sized for a downstream that is slow to come up, not for the subscribe handshake: a GPU filter spends tens of seconds importing before its receiver exists (measured 20.0 s for openfilter-sam3-detector:0.1.25). Only ever paid in full when nothing connects at all, see ZMQSender._republish_oob
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 20)           # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up. The unit is whole multipart messages and not parts: a PUSH at SNDHWM 20 whose peer is not reading accepts exactly 20 four-part messages before it refuses the next, measured, so this is 20 frames and not 5
 ZMQ_SUB_HWM           = int(os.getenv('ZMQ_SUB_HWM') or 4 * 2)        # messages a subscriber will queue on its side, 4 topics x 2 frames, one being worked on and one next, and it has to stay above the topic fan-out of any source because a sender publishes one message per topic per frame. Unit is whole multipart messages, same as ZMQ_PUB_HWM above. On a receiver that joins two sources this is the only cap that applies to the source nobody is draining: the receiver holds one barrier for all of them and the only discard path is sender-side and can only fire on the source BEHIND that barrier, so the source AHEAD publishes into a socket nobody reads and the frames it eventually delivers are as old as this queue is deep. libzmq defaults it to 1000, which at 5 fps is near a minute of stale frames. This caps the subscriber's share only: how stale an undrained source can get is this queue plus ZMQ_PUB_HWM plus whatever the kernel socket buffer holds, and that last one is bounded in bytes rather than in messages, so it hides more the smaller the frames are (SNDHWM 20 with RCVHWM 8, messages delivered before the first drop: 8 over IPC at 64 KB, 14 over TCP at 64 KB, 60 over TCP at 64 B, 120 over IPC at 64 B)
@@ -315,9 +315,18 @@ class ZMQSender:
         their number is unknown, so a fan-out that wants the guarantee has to declare them.
 
         The full wait is otherwise only paid when nothing ever answers, which is also the only case where there is
-        nothing to be gained by returning early. Incoming messages are not handed to `message_oob` here: this runs
-        inside the sender's own teardown, and a neighbour's exit has nothing left to tell a filter that is already
-        on its way out.
+        nothing to be gained by returning early, and it is what the default window is sized for. The gap this has
+        to cover is not the subscribe handshake, which is milliseconds: it is a downstream process that has not
+        reached its own `init()` yet, because a filter carrying a model spends tens of seconds on imports before
+        its receiver exists (20.0 s measured for openfilter-sam3-detector:0.1.25, before any model load).
+
+        Waiting here is also the weaker of the two waits openfilter already does. The data path blocks in
+        `Filter._send_frames` until a consumer appears, with `outputs_timeout` defaulting to no limit, so a sender
+        holding one frame waits indefinitely. This races only because it holds none, and a bounded wait for the
+        same consumer is the consistent answer rather than a new policy.
+
+        Incoming messages are not handed to `message_oob` here: this runs inside the sender's own teardown, and a
+        neighbour's exit has nothing left to tell a filter that is already on its way out.
         """
 
         t_end   = time_ns() + linger * 1_000_000
