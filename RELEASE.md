@@ -86,6 +86,21 @@ OpenFilter Library release notes
   `service_healthy` gate, `vidin` opens `rtsp://rtsp-streamer:8554/stream0` at 24.0 fps and connects
   to `webvis`, and a five second capture of `GET /main` held 120 JPEG frames at 1280x720.
 
+- **A filter that forwards zero frames no longer leaves its downstream waiting forever.** The exit
+  message a filter publishes on its way out is how the downstream learns the stream ended, and it
+  goes over a PUB socket, which discards silently while the SUB side of a client is still
+  connecting. A filter that never called `send()` has also never run the HELLO handshake that
+  proves the link, so its single publish can reach nobody: the downstream then sits in `recv()`
+  for as long as the pipeline is allowed to live. Reported from a `video-in -> frame-dedup -> sam3`
+  annotation job on clips under five seconds, where the dedup drops every frame and the job only
+  ended on its four-hour timeout, holding a GPU the whole time. `send_exit_msg` now lingers: when
+  no client was ever confirmed, the sender keeps republishing the exit for `ZMQ_EXIT_LINGER` ms
+  (default 2000) each time a request arrives on its PULL socket. A client resends its unanswered
+  request every `ZMQ_POLL_TIMEOUT` ms, so anything genuinely there announces itself inside that
+  window, and the message is idempotent so the extra copies cost nothing. Nothing is paid on the
+  normal path: a sender that delivered at least one frame has a confirmed client and still
+  publishes exactly once, and the last filter in a pipeline has no sender at all.
+
 ### Removed
 
 - **`openfilter.cli.common.DOCKER_IMAGES`, a dead map of filter classes to private registry images.**
