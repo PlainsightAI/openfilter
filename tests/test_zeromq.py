@@ -1406,5 +1406,65 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
 
         self.assertLess(elapsed[0], linger // 2, f'sender waited {elapsed[0]} ms of a {linger} ms budget')
 
+    def test_a_fast_output_closing_does_not_strand_a_required_slow_one(self):
+        """On a fan-out, the first client to take the exit and go away must not end the wait for its siblings.
+
+        A `??`-free tee declares its outputs with `outs_required`. One of them can connect, receive the exit and
+        close while the other is still coming up, and returning at that point would strand the slow one on exactly
+        the hang this function exists to prevent.
+        """
+
+        fast_got = Queue()
+        slow_got = Queue()
+        started  = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server', outs_required=['fast', 'slow'])
+
+            try:
+                started.put(None)
+                sendr.send_oob(self.EXIT, linger=6000)
+            finally:
+                sendr.destroy()
+
+        def pump(recvr, got, rounds):
+            for _ in range(rounds):
+                if not got.empty():
+                    return True
+
+                recvr.recv(timeout=100)
+
+            return not got.empty()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            started.get()
+
+            fast = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'fast', lambda m: fast_got.put(_materialize_parts(m)))
+
+            self.assertTrue(pump(fast, fast_got, 25), 'the early output never got the exit')
+
+            fast.destroy()  # CLOSE, which on its own used to end the wait
+
+            sleep(0.5)  # the slow sibling is still coming up all this time
+
+            slow = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'slow', lambda m: slow_got.put(_materialize_parts(m)))
+
+            try:
+                self.assertTrue(pump(slow, slow_got, 25), 'the slow required output was stranded')
+                self.assertEqual(self.EXIT, slow_got.get())
+
+            finally:
+                slow.destroy()
+
+        finally:
+            sendt.join()
+
 if __name__ == '__main__':
     unittest.main()

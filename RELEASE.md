@@ -17,7 +17,10 @@ OpenFilter Library release notes
   no client was ever confirmed, the sender keeps republishing the exit for `ZMQ_EXIT_LINGER` ms
   (default 2000) each time a request arrives on its PULL socket. A client resends its unanswered
   request every `ZMQ_POLL_TIMEOUT` ms, so anything genuinely there announces itself inside that
-  window, and the message is idempotent so the extra copies cost nothing. Nothing is paid on the
+  window, and the message is idempotent so the extra copies cost nothing. It returns as soon as
+  every client it heard from has closed, and every declared `outputs_required` client is among
+  them, so a fast output on a fan-out cannot end the wait for a slower sibling that has not
+  announced itself yet. Nothing is paid on the
   normal path: a sender that delivered at least one frame has a confirmed client and still
   publishes exactly once, and the last filter in a pipeline has no sender at all.
 
