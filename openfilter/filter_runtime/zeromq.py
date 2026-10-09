@@ -302,10 +302,16 @@ class ZMQSender:
         idempotent, so the extra copies cost nothing.
 
         A client that got the message acts on it and goes away, and going away sends CLOSE, so this returns as soon
-        as every client it has heard from has closed rather than sitting out the full `linger`. The full wait is only
-        paid when nothing ever answers, which is also the only case where there is nothing to be gained by returning
-        early. Incoming messages are not handed to `message_oob` here: this runs inside the sender's own teardown,
-        and a neighbour's exit has nothing left to tell a filter that is already on its way out.
+        as every client it has heard from has closed rather than sitting out the full `linger`. Every declared
+        `outs_required` client has to be among them: on a fan-out, one fast output can connect, take the exit and
+        close while a slower sibling has not announced itself yet, and returning there would strand exactly the
+        client this function exists to reach. Outputs that are NOT declared required cannot be waited for, since
+        their number is unknown, so a fan-out that wants the guarantee has to declare them.
+
+        The full wait is otherwise only paid when nothing ever answers, which is also the only case where there is
+        nothing to be gained by returning early. Incoming messages are not handed to `message_oob` here: this runs
+        inside the sender's own teardown, and a neighbour's exit has nothing left to tell a filter that is already
+        on its way out.
         """
 
         t_end   = time_ns() + linger * 1_000_000
@@ -331,7 +337,7 @@ class ZMQSender:
             for pub in self.pubs:
                 pub.send_multipart(msg_)
 
-            if asked and asked == closed:
+            if asked and asked == closed and set(self.outs_required).issubset(closed):
                 break
 
     def send(self,
