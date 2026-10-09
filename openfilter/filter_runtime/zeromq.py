@@ -108,6 +108,7 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 2000)     # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 4 * 5)        # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up, 4 because 4 parts per message (each part message counts as individual message I guess?)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
@@ -266,7 +267,14 @@ class ZMQSender:
 
         ZMQContext.free()
 
-    def send_oob(self, msg: ZMQMessage):
+    def send_oob(self, msg: ZMQMessage, linger: int = 0):
+        """Publish an out-of-band message to every connected client.
+
+        Args:
+            linger: Milliseconds to keep republishing if no client was ever confirmed, 0 to publish once and return.
+                See `_republish_oob` for why this exists; only the exit message needs it.
+        """
+
         msg_ = [TOPIC_DELIM_B2, json_dumps({'sid': self.server_id, 'mid': MSG_ID_OOB, 'xtra': msg[0]},
             separators=(',', ':')).encode(), *msg[1:]]
 
@@ -275,6 +283,56 @@ class ZMQSender:
 
         for pub in self.pubs:
             pub.send_multipart(msg_)
+
+        if linger and not self.clients:
+            self._republish_oob(msg_, linger)
+
+    def _republish_oob(self, msg_: list[bytes], linger: int):
+        """Republish an already-published OOB message while anyone is still asking for data.
+
+        A PUB socket discards silently while the SUB side of a client is still connecting, and `self.clients` being
+        empty means `send()` never ran, so the HELLO handshake that normally proves the PUB/SUB link never happened
+        either. A single publish from such a sender can therefore reach nobody, which is how a filter that forwards
+        zero frames (an ultra-short clip, a dedup that drops everything) leaves its downstream waiting on a stream
+        that already ended.
+
+        A client resends its unanswered request every ZMQ_POLL_TIMEOUT until it is served, so anything that is
+        genuinely there announces itself on the PULL socket inside this window. Republishing on each request is
+        enough: by the Nth republish the client has had N poll intervals to finish subscribing. The exit message is
+        idempotent, so the extra copies cost nothing.
+
+        A client that got the message acts on it and goes away, and going away sends CLOSE, so this returns as soon
+        as every client it has heard from has closed rather than sitting out the full `linger`. The full wait is only
+        paid when nothing ever answers, which is also the only case where there is nothing to be gained by returning
+        early. Incoming messages are not handed to `message_oob` here: this runs inside the sender's own teardown,
+        and a neighbour's exit has nothing left to tell a filter that is already on its way out.
+        """
+
+        t_end   = time_ns() + linger * 1_000_000
+        asked   = set()  # client_ids heard from during the wait
+        closed  = set()  # of those, the ones that have since sent CLOSE
+
+        while (remaining_ms := (t_end - time_ns()) // 1_000_000) > 0:
+            if not (socks := self.poller.poll(min(ZMQ_POLL_TIMEOUT, remaining_ms))):
+                continue
+
+            for pull, _ in socks:
+                env       = json_loads(pull.recv_multipart()[0].decode())
+                client_id = env['cid']
+
+                asked.add(client_id)
+
+                if env['mid'] == MSG_ID_CLOSE:
+                    closed.add(client_id)
+
+            if DEBUG_ZEROMQ:
+                logger.debug(f'republish msg OOB to unconfirmed client(s): {", ".join(sorted(asked))}')
+
+            for pub in self.pubs:
+                pub.send_multipart(msg_)
+
+            if asked and asked == closed:
+                break
 
     def send(self,
         topicmsgs: dict[str, ZMQMessage] | Callable[[], dict[str, ZMQMessage]],
