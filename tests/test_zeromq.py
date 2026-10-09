@@ -1406,6 +1406,20 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
 
         self.assertLess(elapsed[0], linger // 2, f'sender waited {elapsed[0]} ms of a {linger} ms budget')
 
+    def test_reaches_a_subscriber_that_is_seconds_late(self):
+        """The gap to cover is a downstream still importing, not the subscribe handshake.
+
+        A filter carrying a model reaches its own `init()`, and so creates its receiver, tens of seconds after the
+        container starts. 2.5 s here keeps the suite quick while being orders of magnitude past any handshake.
+        """
+
+        self.LATE_MS, saved = 2500, self.LATE_MS
+
+        try:
+            self.assertEqual(self.EXIT, self._run(linger=10000))
+        finally:
+            self.LATE_MS = saved
+
     def test_a_fast_output_closing_does_not_strand_a_required_slow_one(self):
         """On a fan-out, the first client to take the exit and go away must not end the wait for its siblings.
 
