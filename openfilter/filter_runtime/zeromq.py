@@ -108,7 +108,7 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
-ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 2000)     # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables. Sized for a downstream that is slow to come up, not for the subscribe handshake: a GPU filter spends tens of seconds importing before its receiver exists (measured 20.0 s for openfilter-sam3-detector:0.1.25). Only ever paid in full when nothing connects at all, see ZMQSender._republish_oob
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 4 * 5)        # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up, 4 because 4 parts per message (each part message counts as individual message I guess?)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
@@ -309,9 +309,18 @@ class ZMQSender:
         their number is unknown, so a fan-out that wants the guarantee has to declare them.
 
         The full wait is otherwise only paid when nothing ever answers, which is also the only case where there is
-        nothing to be gained by returning early. Incoming messages are not handed to `message_oob` here: this runs
-        inside the sender's own teardown, and a neighbour's exit has nothing left to tell a filter that is already
-        on its way out.
+        nothing to be gained by returning early, and it is what the default window is sized for. The gap this has
+        to cover is not the subscribe handshake, which is milliseconds: it is a downstream process that has not
+        reached its own `init()` yet, because a filter carrying a model spends tens of seconds on imports before
+        its receiver exists (20.0 s measured for openfilter-sam3-detector:0.1.25, before any model load).
+
+        Waiting here is also the weaker of the two waits openfilter already does. The data path blocks in
+        `Filter._send_frames` until a consumer appears, with `outputs_timeout` defaulting to no limit, so a sender
+        holding one frame waits indefinitely. This races only because it holds none, and a bounded wait for the
+        same consumer is the consistent answer rather than a new policy.
+
+        Incoming messages are not handed to `message_oob` here: this runs inside the sender's own teardown, and a
+        neighbour's exit has nothing left to tell a filter that is already on its way out.
         """
 
         t_end   = time_ns() + linger * 1_000_000

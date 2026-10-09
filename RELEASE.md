@@ -15,9 +15,14 @@ OpenFilter Library release notes
   annotation job on clips under five seconds, where the dedup drops every frame and the job only
   ended on its four-hour timeout, holding a GPU the whole time. `send_exit_msg` now lingers: when
   no client was ever confirmed, the sender keeps republishing the exit for `ZMQ_EXIT_LINGER` ms
-  (default 2000) each time a request arrives on its PULL socket. A client resends its unanswered
+  (default 60000) each time a request arrives on its PULL socket. A client resends its unanswered
   request every `ZMQ_POLL_TIMEOUT` ms, so anything genuinely there announces itself inside that
-  window, and the message is idempotent so the extra copies cost nothing. It returns as soon as
+  window. The window is sized for a downstream that is slow to come up rather than for the
+  subscribe handshake: a filter carrying a model reaches its own `init()`, and so creates its
+  receiver, tens of seconds after the container starts (20.0 s measured for
+  `openfilter-sam3-detector:0.1.25` on imports alone, before any model load). It is also the
+  weaker of the two waits openfilter already does, since the data path blocks in `_send_frames`
+  until a consumer appears with no limit by default, and the message is idempotent so the extra copies cost nothing. It returns as soon as
   every client it heard from has closed, and every declared `outputs_required` client is among
   them, so a fast output on a fan-out cannot end the wait for a slower sibling that has not
   announced itself yet. Nothing is paid on the
