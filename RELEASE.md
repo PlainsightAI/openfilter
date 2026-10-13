@@ -4,6 +4,19 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Fixed
+
+- **`examples/openfilter-heroku-demo`: the compose file pointed at images nobody outside the project
+  could pull.** Both services were pinned to a private registry at `v1.4.25`, and an unauthenticated
+  pull of that registry answers 401, so the demo had never been runnable from a fresh clone - and the
+  two packages it named no longer exist there either, making the reference dead on both counts. They
+  now use the images this project actually publishes, `plainsightai/openfilter-video-in` and
+  `plainsightai/openfilter-webvis`, at the current 1.5.1 release; nothing else changes, the
+  environment contract and the bundled asset mount are untouched. Verified by running the demo as
+  shipped: `video_in` opens the bundled sample at 24 fps and connects to `Webvis`, and `GET /main`
+  serves an MJPEG stream whose frames decode as baseline 960x540 JPEGs, matching the
+  `resize=960x540` in `FILTER_SOURCES`.
+
 ## v1.5.1 - 2026-10-01
 
 ### Fixed
