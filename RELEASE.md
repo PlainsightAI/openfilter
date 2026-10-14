@@ -17,6 +17,18 @@ OpenFilter Library release notes
   serves an MJPEG stream whose frames decode as baseline 960x540 JPEGs, matching the
   `resize=960x540` in `FILTER_SOURCES`.
 
+- **`examples/video-pipeline-demo` and `examples/webvis`: the RTSP demos pointed at a streamer image
+  nobody outside the project could pull.** Eight references across the two examples named an
+  `rtsp-streamer` image in a private registry, which answers 401 to an unauthenticated pull, so these
+  demos had never been runnable from a fresh clone either. That image is now published as
+  `plainsightai/rtsp-streamer`, built from a public repository, multi-architecture
+  (`linux/amd64`, `linux/arm64`), with a signed SPDX SBOM attestation on each release, and the
+  references point there at 1.1.1. Ports, volume mounts and environment are unchanged. Verified by
+  running `examples/webvis/docker-compose.rtsp.yaml` end to end on the published images alone, with
+  no authentication to any private registry: the streamer reaches healthy and satisfies the compose
+  `service_healthy` gate, `vidin` opens `rtsp://rtsp-streamer:8554/stream0` at 24.0 fps and connects
+  to `webvis`, and a five second capture of `GET /main` held 120 JPEG frames at 1280x720.
+
 ### Removed
 
 - **`openfilter.cli.common.DOCKER_IMAGES`, a dead map of filter classes to private registry images.**
