@@ -17,6 +17,18 @@ OpenFilter Library release notes
   serves an MJPEG stream whose frames decode as baseline 960x540 JPEGs, matching the
   `resize=960x540` in `FILTER_SOURCES`.
 
+### Removed
+
+- **`openfilter.cli.common.DOCKER_IMAGES`, a dead map of filter classes to private registry images.**
+  The only occurrence of the name anywhere in the repository was its own definition, so nothing ever
+  read it, yet it shipped inside the published package advertising internal registry coordinates from
+  a public project. It was wrong on its own terms as well: seven of the eight packages it named no
+  longer exist, and the registry answers 401 to an unauthenticated pull, so every entry was unusable
+  from outside the company even while those packages were there. The two commented-out lines beneath
+  it named a JFrog instance that was decommissioned. Nothing replaces it - the filters it listed are
+  distributed publicly as `plainsightai/openfilter-<name>` images, which the examples and the
+  documentation already reference directly.
+
 ## v1.5.1 - 2026-10-01
 
 ### Fixed

@@ -32,19 +32,6 @@ SHORTHAND = {
     # 'OuroboREST':  'filter_rest_wrapper.filter_rest_wrapper.FilterOuroboREST',
 }
 
-DOCKER_IMAGES = {
-    "filter_runtime.filters.image_in.ImageIn": "us-west1-docker.pkg.dev/plainsightai-prod/oci/image_in",
-    "filter_runtime.filters.mqtt_out.MQTTOut": "us-west1-docker.pkg.dev/plainsightai-prod/oci/mqtt_out",
-    "filter_runtime.filters.recorder.Recorder": "us-west1-docker.pkg.dev/plainsightai-prod/oci/recorder",
-    "filter_runtime.filters.rest.REST": "us-west1-docker.pkg.dev/plainsightai-prod/oci/rest",
-    "filter_runtime.filters.util.Util": "us-west1-docker.pkg.dev/plainsightai-prod/oci/util",
-    "filter_runtime.filters.video_in.VideoIn": "us-west1-docker.pkg.dev/plainsightai-prod/oci/video_in",
-    "filter_runtime.filters.video_out.VideoOut": "us-west1-docker.pkg.dev/plainsightai-prod/oci/video_out",
-    "filter_runtime.filters.webvis.Webvis": "us-west1-docker.pkg.dev/plainsightai-prod/oci/webvis",
-    # 'filter_vid2gs.vid2gs.Vid2GS',: 'plainsight.jfrog.io/docker-int/filters/???',
-    # 'filter_rest_wrapper.filter_rest_wrapper.FilterOuroboREST',: 'plainsight.jfrog.io/docker-int/filters/???',
-}
-
 
 def only_mq_addr(addr: str) -> str:
     """just the address part without topics, options or ephemeral indicator, only used for tcp:// and ipc:// so don't
