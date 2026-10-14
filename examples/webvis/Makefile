@@ -160,7 +160,7 @@ rtsp-start: ## Start RTSP streamer
 		-p 8554:8554 \
 		-p 8888:8888 \
 		-v $(PWD)/data:/data/videos \
-		us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+		plainsightai/rtsp-streamer:1.1.1
 	@echo "$(GREEN)RTSP streamer started!$(NC)"
 	@echo "$(YELLOW)RTSP streams available at:$(NC)"
 	@echo "$(YELLOW)  - Stream 0: rtsp://localhost:8554/stream0$(NC)"

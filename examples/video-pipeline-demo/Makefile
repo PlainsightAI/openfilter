@@ -68,7 +68,7 @@ run-gcs-enhanced:
 # Start RTSP streamer with videos from ./data
 rtsp-start:
 	@echo "Starting RTSP streamer with videos from ./data..."
-	@echo "Using published Docker image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0"
+	@echo "Using published Docker image: plainsightai/rtsp-streamer:1.1.1"
 	@docker run -d \
 		--name rtsp-streamer \
 		-p 8554:8554 \
@@ -78,7 +78,7 @@ rtsp-start:
 		-e VIDEO_STREAM_NAME=stream0 \
 		-e RTSP_PORT=8554 \
 		-e WEB_INTERFACE_PORT=8888 \
-		us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+		plainsightai/rtsp-streamer:1.1.1
 	@echo "RTSP streamer started!"
 	@echo "RTSP streams available at:"
 	@echo "  - Stream 0: rtsp://localhost:8554/stream0"

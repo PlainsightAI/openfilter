@@ -69,7 +69,7 @@ The video files should live in [./data](./data)
 3. Set up RTSP Streamer (optional, for RTSP mode):
 ```bash
 # Prerequisites: Docker must be installed and running
-# Uses published image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+# Uses published image: plainsightai/rtsp-streamer:1.1.1
 # The RTSP streamer will automatically use videos from ./data
 # No additional setup required - just run make rtsp-start
 ```
@@ -480,7 +480,7 @@ make rtsp-stop
 **Step 1: Start RTSP Streamer**
 ```bash
 # This will:
-# - Pull the published Docker image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0
+# - Pull the published Docker image: plainsightai/rtsp-streamer:1.1.1
 # - Mount videos from ./data directory
 # - Start RTSP server on port 8554
 # - Start web interface on port 8888
@@ -535,7 +535,7 @@ python main_rtsp.py --mode rtsp --rtsp-urls "rtsp://your-server:8554/stream0,rts
 ### RTSP Configuration
 
 The RTSP streamer uses the following configuration:
-- **Docker Image**: `us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0`
+- **Docker Image**: `plainsightai/rtsp-streamer:1.1.1`
 - **RTSP Port**: 8554
 - **Web Interface Port**: 8888
 - **Video Source**: `./data` directory (mounted as `/data/videos` in container)

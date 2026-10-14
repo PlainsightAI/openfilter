@@ -1,7 +1,7 @@
 services:
 
   rtsp-streamer:
-    image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:v1.1.0
+    image: plainsightai/rtsp-streamer:1.1.1
     environment:
       - RTSP_PORT=8554
       - WEB_PORT=8888
