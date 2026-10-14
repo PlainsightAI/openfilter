@@ -60,7 +60,7 @@ case $choice in
         ;;
     3)
         echo "📡 Starting RTSP streamer with videos from ./data..."
-        echo "Using published Docker image: us-west1-docker.pkg.dev/plainsightai-prod/oci/rtsp-streamer:1.1.0"
+        echo "Using published Docker image: plainsightai/rtsp-streamer:1.1.1"
         make rtsp-start
         echo ""
         echo "✅ RTSP streamer started!"
