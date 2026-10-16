@@ -88,7 +88,7 @@ from opentelemetry.propagate import extract as otel_extract, inject as otel_inje
 from openfilter.observability import tracing as _otel_tracing
 from openfilter.observability.tracing import maybe_start_span
 
-from .utils import JSONType, json_getval, rndstr, once
+from .utils import JSONType, hard_exit_deadline, json_getval, rndstr, once
 
 __all__ = ['is_zeromq_addr', 'ZMQMessage', 'ZMQReceiver', 'ZMQSender']
 
@@ -108,12 +108,14 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
-ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, how long a sender that never confirmed a subscriber keeps republishing its exit message, 0 disables. Sized for a downstream that is slow to come up, not for the subscribe handshake: a GPU filter spends tens of seconds importing before its receiver exists (measured 20.0 s for openfilter-sam3-detector:0.1.25). Only ever paid in full when nothing connects at all, see ZMQSender._republish_oob
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, 0 disables. How long a sender keeps republishing its exit message when the client that needs it may not have it yet. Sized for a downstream that is slow to come up, not for the subscribe handshake: a GPU filter spends tens of seconds importing before its receiver exists (measured 20.0 s for openfilter-sam3-detector:0.1.25). Bounded by SignalStopper's graceful_exit_timeout on the signal path, see ZMQSender._republish_oob
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 4 * 5)        # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up, 4 because 4 parts per message (each part message counts as individual message I guess?)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
 ZMQ_WARN_NEWER        = bool(json_getval((os.getenv('ZMQ_WARN_NEWER') or 'true').lower()))
 ZMQ_WARN_OLDER        = bool(json_getval((os.getenv('ZMQ_WARN_OLDER') or 'true').lower()))
+
+EXIT_LINGER_RESERVE_MS = 1000  # of a stop's graceful budget, left to the teardown steps that follow send_exit_msg
 
 MSG_ID_INITIAL        = 0
 MSG_ID_INITIAL_PREV   = -1
@@ -316,11 +318,16 @@ class ZMQSender:
         client this function exists to reach. Outputs that are NOT declared required cannot be waited for, since
         their number is unknown, so a fan-out that wants the guarantee has to declare them.
 
-        The full wait is otherwise only paid when nothing ever answers, which is also the only case where there is
-        nothing to be gained by returning early, and it is what the default window is sized for. The gap this has
-        to cover is not the subscribe handshake, which is milliseconds: it is a downstream process that has not
-        reached its own `init()` yet, because a filter carrying a model spends tens of seconds on imports before
-        its receiver exists (20.0 s measured for openfilter-sam3-detector:0.1.25, before any model load).
+        The full wait is otherwise only paid when nothing ever answers, which is also the only case where there
+        is nothing to be gained by returning early, and it is what the default window is sized for. The gap it
+        has to cover is not the subscribe handshake, which is milliseconds: it is a downstream process that has
+        not reached its own `init()` yet, because a filter carrying a model spends tens of seconds on imports
+        before its receiver exists (20.0 s measured for openfilter-sam3-detector:0.1.25, before any model load).
+
+        That window is longer than the runtime gives a signalled filter to die in, so when a stop is already in
+        progress the wait is bounded by the hard-kill deadline instead (see `hard_exit_deadline`): it yields in
+        time for the rest of the teardown rather than being SIGKILLed inside itself. The full budget is therefore
+        only ever available on a self-initiated exit.
 
         Waiting here is also the weaker of the two waits openfilter already does. The data path blocks in
         `Filter._send_frames` until a consumer appears, with `outputs_timeout` defaulting to no limit, so a sender
@@ -334,6 +341,13 @@ class ZMQSender:
         t_end   = time_ns() + linger * 1_000_000
         asked   = set()  # client_ids heard from during the wait
         closed  = set()  # of those, the ones that have since sent CLOSE
+
+        # A stop already in progress has a hard SIGKILL behind it (SignalStopper, graceful_exit_timeout=10s by
+        # default), and ZMQ_EXIT_LINGER is 6x that. Waiting past the deadline does not buy the extra seconds, it
+        # just moves the death from "exited" to "killed by signal" and skips fini(), emit_stop() and
+        # stop_logging(). Yield with EXIT_LINGER_RESERVE_MS to spare for those instead.
+        if (deadline := hard_exit_deadline()) is not None:
+            t_end = min(t_end, deadline - EXIT_LINGER_RESERVE_MS * 1_000_000)
 
         while (remaining_ms := (t_end - time_ns()) // 1_000_000) > 0:
             if not (socks := self.poller.poll(min(ZMQ_POLL_TIMEOUT, remaining_ms))):
