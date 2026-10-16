@@ -193,9 +193,13 @@ class MQ:
         """Tell every neighbour this filter is going away.
 
         Upstream is reached over PUSH, which queues, so it needs nothing special. Downstream is reached over PUB,
-        which discards while a subscriber is still connecting, so the send lingers: a filter that forwarded zero
-        frames has never confirmed its subscriber and a single publish can reach nobody, leaving the downstream
-        waiting forever on a stream that already ended. See `ZMQSender._republish_oob`.
+        which discards while a subscriber is still connecting, so the send lingers: a sender that never confirmed
+        the client that needs the message can publish it to nobody, leaving that downstream waiting forever on a
+        stream that already ended. See `ZMQSender.send_oob` for when the linger is entered at all.
+
+        The lingering send goes last. The receiver leg and the metrics leg are non-blocking, while this one can
+        hold for up to ZMQ_EXIT_LINGER ms, so doing it first would delay the two fast neighbours by the whole
+        window and lose their notice entirely if the process is killed mid-linger.
         """
 
         reason = [reason]
@@ -203,11 +207,11 @@ class MQ:
         if self.receiver is not None:
             self.receiver.send_oob(reason)
 
-        if self.sender is not None:
-            self.sender.send_oob(reason, linger=ZMQ_EXIT_LINGER)
-
         if self.metrics_sender is not None:
             self.metrics_sender.send_oob(reason)
+
+        if self.sender is not None:
+            self.sender.send_oob(reason, linger=ZMQ_EXIT_LINGER)
 
     def send(self, frames: dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None, timeout: int | None = None) -> bool:
         def outgoing():
