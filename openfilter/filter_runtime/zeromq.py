@@ -59,6 +59,20 @@ Environment variables:
         if for some reason it is causing a problem or if you want the absolute fastest connections without regard for
         possibly lost initial packets. Set on upstream side, default True.
 
+    ZMQ_EXIT_LINGER: Milliseconds a sender keeps republishing its exit message on its way out, 0 to publish once
+        and return (default 60000). A PUB socket discards silently while a SUB side is still connecting, so a
+        sender that never confirmed the client that needs the message can publish it to nobody and leave that
+        downstream waiting on a stream that already ended. Only entered when no client was ever confirmed, or when
+        an `outs_required` client was never confirmed; a sender with a confirmed client publishes once and returns,
+        whether that client is still connected or has already closed. Within the wait a republish goes out on each
+        request received, and a client resends its unanswered request every ZMQ_POLL_TIMEOUT ms, so that interval
+        is the granularity of the wait and anything genuinely there announces itself inside the window. The window
+        is sized for a downstream that is slow to come up rather than for the subscribe handshake, which is
+        milliseconds: a filter carrying a model reaches its own init(), and so creates its receiver, tens of
+        seconds after its container starts (20.0 s measured for openfilter-sam3-detector:0.1.25 on imports alone).
+        On a signal-initiated stop the wait is bounded by SignalStopper's graceful_exit_timeout (10 s) instead,
+        since that is when the process is SIGKILLed; raising this knob past that only helps a self-initiated exit.
+
     ZMQ_PUSH_HWM: For emergencies.
     ZMQ_PUB_HWM: For emergencies.
 
@@ -108,7 +122,7 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
-ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, 0 disables. How long a sender keeps republishing its exit message when the client that needs it may not have it yet. Sized for a downstream that is slow to come up, not for the subscribe handshake: a GPU filter spends tens of seconds importing before its receiver exists (measured 20.0 s for openfilter-sam3-detector:0.1.25). Bounded by SignalStopper's graceful_exit_timeout on the signal path, see ZMQSender._republish_oob
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, 0 disables. See the module docstring above and ZMQSender._republish_oob; bounded by SignalStopper's graceful_exit_timeout on the signal path
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 4 * 5)        # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up, 4 because 4 parts per message (each part message counts as individual message I guess?)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
