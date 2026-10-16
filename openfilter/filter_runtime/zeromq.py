@@ -201,7 +201,8 @@ class ZMQSender:
         self.message_oob   = (lambda l: None) if message_oob is None else message_oob
         self.balance       = balance
         self.outs_required = outs_required or []
-        self.clients       = {}  # {'full_id': Client, ...}
+        self.clients       = {}  # {'full_id': Client, ...}, pruned on CLOSE and on ZMQ_CONN_TIMEOUT: who is connected right now
+        self.clients_ever  = set()  # {'client_id', ...}, never pruned: who was ever confirmed, which is what the exit linger needs
         self.min_send_id   = MSG_ID_INITIAL
         # bytes pushed on the wire by the last successful send_maybe — read by MQ.send
         # to stamp the outer mq.send hop span's payload_bytes attribute.
@@ -277,8 +278,9 @@ class ZMQSender:
         """Publish an out-of-band message to every connected client.
 
         Args:
-            linger: Milliseconds to keep republishing if no client was ever confirmed, 0 to publish once and return.
-                See `_republish_oob` for why this exists; only the exit message needs it.
+            linger: Milliseconds to keep republishing while a client that needs this message may not have it yet,
+                0 to publish once and return. See `_republish_oob` for why this exists and for which clients those
+                are; only the exit message needs it.
         """
 
         msg_ = [TOPIC_DELIM_B2, json_dumps({'sid': self.server_id, 'mid': MSG_ID_OOB, 'xtra': msg[0]},
@@ -290,17 +292,23 @@ class ZMQSender:
         for pub in self.pubs:
             pub.send_multipart(msg_)
 
-        if linger and not self.clients:
+        # `self.clients` is who is connected right now, not who was ever confirmed: it is pruned on CLOSE and on
+        # ZMQ_CONN_TIMEOUT, so a sender whose downstream closed first reaches here with it empty after delivering
+        # every frame it had, and gating on it waited out the whole window for a client that had already exited.
+        # `clients_ever` is the sticky answer. The second half keeps the fan-out guarantee: a required output that
+        # was never confirmed still needs the exit even when a sibling was.
+        if linger and (not self.clients_ever or not set(self.outs_required).issubset(self.clients_ever)):
             self._republish_oob(msg_, linger)
 
     def _republish_oob(self, msg_: list[bytes], linger: int):
         """Republish an already-published OOB message while anyone is still asking for data.
 
-        A PUB socket discards silently while the SUB side of a client is still connecting, and `self.clients` being
-        empty means `send()` never ran, so the HELLO handshake that normally proves the PUB/SUB link never happened
-        either. A single publish from such a sender can therefore reach nobody, which is how a filter that forwards
-        zero frames (an ultra-short clip, a dedup that drops everything) leaves its downstream waiting on a stream
-        that already ended.
+        A PUB socket discards silently while the SUB side of a client is still connecting, and a sender with an
+        empty `clients_ever` has never completed the HELLO handshake that proves the PUB/SUB link with anybody. A
+        single publish from such a sender can therefore reach nobody, which is how a filter that forwards zero
+        frames (an ultra-short clip, a dedup that drops everything) leaves its downstream waiting on a stream that
+        already ended. `send_oob` gates on `clients_ever` rather than on the live `clients`, which is pruned on
+        CLOSE and on ZMQ_CONN_TIMEOUT and so says nothing about whether a link was ever proven.
 
         A client resends its unanswered request every ZMQ_POLL_TIMEOUT until it is served, so anything that is
         genuinely there announces itself on the PULL socket inside this window. Republishing on each request is
@@ -467,6 +475,8 @@ class ZMQSender:
                 break
 
             clients[full_id] = ZMQSender.Client(client_id, pull, t, True, ephemeral, prev_id)
+
+            self.clients_ever.add(client_id)  # sticky, see send_oob: `clients` is pruned on CLOSE so it cannot answer "was one ever confirmed?"
 
             if prev_id >= msg_id and not ephemeral:  # if requesting higher frame number than we are sending then discard and return
                 self.min_send_id = min_send_id = prev_id + 1
