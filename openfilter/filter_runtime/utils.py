@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from json import loads as json_loads
 from random import choice
 from threading import Condition, Event, Thread
-from time import sleep, time
+from time import sleep, time, time_ns
 from typing import Any, Callable
 
 from numpy import generic as np_generic, ndarray as np_ndarray
@@ -24,7 +24,7 @@ __all__ = [
     'pascal_to_snake_case', 'hide_uri_pwds', 'hide_uri_users_and_pwds', 'levenshteinish_distance', 'once',
     'get_real_module_name', 'get_packages', 'get_package_version',
     'set_env_vars', 'running_in_container', 'setLogLevelGlobal',
-    'adict', 'FnmLock', 'Deque', 'DaemonicTimer', 'SignalStopper'
+    'adict', 'FnmLock', 'Deque', 'DaemonicTimer', 'SignalStopper', 'hard_exit_deadline'
 ]
 
 
@@ -639,6 +639,24 @@ class DaemonicTimer(Thread):
         self.function()
 
 
+_hard_exit_deadline = None  # time_ns() at which SignalStopper will SIGKILL, None while no stop is in progress
+
+
+def hard_exit_deadline() -> int | None:
+    """`time_ns()` at which the graceful-stop timer will SIGKILL this process, or None if no stop is underway.
+
+    `SignalStopper.stop()` arms a `DaemonicTimer(graceful_exit_timeout, kill)` that SIGKILLs this process and every
+    child of it, and the teardown that runs after it (`send_exit_msg`, `fini()`, `emit_stop()`, `stop_logging()`)
+    has that whole budget and no more. Anything on that path that waits for longer than an instant has to know
+    where the budget ends, otherwise it is simply killed inside its own wait and the steps after it never run.
+
+    Publishing it here rather than threading the stopper through keeps it readable from code that has no handle on
+    the stopper, which is all of the runtime below `Filter.run`.
+    """
+
+    return _hard_exit_deadline
+
+
 class SignalStopper:
     """Graceful stop on SIGINT or SIGTERM with optional hard kill if that doesn't exit."""
 
@@ -669,7 +687,10 @@ class SignalStopper:
         if self.stop_evt.is_set():
             return False
 
-        self.kill_time = time() + self.wait
+        global _hard_exit_deadline
+
+        self.kill_time      = time() + self.wait
+        _hard_exit_deadline = time_ns() + int(self.timeout * 1_000_000_000)
 
         self.stop_evt.set()
         DaemonicTimer(self.timeout, lambda: self.kill('TIMEOUT')).start()

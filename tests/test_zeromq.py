@@ -10,6 +10,7 @@ from threading import Event, Thread
 from time import sleep, time_ns
 
 import zmq
+from openfilter.filter_runtime import utils
 from openfilter.filter_runtime.zeromq import ZMQStateRecv, ZMQStateSend, ZMQReceiver, ZMQSender, logger as zeromq_logger
 
 zeromq_logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())))
@@ -1654,6 +1655,46 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
             sendr.destroy()
 
         self.assertLess(elapsed, 500, f'sender whose confirmed client had closed waited {elapsed} ms')
+
+    def test_the_wait_yields_before_the_runtime_hard_kills_the_process(self):
+        """ZMQ_EXIT_LINGER (60 s) is 6x the graceful-stop budget SignalStopper allows (10 s).
+
+        `send_exit_msg` runs before `fini()`, and a stop in progress has a `DaemonicTimer` behind it that SIGKILLs
+        this process and all of its children when that budget runs out. Waiting the full linger there would not buy
+        the extra seconds, it would only turn a clean exit into a death by signal with `fini()`, `emit_stop()` and
+        `stop_logging()` skipped. So the wait is clamped to the deadline, less EXIT_LINGER_RESERVE_MS for them.
+        """
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')  # nothing connected: the linger is entered
+
+        self.assertFalse(sendr.clients_ever)
+
+        try:
+            utils._hard_exit_deadline = time_ns() + 2_500 * 1_000_000  # as SignalStopper.stop() would set it
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            utils._hard_exit_deadline = None
+
+            sendr.destroy()
+
+        self.assertLess(elapsed, 2_500, f'the wait ran past the hard-kill deadline: {elapsed} ms')
+        self.assertGreater(elapsed, 500, f'the wait did not honor the linger up to the deadline: {elapsed} ms')
+
+    def test_no_stop_in_progress_leaves_the_linger_alone(self):
+        """A self-initiated exit has no hard-kill timer behind it, so the full window stays available."""
+
+        self.assertIsNone(utils.hard_exit_deadline())
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')
+
+        try:
+            elapsed = self._elapsed_send_oob(sendr, linger=1_500)
+        finally:
+            sendr.destroy()
+
+        self.assertGreaterEqual(elapsed, 1_400, f'the full linger was not paid: {elapsed} ms')
 
 
 if __name__ == '__main__':
