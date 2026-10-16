@@ -1480,5 +1480,78 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
         finally:
             sendt.join()
 
+    # The gate: the other half of the claim is that nothing is paid on the normal path. These pin it, because the
+    # cost of getting the gate wrong is silent - a correct exit message, delivered, after a full linger window.
+
+    GATE_PORT = 5598
+
+    def _confirmed_sender(self):
+        """A sender and a receiver that have exchanged real frames, so the PUB/SUB link is confirmed."""
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')
+        recvr = ZMQReceiver([(f'tcp://127.0.0.1:{self.GATE_PORT}', [('main', 'main')])], 'client')
+        sent  = 0
+
+        for _ in range(60):
+            if send(sendr, {'main': [None, b'x']}, timeout=50) is not None:
+                sent += 1
+
+            recvr.recv(timeout=50)
+
+            if sent >= 3:
+                break
+
+        self.assertGreaterEqual(sent, 3, 'setup never delivered a frame, so nothing was confirmed')
+        self.assertTrue(sendr.clients, 'setup never confirmed a client')
+
+        return sendr, recvr
+
+    def _elapsed_send_oob(self, sendr, linger):
+        t0 = time_ns()
+
+        sendr.send_oob(self.EXIT, linger=linger)
+
+        return (time_ns() - t0) // 1_000_000
+
+    def test_a_live_confirmed_client_is_not_lingered_for(self):
+        """The handshake already proved the link, so the single publish reaches it and the sender leaves at once."""
+
+        sendr, recvr = self._confirmed_sender()
+
+        try:
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+        finally:
+            recvr.destroy()
+            sendr.destroy()
+
+        self.assertLess(elapsed, 500, f'sender with a live confirmed client waited {elapsed} ms')
+
+    def test_a_confirmed_client_that_has_closed_is_not_lingered_for(self):
+        """`clients` is pruned on CLOSE, so it cannot answer "was one ever confirmed?" - `clients_ever` can.
+
+        A downstream that closed first has already left and does not need the exit message, but gating on the live
+        `clients` dict read that as "nobody was ever there" and waited out the whole window. That is every teardown
+        where the downstream goes first, which includes a downstream erroring out under STOP_EXIT='error'.
+        """
+
+        sendr, recvr = self._confirmed_sender()
+
+        try:
+            recvr.destroy()  # CLOSE
+
+            for _ in range(3):  # pump so the CLOSE is processed and the client is pruned
+                send(sendr, {'main': [None, b'x']}, timeout=50)
+
+            self.assertFalse(sendr.clients, 'the CLOSE was not processed, so this is not testing the pruned case')
+            self.assertTrue(sendr.clients_ever, 'the confirmation was not remembered')
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            sendr.destroy()
+
+        self.assertLess(elapsed, 500, f'sender whose confirmed client had closed waited {elapsed} ms')
+
+
 if __name__ == '__main__':
     unittest.main()
