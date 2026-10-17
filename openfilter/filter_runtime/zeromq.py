@@ -362,14 +362,21 @@ class ZMQSender:
         asked   = set()  # client_ids heard from during the wait
         closed  = set()  # of those, the ones that have since sent CLOSE
 
-        # A stop already in progress has a hard SIGKILL behind it (SignalStopper, graceful_exit_timeout=10s by
-        # default), and ZMQ_EXIT_LINGER is 6x that. Waiting past the deadline does not buy the extra seconds, it
-        # just moves the death from "exited" to "killed by signal" and skips fini(), emit_stop() and
-        # stop_logging(). Yield with EXIT_LINGER_RESERVE_MS to spare for those instead.
-        if (deadline := hard_exit_deadline()) is not None:
-            t_end = min(t_end, deadline - EXIT_LINGER_RESERVE_MS * 1_000_000)
+        while True:
+            # A stop in progress has a hard SIGKILL behind it (SignalStopper, graceful_exit_timeout=10s by default),
+            # and ZMQ_EXIT_LINGER is 6x that. Waiting past the deadline does not buy the extra seconds, it just
+            # moves the death from "exited" to "killed by signal" and skips fini(), emit_stop() and stop_logging().
+            # Yield with EXIT_LINGER_RESERVE_MS to spare for those instead. Re-read every iteration rather than once
+            # at entry: the full window is only available on a self-initiated exit, which is exactly the case where
+            # no deadline is armed when we get here, so the likelier ordering is a SIGTERM landing mid-wait.
+            t_limit = t_end
 
-        while (remaining_ms := (t_end - time_ns()) // 1_000_000) > 0:
+            if (deadline := hard_exit_deadline()) is not None:
+                t_limit = min(t_limit, deadline - EXIT_LINGER_RESERVE_MS * 1_000_000)
+
+            if (remaining_ms := (t_limit - time_ns()) // 1_000_000) <= 0:
+                break
+
             if not (socks := self.poller.poll(min(ZMQ_POLL_TIMEOUT, remaining_ms))):
                 continue
 

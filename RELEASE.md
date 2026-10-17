@@ -119,8 +119,11 @@ OpenFilter Library release notes
   by `ZMQ_EXIT_LINGER`. `SignalStopper` SIGKILLs the process and its children 10 s after SIGINT or
   SIGTERM, and `send_exit_msg` runs before `fini()`, so waiting the full 60 s there would turn a
   clean exit into a death by signal with `fini()`, `emit_stop()` and `stop_logging()` skipped. The
-  linger now yields a second before that deadline instead. Raising `ZMQ_EXIT_LINGER` past 10 s only
-  affects a self-initiated exit.
+  linger now yields a second before that deadline instead. The deadline is re-read on every pass of
+  the wait, so a SIGTERM that lands while the wait is already running is honoured the same as one
+  that arrived before it; that is the ordering a `kubectl delete` or a Ctrl-C actually produces,
+  since the full window is only available on a self-initiated exit. Raising `ZMQ_EXIT_LINGER` past
+  10 s only affects a self-initiated exit.
 
   **Behaviour change for existing pipelines:** a filter that exits without ever confirming a
   downstream now takes up to `ZMQ_EXIT_LINGER` ms longer to exit than it did before, up to 60 s on a
