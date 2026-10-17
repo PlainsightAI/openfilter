@@ -328,6 +328,15 @@ class ZMQSender:
         already ended. `send_oob` gates on `clients_ever` rather than on the live `clients`, which is pruned on
         CLOSE and on ZMQ_CONN_TIMEOUT and so says nothing about whether a link was ever proven.
 
+        The sticky set answers "was this client_id ever confirmed", which is not quite "is the client that needs
+        this message confirmed". `clients` is keyed on client_id + uid and the uid is fresh per receiver
+        instance, while `clients_ever` holds bare client_ids, so a downstream that restarts (crash-loop,
+        OOMKill, rescheduled pod) reads as already confirmed and the gate skips the linger for it: if the
+        upstream exits while that new instance is still connecting, the exit is published once to a SUB that is
+        not subscribed yet and is lost. That narrower case is knowingly out of scope here. Keying the set on the
+        full id does not close it, since the old entry still leaves the set non-empty, and dropping entries on
+        CLOSE is what this gate exists to stop doing.
+
         A client resends its unanswered request every ZMQ_POLL_TIMEOUT until it is served, so anything that is
         genuinely there announces itself on the PULL socket inside this window. Republishing on each request is
         enough: by the Nth republish the client has had N poll intervals to finish subscribing. The exit message is
