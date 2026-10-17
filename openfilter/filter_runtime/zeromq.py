@@ -70,6 +70,8 @@ Environment variables:
         is sized for a downstream that is slow to come up rather than for the subscribe handshake, which is
         milliseconds: a filter carrying a model reaches its own init(), and so creates its receiver, tens of
         seconds after its container starts (20.0 s measured for openfilter-sam3-detector:0.1.25 on imports alone).
+        A doubly-ephemeral ('??') consumer never requests and never closes, so a sender whose only consumer is
+        one of those pays the whole window on every exit; set this to 0 on such a sender if that matters.
         On a signal-initiated stop the wait is bounded by SignalStopper's graceful_exit_timeout (10 s) instead,
         since that is when the process is SIGKILLed; raising this knob past that only helps a self-initiated exit.
 
@@ -338,11 +340,20 @@ class ZMQSender:
         client this function exists to reach. Outputs that are NOT declared required cannot be waited for, since
         their number is unknown, so a fan-out that wants the guarantee has to declare them.
 
-        The full wait is otherwise only paid when nothing ever answers, which is also the only case where there
-        is nothing to be gained by returning early, and it is what the default window is sized for. The gap it
-        has to cover is not the subscribe handshake, which is milliseconds: it is a downstream process that has
-        not reached its own `init()` yet, because a filter carrying a model spends tens of seconds on imports
-        before its receiver exists (20.0 s measured for openfilter-sam3-detector:0.1.25, before any model load).
+        The window is what the wait is otherwise sized for, and the gap it has to cover is not the subscribe
+        handshake, which is milliseconds: it is a downstream process that has not reached its own `init()` yet,
+        because a filter carrying a model spends tens of seconds on imports before its receiver exists (20.0 s
+        measured for openfilter-sam3-detector:0.1.25, before any model load).
+
+        Two cases pay that window in full with a live downstream on the other end, so they are worth naming:
+
+        - A downstream that does not obey a clean exit. OBEY_EXIT is env-configurable and only acts on a
+          propagated clean exit when it includes `clean` (`filter.py:2068`). Such a client keeps requesting for
+          the whole window and never sends CLOSE, so `asked != closed` throughout and the wait runs to the end.
+        - A doubly-ephemeral (`??`) consumer. `send_push` does nothing at all for `ephemeral >= 2`, so that
+          receiver never sends a request and never sends CLOSE. A sender whose only consumer is one of those
+          has an empty `clients_ever`, enters the wait, and pays the full window on every exit, always. The
+          metrics leg is unaffected: `mq.py` passes no `linger` there, so those `??` collectors cost nothing.
 
         That window is longer than the runtime gives a signalled filter to die in, so when a stop is already in
         progress the wait is bounded by the hard-kill deadline instead (see `hard_exit_deadline`): it yields in

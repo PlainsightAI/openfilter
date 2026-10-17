@@ -128,7 +128,9 @@ OpenFilter Library release notes
   **Behaviour change for existing pipelines:** a filter that exits without ever confirming a
   downstream now takes up to `ZMQ_EXIT_LINGER` ms longer to exit than it did before, up to 60 s on a
   self-initiated exit and up to 9 s on a signalled one. That is the wait that fixes the hang. A
-  pipeline that wants the old behaviour sets `ZMQ_EXIT_LINGER=0`.
+  sender whose only consumer is a doubly-ephemeral (`??`) channel pays that window on every exit,
+  since such a consumer never requests and never closes, so it is never confirmed and never ends the
+  wait early. A pipeline that wants the old behaviour sets `ZMQ_EXIT_LINGER=0`.
 
 ### Removed
 
