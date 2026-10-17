@@ -33,7 +33,7 @@ from .frame import Frame
 from .metrics import Metrics
 from .shm_transport import SHMAttachCache, SHMPool, shm_enabled
 from .utils import JSONType, json_getval, rndstr
-from .zeromq import ZMQ_POLL_TIMEOUT as POLL_TIMEOUT_MS, is_zeromq_addr as is_mq_addr, ZMQMessage, ZMQSender, ZMQReceiver
+from .zeromq import ZMQ_EXIT_LINGER, ZMQ_POLL_TIMEOUT as POLL_TIMEOUT_MS, is_zeromq_addr as is_mq_addr, ZMQMessage, ZMQSender, ZMQReceiver
 
 __all__ = ['is_mq_addr', 'MQ', 'MQSender', 'MQReceiver']
 
@@ -190,16 +190,28 @@ class MQ:
             self.metrics_sender = None
 
     def send_exit_msg(self, reason: str = ''):
+        """Tell every neighbour this filter is going away.
+
+        Upstream is reached over PUSH, which queues, so it needs nothing special. Downstream is reached over PUB,
+        which discards while a subscriber is still connecting, so the send lingers: a sender that never confirmed
+        the client that needs the message can publish it to nobody, leaving that downstream waiting forever on a
+        stream that already ended. See `ZMQSender.send_oob` for when the linger is entered at all.
+
+        The lingering send goes last. The receiver leg and the metrics leg are non-blocking, while this one can
+        hold for up to ZMQ_EXIT_LINGER ms, so doing it first would delay the two fast neighbours by the whole
+        window and lose their notice entirely if the process is killed mid-linger.
+        """
+
         reason = [reason]
 
         if self.receiver is not None:
             self.receiver.send_oob(reason)
 
-        if self.sender is not None:
-            self.sender.send_oob(reason)
-
         if self.metrics_sender is not None:
             self.metrics_sender.send_oob(reason)
+
+        if self.sender is not None:
+            self.sender.send_oob(reason, linger=ZMQ_EXIT_LINGER)
 
     def send(self, frames: dict[str, Frame] | Callable[[], dict[str, Frame] | None] | None, timeout: int | None = None) -> bool:
         def outgoing():
