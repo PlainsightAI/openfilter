@@ -652,6 +652,13 @@ def hard_exit_deadline() -> int | None:
 
     Publishing it here rather than threading the stopper through keeps it readable from code that has no handle on
     the stopper, which is all of the runtime below `Filter.run`.
+
+    Read it on each pass of a wait rather than once at entry: a stop that begins while a wait is already running
+    is the likelier ordering, and a value read before the signal landed stays stale for the rest of that wait.
+
+    Never cleared once set. A stop always ends in process death, so nothing in production outlives it, but within
+    one process every later read stays clamped: an in-process test that triggers a real `SignalStopper.stop()` has
+    to reset it for anything after it that expects an unclamped wait.
     """
 
     return _hard_exit_deadline

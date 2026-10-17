@@ -1579,6 +1579,43 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
         self.assertLess(elapsed, 2_500, f'the wait ran past the hard-kill deadline: {elapsed} ms')
         self.assertGreater(elapsed, 500, f'the wait did not honor the linger up to the deadline: {elapsed} ms')
 
+    def test_a_stop_that_begins_during_the_wait_is_honored(self):
+        """The deadline is armed after the wait is already running, which is the likelier ordering of the two.
+
+        The whole window is only available on a self-initiated exit, so entering the linger with no deadline armed
+        is the normal case: a `kubectl delete` / scale-down SIGTERM, or a Ctrl-C, lands a moment later and arms it
+        from under us. Reading `hard_exit_deadline()` once at entry missed exactly that, and the process was
+        SIGKILLed inside `send_oob` with `fini()`, `emit_stop()` and `stop_logging()` skipped.
+        """
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')  # nothing connected: the linger is entered
+
+        self.assertFalse(sendr.clients_ever)
+        self.assertIsNone(utils.hard_exit_deadline())
+
+        def arm_deadline():  # as SignalStopper.stop() would, 200 ms into the wait
+            sleep(0.2)
+
+            utils._hard_exit_deadline = time_ns() + 2_500 * 1_000_000
+
+        armer = Thread(target=arm_deadline, daemon=True)
+
+        try:
+            armer.start()
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            armer.join(5)
+
+            utils._hard_exit_deadline = None
+
+            sendr.destroy()
+
+        # armed at ~200 ms for 2_500 ms, less EXIT_LINGER_RESERVE_MS, so the wait should end at ~1_700 ms
+        self.assertLess(elapsed, 2_500, f'the mid-wait deadline was never consulted: {elapsed} ms')
+        self.assertGreater(elapsed, 500, f'the wait ended before the deadline it was clamped to: {elapsed} ms')
+
     def test_no_stop_in_progress_leaves_the_linger_alone(self):
         """A self-initiated exit has no hard-kill timer behind it, so the full window stays available."""
 
