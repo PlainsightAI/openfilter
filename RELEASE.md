@@ -6,6 +6,30 @@ OpenFilter Library release notes
 
 ### Fixed
 
+- **A filter's usage-event thread could abort the interpreter at exit, turning a
+  successful run into a non-zero one.** The event is reported from a daemon thread, and
+  its only write is the warning it logs when the POST fails. A daemon thread inside a
+  stderr write when the interpreter begins finalizing is a *fatal* error rather than a
+  catchable one - CPython aborts with
+  `Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedWriter name='<stderr>'> at interpreter shutdown`
+  - so the process exited non-zero with its real work already finished. A test suite is
+  the worst case, constructing a filter per test and then exiting seconds later with
+  POSTs still in flight: `filter-tracking-reid`'s release ran 41 passing tests and still
+  failed with exit code 2, on 3.10 and then on 3.12, which is what made it reproducible
+  enough to find.
+
+  An `atexit` hook now closes that write before finalization. It takes the same lock the
+  warning is written under, so it cannot flip the flag mid-write, and once the flag is
+  set no further write can start - by the time the hook returns, no thread is inside a
+  stderr write and none can enter one. Nothing is joined on purpose: a thread still
+  waiting on the POST stays a daemon and is killed exactly as before, so exit costs
+  nothing. Paying the startup cost back at shutdown would defeat the reason the thread
+  exists.
+
+  Workflows that set `DO_NOT_TRACK` were already unaffected, since no event means no
+  thread. That is how CI was unblocked at the time, and it was a workaround: the race was
+  still there for anyone running a filter's tests outside those workflows.
+
 - **`examples/openfilter-heroku-demo`: the compose file pointed at images nobody outside the project
   could pull.** Both services were pinned to a private registry at `v1.4.25`, and an unauthenticated
   pull of that registry answers 401, so the demo had never been runnable from a fresh clone - and the
