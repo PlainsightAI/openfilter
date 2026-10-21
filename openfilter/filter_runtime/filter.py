@@ -1,3 +1,4 @@
+import atexit
 import concurrent.futures
 import contextlib
 import json
@@ -137,12 +138,53 @@ def _usage_analytics_disabled() -> bool:
     ).lower() in ("1", "true")
 
 
+# A daemon thread that is inside a stderr write when the interpreter begins
+# finalizing is a fatal error rather than a catchable one. CPython aborts with
+#
+#   Fatal Python error: _enter_buffered_busy: could not acquire lock for
+#   <_io.BufferedWriter name='<stderr>'> at interpreter shutdown
+#
+# and the process exits non-zero with its real work already finished. A test
+# suite is the worst case: it constructs a filter per test, so each one starts a
+# reporter, and the process exits seconds later while POSTs are still in flight.
+# That is how a green suite produced exit 2 in filter-tracking-reid's release.
+#
+# The reporter's only write is the warning below, so serializing that write
+# against interpreter shutdown closes it. The lock does both halves: the
+# reporter holds it across the write, so the atexit hook cannot set the flag
+# mid-write; and once the flag is set no further write can start. By the time
+# the hook returns, no thread is inside a stderr write and none can enter one.
+_usage_log_lock = threading.Lock()
+_usage_logging_stopped = False
+
+
+def _stop_usage_logging() -> None:
+    """Close the reporter's stderr writes before the interpreter finalizes.
+
+    Runs from atexit, while stdio is still alive. Nothing is joined on purpose:
+    a thread still waiting on the POST stays a daemon and is killed exactly as
+    before, but it can no longer reach the warning on the way out. So exit costs
+    nothing, which is the point — the thread exists to keep a stalled endpoint
+    off the startup path, and paying that cost back at shutdown would be no
+    better.
+    """
+    global _usage_logging_stopped
+    with _usage_log_lock:
+        _usage_logging_stopped = True
+
+
+atexit.register(_stop_usage_logging)
+
+
 def _report_filter_initialized(filter_name: str) -> None:
     """Send one usage event. Runs on a daemon thread; never raises."""
     try:
         scarf_elogger.log_event(properties={"filter_initialized": filter_name})
     except Exception as e:
-        logger.warning(f"Failed to log Scarf event: {e}")
+        with _usage_log_lock:
+            if _usage_logging_stopped:
+                return
+            logger.warning(f"Failed to log Scarf event: {e}")
 
 LOG_LEVEL = (os.getenv("LOG_LEVEL") or "INFO").upper()
 LOG_FORMAT = os.getenv("LOG_FORMAT") or None
