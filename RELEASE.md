@@ -53,6 +53,52 @@ OpenFilter Library release notes
   `service_healthy` gate, `vidin` opens `rtsp://rtsp-streamer:8554/stream0` at 24.0 fps and connects
   to `webvis`, and a five second capture of `GET /main` held 120 JPEG frames at 1280x720.
 
+- **A filter that forwards zero frames no longer leaves its downstream waiting forever.** The exit
+  message a filter publishes on its way out is how the downstream learns the stream ended, and it
+  goes over a PUB socket, which discards silently while the SUB side of a client is still
+  connecting. A filter that never called `send()` has also never run the HELLO handshake that
+  proves the link, so its single publish can reach nobody: the downstream then sits in `recv()`
+  for as long as the pipeline is allowed to live. Reported from a `video-in -> frame-dedup -> sam3`
+  annotation job on clips under five seconds, where the dedup drops every frame and the job only
+  ended on its four-hour timeout, holding a GPU the whole time.
+
+  `send_exit_msg` now lingers: the sender keeps republishing the exit for `ZMQ_EXIT_LINGER` ms
+  (default 60000, 0 disables) each time a request arrives on its PULL socket. A client resends its
+  unanswered request every `ZMQ_POLL_TIMEOUT` ms, so anything genuinely there announces itself
+  inside that window, and the message is idempotent so the extra copies cost nothing. The window is
+  sized for a downstream that is slow to come up rather than for the subscribe handshake: a filter
+  carrying a model reaches its own `init()`, and so creates its receiver, tens of seconds after the
+  container starts (20.0 s measured for `openfilter-sam3-detector:0.1.25` on imports alone, before
+  any model load). It is also the weaker of the two waits openfilter already does, since the data
+  path blocks in `_send_frames` until a consumer appears with no limit by default.
+
+  The wait returns as soon as every client it heard from has closed, and every declared
+  `outputs_required` client is among them, so a fast output on a fan-out cannot end the wait for a
+  slower sibling that has not announced itself yet. Outputs that are not declared required cannot
+  be waited for, since their number is unknown.
+
+  Nothing is paid on the normal path. The linger is entered only when no client was ever confirmed,
+  or when a declared `outputs_required` client was never confirmed; a sender with a confirmed client
+  publishes exactly once and returns, whether that client is still connected or has already closed.
+  The last filter in a pipeline has no sender at all.
+
+  On a signal-initiated stop the wait is bounded by the runtime's graceful-exit budget rather than
+  by `ZMQ_EXIT_LINGER`. `SignalStopper` SIGKILLs the process and its children 10 s after SIGINT or
+  SIGTERM, and `send_exit_msg` runs before `fini()`, so waiting the full 60 s there would turn a
+  clean exit into a death by signal with `fini()`, `emit_stop()` and `stop_logging()` skipped. The
+  linger now yields a second before that deadline instead. The deadline is re-read on every pass of
+  the wait, so a SIGTERM that lands while the wait is already running is honoured the same as one
+  that arrived before it; that is the ordering a `kubectl delete` or a Ctrl-C actually produces,
+  since the full window is only available on a self-initiated exit. Raising `ZMQ_EXIT_LINGER` past
+  10 s only affects a self-initiated exit.
+
+  **Behaviour change for existing pipelines:** a filter that exits without ever confirming a
+  downstream now takes up to `ZMQ_EXIT_LINGER` ms longer to exit than it did before, up to 60 s on a
+  self-initiated exit and up to 9 s on a signalled one. That is the wait that fixes the hang. A
+  sender whose only consumer is a doubly-ephemeral (`??`) channel pays that window on every exit,
+  since such a consumer never requests and never closes, so it is never confirmed and never ends the
+  wait early. A pipeline that wants the old behaviour sets `ZMQ_EXIT_LINGER=0`.
+
 ### Removed
 
 - **`openfilter.cli.common.DOCKER_IMAGES`, a dead map of filter classes to private registry images.**

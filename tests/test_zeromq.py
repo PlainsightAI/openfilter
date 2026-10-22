@@ -7,9 +7,10 @@ import unittest
 from queue import Queue
 from random import randint
 from threading import Thread
-from time import sleep
+from time import sleep, time_ns
 
 import zmq
+from openfilter.filter_runtime import utils
 from openfilter.filter_runtime.zeromq import ZMQStateRecv, ZMQStateSend, ZMQReceiver, ZMQSender, logger as zeromq_logger
 
 zeromq_logger.setLevel(int(getattr(logging, (os.getenv('LOG_LEVEL') or 'CRITICAL').upper())))
@@ -1281,6 +1282,353 @@ class TestZeroMQIPC(TestZeroMQTCP):
 
     #     finally:
     #         sendr.destroy()
+
+
+class TestExitMsgLateSubscriber(unittest.TestCase):
+    """A sender that never sent data still has to reach a subscriber that is still connecting.
+
+    `MQ.send_exit_msg` is how a filter tells its downstream the stream ended, and it goes out on a PUB socket, which
+    discards silently while the SUB side is still connecting. A filter that forwards zero frames (an ultra-short clip,
+    a dedup that drops every frame) never runs the send() handshake that would prove the link, so a single publish can
+    reach nobody and the downstream waits forever.
+    """
+
+    PORT    = 5597
+    ADDR    = f'tcp://127.0.0.1:{PORT}'
+    EXIT    = ['clean']
+    LATE_MS = 400  # how long after the publish the subscriber shows up
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, linger):
+        """Publish an OOB before any subscriber exists, bring one up `LATE_MS` later, return what it received."""
+
+        queue_oob = Queue()
+        ready     = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server')
+
+            try:
+                ready.put(None)
+                sendr.send_oob(self.EXIT, linger=linger)  # no send() first: nothing is connected and nothing is confirmed
+            finally:
+                sendr.destroy()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')  # starts the zmq.Context in this thread, as the other tests here do
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            ready.get()
+
+            sleep(self.LATE_MS / 1000)
+
+            recvr = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'late',
+                lambda m: queue_oob.put(_materialize_parts(m)))
+
+            try:
+                deadline = 2.5
+
+                while deadline > 0 and queue_oob.empty():
+                    recvr.recv(timeout=100)
+
+                    deadline -= 0.1
+
+                return None if queue_oob.empty() else queue_oob.get()
+
+            finally:
+                recvr.destroy()
+
+        finally:
+            sendt.join()
+
+    def test_exit_msg_reaches_a_late_subscriber(self):
+        self.assertEqual(self.EXIT, self._run(linger=2000))
+
+    def test_without_linger_it_is_lost(self):
+        """The bug, pinned: one publish into a socket nobody has subscribed to yet goes nowhere."""
+
+        self.assertIsNone(self._run(linger=0))
+
+    def test_returns_when_the_subscriber_closes(self):
+        """The wait is not a fixed cost: once the client has the message and goes away, the sender stops waiting."""
+
+        linger   = 6000
+        elapsed  = []
+        queue    = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server')
+
+            try:
+                queue.put(None)
+
+                t0 = time_ns()
+
+                sendr.send_oob(self.EXIT, linger=linger)
+
+                elapsed.append((time_ns() - t0) // 1_000_000)
+
+            finally:
+                sendr.destroy()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            queue.get()
+
+            sleep(self.LATE_MS / 1000)
+
+            got   = Queue()
+            recvr = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'late', lambda m: got.put(_materialize_parts(m)))
+
+            for _ in range(25):
+                if not got.empty():
+                    break
+
+                recvr.recv(timeout=100)
+
+            recvr.destroy()  # what a filter does once it has honored the exit, and what releases the sender
+
+            self.assertFalse(got.empty())
+
+        finally:
+            sendt.join()
+
+        self.assertLess(elapsed[0], linger // 2, f'sender waited {elapsed[0]} ms of a {linger} ms budget')
+
+    def test_reaches_a_subscriber_that_is_seconds_late(self):
+        """The gap to cover is a downstream still importing, not the subscribe handshake.
+
+        A filter carrying a model reaches its own `init()`, and so creates its receiver, tens of seconds after the
+        container starts. 2.5 s here keeps the suite quick while being orders of magnitude past any handshake.
+        """
+
+        self.LATE_MS, saved = 2500, self.LATE_MS
+
+        try:
+            self.assertEqual(self.EXIT, self._run(linger=10000))
+        finally:
+            self.LATE_MS = saved
+
+    def test_a_fast_output_closing_does_not_strand_a_required_slow_one(self):
+        """On a fan-out, the first client to take the exit and go away must not end the wait for its siblings.
+
+        A `??`-free tee declares its outputs with `outs_required`. One of them can connect, receive the exit and
+        close while the other is still coming up, and returning at that point would strand the slow one on exactly
+        the hang this function exists to prevent.
+        """
+
+        fast_got = Queue()
+        slow_got = Queue()
+        started  = Queue()
+
+        def sender_thread():
+            sendr = ZMQSender([f'tcp://*:{self.PORT}'], 'server', outs_required=['fast', 'slow'])
+
+            try:
+                started.put(None)
+                sendr.send_oob(self.EXIT, linger=6000)
+            finally:
+                sendr.destroy()
+
+        def pump(recvr, got, rounds):
+            for _ in range(rounds):
+                if not got.empty():
+                    return True
+
+                recvr.recv(timeout=100)
+
+            return not got.empty()
+
+        recvr = ZMQReceiver(self.ADDR, 'ctx')
+        recvr.destroy()
+
+        sendt = Thread(target=sender_thread)
+
+        sendt.start()
+
+        try:
+            started.get()
+
+            fast = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'fast', lambda m: fast_got.put(_materialize_parts(m)))
+
+            self.assertTrue(pump(fast, fast_got, 25), 'the early output never got the exit')
+
+            fast.destroy()  # CLOSE, which on its own used to end the wait
+
+            sleep(0.5)  # the slow sibling is still coming up all this time
+
+            slow = ZMQReceiver([(self.ADDR, [('main', 'main')])], 'slow', lambda m: slow_got.put(_materialize_parts(m)))
+
+            try:
+                self.assertTrue(pump(slow, slow_got, 25), 'the slow required output was stranded')
+                self.assertEqual(self.EXIT, slow_got.get())
+
+            finally:
+                slow.destroy()
+
+        finally:
+            sendt.join()
+
+    # The gate: the other half of the claim is that nothing is paid on the normal path. These pin it, because the
+    # cost of getting the gate wrong is silent - a correct exit message, delivered, after a full linger window.
+
+    GATE_PORT = 5598
+
+    def _confirmed_sender(self):
+        """A sender and a receiver that have exchanged real frames, so the PUB/SUB link is confirmed."""
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')
+        recvr = ZMQReceiver([(f'tcp://127.0.0.1:{self.GATE_PORT}', [('main', 'main')])], 'client')
+        sent  = 0
+
+        for _ in range(60):
+            if send(sendr, {'main': [None, b'x']}, timeout=50) is not None:
+                sent += 1
+
+            recvr.recv(timeout=50)
+
+            if sent >= 3:
+                break
+
+        self.assertGreaterEqual(sent, 3, 'setup never delivered a frame, so nothing was confirmed')
+        self.assertTrue(sendr.clients, 'setup never confirmed a client')
+
+        return sendr, recvr
+
+    def _elapsed_send_oob(self, sendr, linger):
+        t0 = time_ns()
+
+        sendr.send_oob(self.EXIT, linger=linger)
+
+        return (time_ns() - t0) // 1_000_000
+
+    def test_a_live_confirmed_client_is_not_lingered_for(self):
+        """The handshake already proved the link, so the single publish reaches it and the sender leaves at once."""
+
+        sendr, recvr = self._confirmed_sender()
+
+        try:
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+        finally:
+            recvr.destroy()
+            sendr.destroy()
+
+        self.assertLess(elapsed, 500, f'sender with a live confirmed client waited {elapsed} ms')
+
+    def test_a_confirmed_client_that_has_closed_is_not_lingered_for(self):
+        """`clients` is pruned on CLOSE, so it cannot answer "was one ever confirmed?" - `clients_ever` can.
+
+        A downstream that closed first has already left and does not need the exit message, but gating on the live
+        `clients` dict read that as "nobody was ever there" and waited out the whole window. That is every teardown
+        where the downstream goes first, which includes a downstream erroring out under STOP_EXIT='error'.
+        """
+
+        sendr, recvr = self._confirmed_sender()
+
+        try:
+            recvr.destroy()  # CLOSE
+
+            for _ in range(3):  # pump so the CLOSE is processed and the client is pruned
+                send(sendr, {'main': [None, b'x']}, timeout=50)
+
+            self.assertFalse(sendr.clients, 'the CLOSE was not processed, so this is not testing the pruned case')
+            self.assertTrue(sendr.clients_ever, 'the confirmation was not remembered')
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            sendr.destroy()
+
+        self.assertLess(elapsed, 500, f'sender whose confirmed client had closed waited {elapsed} ms')
+
+    def test_the_wait_yields_before_the_runtime_hard_kills_the_process(self):
+        """ZMQ_EXIT_LINGER (60 s) is 6x the graceful-stop budget SignalStopper allows (10 s).
+
+        `send_exit_msg` runs before `fini()`, and a stop in progress has a `DaemonicTimer` behind it that SIGKILLs
+        this process and all of its children when that budget runs out. Waiting the full linger there would not buy
+        the extra seconds, it would only turn a clean exit into a death by signal with `fini()`, `emit_stop()` and
+        `stop_logging()` skipped. So the wait is clamped to the deadline, less EXIT_LINGER_RESERVE_MS for them.
+        """
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')  # nothing connected: the linger is entered
+
+        self.assertFalse(sendr.clients_ever)
+
+        try:
+            utils._hard_exit_deadline = time_ns() + 2_500 * 1_000_000  # as SignalStopper.stop() would set it
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            utils._hard_exit_deadline = None
+
+            sendr.destroy()
+
+        self.assertLess(elapsed, 2_500, f'the wait ran past the hard-kill deadline: {elapsed} ms')
+        self.assertGreater(elapsed, 500, f'the wait did not honor the linger up to the deadline: {elapsed} ms')
+
+    def test_a_stop_that_begins_during_the_wait_is_honored(self):
+        """The deadline is armed after the wait is already running, which is the likelier ordering of the two.
+
+        The whole window is only available on a self-initiated exit, so entering the linger with no deadline armed
+        is the normal case: a `kubectl delete` / scale-down SIGTERM, or a Ctrl-C, lands a moment later and arms it
+        from under us. Reading `hard_exit_deadline()` once at entry missed exactly that, and the process was
+        SIGKILLed inside `send_oob` with `fini()`, `emit_stop()` and `stop_logging()` skipped.
+        """
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')  # nothing connected: the linger is entered
+
+        self.assertFalse(sendr.clients_ever)
+        self.assertIsNone(utils.hard_exit_deadline())
+
+        def arm_deadline():  # as SignalStopper.stop() would, 200 ms into the wait
+            sleep(0.2)
+
+            utils._hard_exit_deadline = time_ns() + 2_500 * 1_000_000
+
+        armer = Thread(target=arm_deadline, daemon=True)
+
+        try:
+            armer.start()
+
+            elapsed = self._elapsed_send_oob(sendr, linger=60_000)
+
+        finally:
+            armer.join(5)
+
+            utils._hard_exit_deadline = None
+
+            sendr.destroy()
+
+        # armed at ~200 ms for 2_500 ms, less EXIT_LINGER_RESERVE_MS, so the wait should end at ~1_700 ms
+        self.assertLess(elapsed, 2_500, f'the mid-wait deadline was never consulted: {elapsed} ms')
+        self.assertGreater(elapsed, 500, f'the wait ended before the deadline it was clamped to: {elapsed} ms')
+
+    def test_no_stop_in_progress_leaves_the_linger_alone(self):
+        """A self-initiated exit has no hard-kill timer behind it, so the full window stays available."""
+
+        self.assertIsNone(utils.hard_exit_deadline())
+
+        sendr = ZMQSender([f'tcp://*:{self.GATE_PORT}'], 'server')
+
+        try:
+            elapsed = self._elapsed_send_oob(sendr, linger=1_500)
+        finally:
+            sendr.destroy()
+
+        self.assertGreaterEqual(elapsed, 1_400, f'the full linger was not paid: {elapsed} ms')
 
 
 if __name__ == '__main__':
