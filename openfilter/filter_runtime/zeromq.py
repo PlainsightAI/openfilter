@@ -62,6 +62,11 @@ Environment variables:
     ZMQ_PUSH_HWM: For emergencies.
     ZMQ_PUB_HWM: For emergencies.
 
+    ZMQ_SUB_HWM: Messages a subscriber will queue before its source starts dropping, default 8. On a receiver
+        that joins two sources this is the only thing bounding how stale a delivered frame can be, see the
+        constant for why. It has to stay above the number of topics a source publishes per frame, since each
+        topic is published as its own message. The libzmq default it replaces is 1000.
+
     ZMQ_LOW_LATENCY: If 'true'ish then favor lower latency over higher throughput. Will only help in some cases with
         the right properties. Really on things immediately downstream of VideoIn.
 
@@ -110,6 +115,7 @@ ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milli
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 4 * 5)        # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up, 4 because 4 parts per message (each part message counts as individual message I guess?)
+ZMQ_SUB_HWM           = int(os.getenv('ZMQ_SUB_HWM') or 4 * 2)        # will start dropping after this many messages are backed up on the receive side, and on a receiver that joins two sources this is the ONLY cap: it holds one barrier for all of them and the only discard path is sender-side and can only fire on the source BEHIND that barrier, so the source AHEAD publishes into a socket nobody reads and the frames it eventually delivers are as old as this queue is deep. libzmq defaults it to 1000, which at 5 fps is near a minute of stale frames. Unlike what the line above guesses, the unit is whole multipart messages and not parts: a SUB at 8 buffers 8 four-part frames before its PUB starts dropping, measured, independent of transport and payload size. So this is 2 frames of a 4 topic source, one being worked on and one next, and it has to stay above the topic fan-out of any source because a sender publishes one message per topic per frame
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
 ZMQ_WARN_NEWER        = bool(json_getval((os.getenv('ZMQ_WARN_NEWER') or 'true').lower()))
 ZMQ_WARN_OLDER        = bool(json_getval((os.getenv('ZMQ_WARN_OLDER') or 'true').lower()))
@@ -589,6 +595,7 @@ class ZMQReceiver:
                 push.connect(push_addr)
 
             # sub.setsockopt(zmq.LINGER, 0)
+            sub.setsockopt(zmq.RCVHWM, ZMQ_SUB_HWM)  # before connect, a HWM set after one has no effect on the pipe already created for it
             sub.setsockopt(zmq.RECONNECT_IVL, ZMQ_RECONNECT_IVL)
             sub.setsockopt(zmq.RECONNECT_IVL_MAX, ZMQ_RECONNECT_IVL_MAX)
             sub.connect(sub_addr)
