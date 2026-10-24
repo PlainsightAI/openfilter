@@ -793,6 +793,13 @@ class Filter:
         ZMQ_PUB_HWM:
             For emergencies.
 
+        ZMQ_SUB_HWM:
+            Messages a subscriber will queue on its side, default 8. On a receiver that joins two sources this
+            is the only cap that applies to the source nobody is draining, since the only other discard path is
+            sender-side and can only fire on the source that is behind. It has to stay above the number of
+            topics a source publishes per frame, since each topic is published as its own message. The libzmq
+            default it replaces is 1000. Set on the downstream side.
+
         ZMQ_LOW_LATENCY:
             If 'true'ish then favor lower latency over higher throughput. Will only help in some cases with the right
             properties. Really on things immediately downstream of VideoIn.

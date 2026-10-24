@@ -6,8 +6,8 @@ import os
 import unittest
 from queue import Queue
 from random import randint
-from threading import Thread
-from time import sleep
+from threading import Event, Thread
+from time import sleep, time_ns
 
 import zmq
 from openfilter.filter_runtime.zeromq import ZMQStateRecv, ZMQStateSend, ZMQReceiver, ZMQSender, logger as zeromq_logger
@@ -1281,6 +1281,109 @@ class TestZeroMQIPC(TestZeroMQTCP):
 
     #     finally:
     #         sendr.destroy()
+
+
+class TestSubRecvQueueCap(unittest.TestCase):
+    """A receiver joining two sources holds one barrier for all of them, and the only discard path is sender-side
+    and can only fire on the source that is BEHIND that barrier. The source that is AHEAD is never drained, so the
+    only thing bounding how stale its delivered frames get is the subscriber's receive queue. With libzmq's default
+    RCVHWM of 1000 that bound is hundreds of frames; ZMQ_SUB_HWM is what makes it a couple.
+
+    `test_join` above drives both senders in lockstep, so it never produces the skew this needs. Here the two
+    senders run at 40 ms and 46 ms, a 15% difference, which is enough for the leading source to saturate its
+    receive queue inside the measurement window.
+
+    IPC rather than TCP on purpose: a loopback TCP connection autotunes its kernel socket buffers into the
+    megabytes, and those buffers are a store that no zmq high water mark accounts for, which turns the measurement
+    into one about the host's network stack. How much they hide depends on frame size, since they are bounded in
+    bytes and the queue under test is bounded in messages: the same run over TCP with these 64 KB frames shows
+    nothing (1666 ms vs 1633 ms p95, about 40 frames of kernel buffer), and with 256 KB frames shows 2123 ms vs
+    920 ms. Real pipelines carry frames far larger than either.
+    """
+
+    SERVER1 = 'ipc://ipc_5560'
+    SERVER2 = 'ipc://ipc_5562'
+    CLIENT1 = 'ipc://ipc_5560'
+    CLIENT2 = 'ipc://ipc_5562'
+
+    DURATION  = 15.0     # seconds of measurement, long enough for the leading source to saturate its queue
+    INTERVAL1 = 0.040    # leading source
+    INTERVAL2 = 0.046    # lagging source, 15% slower
+    MAX_P95   = 1000.0   # milliseconds
+
+    def tearDown(self):
+        gc.collect()
+
+    def test_leading_source_frames_do_not_go_stale(self):
+        payload = b'x' * 65536  # frames are not small in a real pipeline, but big enough here would make this a memcpy benchmark
+        stop    = Event()
+        ages    = {'main': [], 'othr': []}
+
+        def pump(sendr, topic, interval):
+            # The timestamp is taken inside the callable, which the sender calls when the request arrives, so what
+            # is measured is time spent in the queue and not time spent waiting to be asked.
+            while not stop.is_set():
+                sendr.send(lambda: {topic: [{'t': time_ns()}, payload]}, timeout=1000)
+                sleep(interval)
+
+        sendr1 = ZMQSender(self.SERVER1, 'server1')
+
+        try:
+            sendr2 = ZMQSender(self.SERVER2, 'server2')
+
+            try:
+                recvr = ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client')
+
+                try:
+                    recvr.recv(timeout=0)  # prime the senders with a first request
+
+                    sleep(0.2)
+
+                    threads = [
+                        Thread(target=pump, args=(sendr1, 'main', self.INTERVAL1), daemon=True),
+                        Thread(target=pump, args=(sendr2, 'othr', self.INTERVAL2), daemon=True),
+                    ]
+
+                    for thread in threads:
+                        thread.start()
+
+                    try:
+                        t_end = time_ns() + int(self.DURATION * 1e9)
+
+                        while time_ns() < t_end:
+                            if (res := recvr.recv(timeout=1000)) is None:
+                                continue
+
+                            now = time_ns()
+
+                            for topic, parts in res[0].items():
+                                ages[topic].append((now - parts[0]['t']) / 1e6)
+
+                    finally:
+                        stop.set()
+
+                        for thread in threads:
+                            thread.join(2)
+
+                finally:
+                    recvr.destroy()
+
+            finally:
+                sendr2.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        for topic, topic_ages in ages.items():
+            with self.subTest(topic=topic):
+                self.assertGreater(len(topic_ages), 100, f'{topic}: too few frames delivered to say anything')
+
+                topic_ages.sort()
+
+                p95 = topic_ages[int(0.95 * (len(topic_ages) - 1))]
+
+                self.assertLess(p95, self.MAX_P95,
+                    f'{topic}: p95 frame age {p95:.0f} ms over {len(topic_ages)} frames, limit {self.MAX_P95:.0f} ms')
 
 
 if __name__ == '__main__':
