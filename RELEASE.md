@@ -6,16 +6,16 @@ OpenFilter Library release notes
 
 ### Fixed
 
-- **A receiver joining two sources delivered frames from one of them a minute stale
-  (PLAT-1884).** On the Wingstop pipeline one camera ran 57 to 80 s behind while the other
-  sat at 376 ms, as a stationary sawtooth between 65 and 110 s rather than unbounded
-  growth, and a restart cleared it.
+- **A receiver joining two sources delivered frames from one of them a minute stale.** On a
+  two-camera deployment one source ran 57 to 80 s behind while the other sat at 376 ms, as a
+  stationary sawtooth between 65 and 110 s rather than unbounded growth, and a restart
+  cleared it.
 
   A receiver keeps one `min_recv_id` barrier for all of its sources, and a message from
   the faster source invalidates every other sender's held frame and pins the barrier to
   the leader. The only discard path is sender-side, `prev_id >= msg_id`, and that
   condition can only be true on the producer that is BEHIND the barrier, so the leader is
-  never drained: over 10 h of logs the lagging camera recorded 57 of those jump-forwards
+  never drained: over 10 h of logs the lagging source recorded 57 of those jump-forwards
   and the leading one none. The receiver also unregisters a completed sender's SUB from
   its poller while it waits for the laggard, but keeps pushing a request to every sender
   on every poll, so the leader goes on publishing into a socket nobody is reading. No
@@ -33,7 +33,7 @@ OpenFilter Library release notes
   for the right reason.
 
   Two things this does not bound. The publisher keeps its own queue, `ZMQ_PUB_HWM`, 20
-  messages, which at the 4.89 fps that pipeline runs at is about 4 s of residual
+  messages, which at the 4.89 fps that deployment runs at is about 4 s of residual
   staleness on a source nobody drains. And a TCP link holds frames in kernel socket
   buffers that no high water mark accounts for; those are bounded in bytes rather than in
   messages, so they matter in inverse proportion to frame size. Capping the subscriber is
