@@ -6,6 +6,39 @@ OpenFilter Library release notes
 
 ### Fixed
 
+- **A receiver joining two sources delivered frames from one of them a minute stale.** On a
+  two-camera deployment one source ran 57 to 80 s behind while the other sat at 376 ms, as a
+  stationary sawtooth between 65 and 110 s rather than unbounded growth, and a restart
+  cleared it.
+
+  A receiver keeps one `min_recv_id` barrier for all of its sources, and a message from
+  the faster source invalidates every other sender's held frame and pins the barrier to
+  the leader. The only discard path is sender-side, `prev_id >= msg_id`, and that
+  condition can only be true on the producer that is BEHIND the barrier, so the leader is
+  never drained: over 10 h of logs the lagging source recorded 57 of those jump-forwards
+  and the leading one none. The receiver also unregisters a completed sender's SUB from
+  its poller while it waits for the laggard, but keeps pushing a request to every sender
+  on every poll, so the leader goes on publishing into a socket nobody is reading. No
+  `RCVHWM` was set anywhere, which left that socket at libzmq's default of 1000, and that
+  default is both why the lag was bounded and why it was bounded so high.
+
+  `ZMQ_SUB_HWM` (default 8) now caps it, set before `connect` since a high water mark set
+  after one does not apply to the pipe already created for it. The unit is whole
+  multipart messages, not parts: a `RCVHWM` of 8 buffers 8 four-part frames, measured, so
+  8 is two frames of a four-topic source rather than two frames of four parts.
+
+  A new test, `TestSubRecvQueueCap`, drives two senders at 40 ms and 46 ms and measures
+  the age of delivered frames on both legs. The leading leg goes from a p95 of 1666 ms to
+  521 ms, the lagging leg is unaffected at 2 ms, and the test fails on the unchanged code
+  for the right reason.
+
+  Two things this does not bound. The publisher keeps its own queue, `ZMQ_PUB_HWM`, 20
+  messages, which at the 4.89 fps that deployment runs at is about 4 s of residual
+  staleness on a source nobody drains. And a TCP link holds frames in kernel socket
+  buffers that no high water mark accounts for; those are bounded in bytes rather than in
+  messages, so they matter in inverse proportion to frame size. Capping the subscriber is
+  what removes the minute, not what removes the last seconds.
+
 - **A filter's usage-event thread could abort the interpreter at exit, turning a
   successful run into a non-zero one.** The event is reported from a daemon thread, and
   its only write is the warning it logs when the POST fails. A daemon thread inside a
