@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.2 - 2026-10-26
+
 ### Fixed
 
 - **A receiver joining two sources delivered frames from one of them a minute stale.** On a
