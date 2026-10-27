@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.2 - 2026-10-27
+
 ### Fixed
 
 - **A receiver joining two sources delivered frames from one of them a minute stale.** On a
@@ -143,6 +145,14 @@ OpenFilter Library release notes
   it named a JFrog instance that was decommissioned. Nothing replaces it - the filters it listed are
   distributed publicly as `plainsightai/openfilter-<name>` images, which the examples and the
   documentation already reference directly.
+
+### Internal
+
+Nothing here changes the published library or images.
+
+- `anchore/sbom-action/download-syft` 0.24.2 to 0.24.3 (#177)
+- `trufflesecurity/trufflehog` 3.97.9 to 3.99.2 (#182)
+- `certifi` 2026.4.22 to 2026.10.19 in the lockfile (#184)
 
 ## v1.5.1 - 2026-10-01
 
