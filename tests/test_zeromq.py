@@ -1734,5 +1734,247 @@ class TestExitMsgLateSubscriber(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 1_400, f'the full linger was not paid: {elapsed} ms')
 
 
+
+
+class TestPairByTs(unittest.TestCase):
+    """A receiver joining two sources that sample at different rates.
+
+    `TestSubRecvQueueCap` above measures the same shape for a different number: how stale each source's frame is
+    when it is delivered. The number here is the one the join itself is about, how far apart in wall clock the two
+    frames of a SINGLE delivered batch were taken. The default join has no reason to keep that small, because the
+    only key it has for deciding that two frames belong together is a per-source counter, and two sources sampling
+    at different rates do not keep matching counters.
+
+    Note what the counter drift is and is not. It is not a time difference: a source with a lower id has taken
+    fewer samples, which on its own says nothing about when its latest frame was taken. What it is, is the loss of
+    the only key the default join pairs on, plus a second-order effect that does cost real time: the shared barrier
+    is dragged forward by whichever source leads, so the leading source publishes into a subscriber queue nobody
+    drains while the lagging one catches up, and the frames it eventually delivers are as old as that queue is
+    deep.
+
+    The senders here emulate what `video_in` does on a live camera: a blocking read at the camera's rate, then a
+    send of the frame that read returned. The capture timestamp is taken before the send, so a frame the sender
+    is holding while it waits to be asked ages exactly as a real one does.
+
+    IPC rather than TCP for the same reason `TestSubRecvQueueCap` gives: a loopback TCP connection autotunes its
+    kernel socket buffers into the megabytes and those buffers are a store no zmq high water mark accounts for.
+    """
+
+    SERVER1 = 'ipc://ipc_5570'
+    SERVER2 = 'ipc://ipc_5572'
+    CLIENT1 = 'ipc://ipc_5570'
+    CLIENT2 = 'ipc://ipc_5572'
+
+    DURATION  = 12.0    # seconds of measurement
+    INTERVAL1 = 0.040   # leading source, 25 samples/s
+    INTERVAL2 = 0.046   # lagging source, 21.7 samples/s, so the counters drift apart by about 3.3 per second
+
+    # Measured on this shape over two 12 s runs: p95 pairing skew 527 and 519 ms with the default join, 45.4 and
+    # 45.3 ms with pair_by_ts, over 221 and 238 batches. The 45 ms floor under the flag is INTERVAL2, which is the
+    # right floor: a batch holds the newest frame each source has, and the slower source's newest is on average
+    # half its own sampling period old. The bound below sits just above that floor and a factor of five under the
+    # default, so neither assertion is really a measurement of the host it runs on.
+    MAX_SKEW_MS = 100.0
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, pair_by_ts, stamp_ts=True, duration=None):
+        """Drive both sources for `duration` and return (skews_ms, ids) of every batch delivered."""
+
+        payload = b'x' * 65536
+        stop    = Event()
+        skews   = []
+        ids     = []
+
+        def pump(sendr, topic, interval):
+            while not stop.is_set():
+                t_cap = time_ns()  # when this source "read" the frame, before it is offered to the sender
+                xtra  = {'ts': t_cap / 1e9} if stamp_ts else None
+
+                sendr.send(lambda: {topic: [xtra, payload]}, timeout=1000)
+                sleep(interval)
+
+        sendr1 = ZMQSender(self.SERVER1, 'server1')
+
+        try:
+            sendr2 = ZMQSender(self.SERVER2, 'server2')
+
+            try:
+                recvr = ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', pair_by_ts=pair_by_ts)
+
+                try:
+                    recvr.recv(timeout=0)  # prime the senders with a first request
+
+                    sleep(0.2)
+
+                    threads = [
+                        Thread(target=pump, args=(sendr1, 'main', self.INTERVAL1), daemon=True),
+                        Thread(target=pump, args=(sendr2, 'othr', self.INTERVAL2), daemon=True),
+                    ]
+
+                    for thread in threads:
+                        thread.start()
+
+                    try:
+                        t_end = time_ns() + int((self.DURATION if duration is None else duration) * 1e9)
+
+                        while time_ns() < t_end:
+                            if (res := recvr.recv(timeout=1000)) is None:
+                                continue
+
+                            topicmsgs, state = res
+
+                            if len(topicmsgs) < 2:  # a partial batch is a failure of its own, counted by the caller
+                                skews.append(None)
+
+                                continue
+
+                            tss = [parts[0]['ts'] for parts in topicmsgs.values()] if stamp_ts else []
+
+                            skews.append((max(tss) - min(tss)) * 1000 if tss else 0.0)
+                            ids.append(state.msg_id)
+
+                    finally:
+                        stop.set()
+
+                        for thread in threads:
+                            thread.join(2)
+
+                finally:
+                    recvr.destroy()
+
+            finally:
+                sendr2.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        return skews, ids
+
+    @staticmethod
+    def _p95(values):
+        values = sorted(values)
+
+        return values[int(0.95 * (len(values) - 1))]
+
+    def test_pairing_skew_stays_small_with_pair_by_ts(self):
+        skews, _ = self._run(pair_by_ts=True)
+
+        self.assertGreater(len(skews), 100, 'too few batches delivered to say anything')
+        self.assertNotIn(None, skews, 'a batch was delivered without both sources in it')
+
+        p95 = self._p95(skews)
+
+        self.assertLess(p95, self.MAX_SKEW_MS,
+            f'p95 pairing skew {p95:.1f} ms over {len(skews)} batches, limit {self.MAX_SKEW_MS:.1f} ms')
+
+    def test_pairing_skew_is_large_without_it(self):
+        """The same assertion on the default join, inverted, so the fixture is on record as reproducing the defect.
+
+        If this ever starts failing it does not mean the default join got worse, it means it got BETTER, and the
+        test above is no longer measuring anything. Read it as a tripwire on the baseline, not as a requirement.
+        """
+
+        skews, _ = self._run(pair_by_ts=False)
+
+        self.assertGreater(len(skews), 100, 'too few batches delivered to say anything')
+
+        p95 = self._p95([s for s in skews if s is not None])
+
+        self.assertGreater(p95, self.MAX_SKEW_MS,
+            f'p95 pairing skew {p95:.1f} ms over {len(skews)} batches with the default join, which is below the '
+            f'{self.MAX_SKEW_MS:.1f} ms the pair_by_ts test asserts, so that test no longer proves anything')
+
+    def test_frames_with_no_timestamp_still_deliver(self):
+        """No meta['ts'] anywhere: pair on arrival time rather than stall, and keep both sources in every batch."""
+
+        skews, _ = self._run(pair_by_ts=True, stamp_ts=False, duration=4.0)
+
+        self.assertGreater(len(skews), 20, 'too few batches delivered to say anything')
+        self.assertNotIn(None, skews, 'a batch was delivered without both sources in it')
+
+    def test_the_state_msg_id_stays_monotonic(self):
+        """Per-source counters are no longer meant to agree, so the id handed to the sender half is max of them.
+
+        That is all `mq_msgid_sync` needs from it. It is NOT a moment any more, only an order, and this pins that.
+        """
+
+        _, ids = self._run(pair_by_ts=True, duration=4.0)
+
+        self.assertGreater(len(ids), 20, 'too few batches delivered to say anything')
+        self.assertEqual(ids, sorted(ids))
+
+    def test_balanced_sources_are_rejected(self):
+        with self.assertRaises(ValueError):
+            ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', balance=True, pair_by_ts=True)
+
+
+class TestPairByTsSingleSource(unittest.TestCase):
+    """The flag is a join setting, and a filter that sets it globally must not change on its single-source hops.
+
+    `test_send_recv` above, run twice: once as it is and once with pair_by_ts on. Same assertions, because the flag
+    resolves to off on a receiver with fewer than two synchronized sources and the original code path runs.
+    """
+
+    SERVER1 = 'ipc://ipc_5574'
+    CLIENT1 = 'ipc://ipc_5574'
+
+    # Same reason `TestZeroMQTCP` does it, and the same hack. ZMQ_CONN_HANDSHAKE makes a sender ignore a client
+    # until that client has acknowledged a HELLO, and a HELLO only goes out from inside send(). A strictly
+    # lockstep send-then-recv loop never has both running at once, so the first send waits out its whole timeout
+    # for an acknowledgement the receiver has no opportunity to give. Restored afterwards, which the original
+    # does not do, so this does not quietly change the behavior of whatever runs next in the same process.
+    @classmethod
+    def setUpClass(cls):
+        from openfilter.filter_runtime import zeromq
+
+        cls._handshake = zeromq.ZMQ_CONN_HANDSHAKE
+        zeromq.ZMQ_CONN_HANDSHAKE = False
+
+    @classmethod
+    def tearDownClass(cls):
+        from openfilter.filter_runtime import zeromq
+
+        zeromq.ZMQ_CONN_HANDSHAKE = cls._handshake
+
+    def tearDown(self):
+        gc.collect()
+
+    def _send_recv_120(self, pair_by_ts):
+        sendr = ZMQSender(self.SERVER1, 'server')
+
+        try:
+            recvr = ZMQReceiver(self.CLIENT1, 'client', pair_by_ts=pair_by_ts)
+
+            try:
+                self.assertFalse(recvr.pair_ts, 'pair_by_ts must resolve to off on a single synchronized source')
+
+                self.assertEqual(recvl(recvr, timeout=0), None)  # prime the sender with a request for the first message
+
+                sleep(0.1)  # both sockets have to connect, PUB/SUB and PUSH/PULL for the requests
+
+                for i in range(120):
+                    # `test_send_recv` sends with no timeout, which hangs for good rather than failing when a
+                    # request packet is lost, a thing its own comment below says happens. Bound it here so a lost
+                    # packet is a failed assertion and not a stuck job.
+                    self.assertEqual(send(sendr, d := {'main': [{'ts': time_ns() / 1e9}, str(i).encode()]}, timeout=5000), i + 1)
+                    self.assertEqual(recvl(recvr, timeout=1000), (i, d))
+
+                    sleep(0.01)  # because otherwise request packets can double up and once one is missed sender doesn't send
+
+            finally:
+                recvr.destroy()
+
+        finally:
+            sendr.destroy()
+
+    def test_without_the_flag(self):
+        self._send_recv_120(pair_by_ts=False)
+
+    def test_with_the_flag_on(self):
+        self._send_recv_120(pair_by_ts=True)
+
+
 if __name__ == '__main__':
     unittest.main()
