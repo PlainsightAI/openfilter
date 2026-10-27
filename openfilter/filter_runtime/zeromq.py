@@ -59,6 +59,22 @@ Environment variables:
         if for some reason it is causing a problem or if you want the absolute fastest connections without regard for
         possibly lost initial packets. Set on upstream side, default True.
 
+    ZMQ_EXIT_LINGER: Milliseconds a sender keeps republishing its exit message on its way out, 0 to publish once
+        and return (default 60000). A PUB socket discards silently while a SUB side is still connecting, so a
+        sender that never confirmed the client that needs the message can publish it to nobody and leave that
+        downstream waiting on a stream that already ended. Only entered when no client was ever confirmed, or when
+        an `outs_required` client was never confirmed; a sender with a confirmed client publishes once and returns,
+        whether that client is still connected or has already closed. Within the wait a republish goes out on each
+        request received, and a client resends its unanswered request every ZMQ_POLL_TIMEOUT ms, so that interval
+        is the granularity of the wait and anything genuinely there announces itself inside the window. The window
+        is sized for a downstream that is slow to come up rather than for the subscribe handshake, which is
+        milliseconds: a filter carrying a model reaches its own init(), and so creates its receiver, tens of
+        seconds after its container starts (20.0 s measured for openfilter-sam3-detector:0.1.25 on imports alone).
+        A doubly-ephemeral ('??') consumer never requests and never closes, so a sender whose only consumer is
+        one of those pays the whole window on every exit; set this to 0 on such a sender if that matters.
+        On a signal-initiated stop the wait is bounded by SignalStopper's graceful_exit_timeout (10 s) instead,
+        since that is when the process is SIGKILLed; raising this knob past that only helps a self-initiated exit.
+
     ZMQ_PUSH_HWM: For emergencies.
     ZMQ_PUB_HWM: For emergencies.
 
@@ -93,7 +109,7 @@ from opentelemetry.propagate import extract as otel_extract, inject as otel_inje
 from openfilter.observability import tracing as _otel_tracing
 from openfilter.observability.tracing import maybe_start_span
 
-from .utils import JSONType, json_getval, rndstr, once
+from .utils import JSONType, hard_exit_deadline, json_getval, rndstr, once
 
 __all__ = ['is_zeromq_addr', 'ZMQMessage', 'ZMQReceiver', 'ZMQSender']
 
@@ -113,12 +129,15 @@ ZMQ_EXPLICIT_LINGER   = int(os.getenv('ZMQ_EXPLICIT_LINGER') or 20)   # in milli
 ZMQ_POLL_TIMEOUT      = int(os.getenv('ZMQ_POLL_TIMEOUT') or 100)     # in milliseconds, unanswered request resend time and exit check
 ZMQ_CONN_TIMEOUT      = int(os.getenv('ZMQ_CONN_TIMEOUT') or 5000)    # in milliseconds
 ZMQ_CONN_HANDSHAKE    = bool(json_getval((os.getenv('ZMQ_CONN_HANDSHAKE') or 'true').lower()))
+ZMQ_EXIT_LINGER       = int(os.getenv('ZMQ_EXIT_LINGER') or 60000)    # in milliseconds, 0 disables. See the module docstring above and ZMQSender._republish_oob; bounded by SignalStopper's graceful_exit_timeout on the signal path
 ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CONN_TIMEOUT // max(1, ZMQ_POLL_TIMEOUT))))  # will start complaining after this many push sends pending
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 20)           # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up. The unit is whole multipart messages and not parts: a PUSH at SNDHWM 20 whose peer is not reading accepts exactly 20 four-part messages before it refuses the next, measured, so this is 20 frames and not 5
 ZMQ_SUB_HWM           = int(os.getenv('ZMQ_SUB_HWM') or 4 * 2)        # messages a subscriber will queue on its side, 4 topics x 2 frames, one being worked on and one next, and it has to stay above the topic fan-out of any source because a sender publishes one message per topic per frame. Unit is whole multipart messages, same as ZMQ_PUB_HWM above. On a receiver that joins two sources this is the only cap that applies to the source nobody is draining: the receiver holds one barrier for all of them and the only discard path is sender-side and can only fire on the source BEHIND that barrier, so the source AHEAD publishes into a socket nobody reads and the frames it eventually delivers are as old as this queue is deep. libzmq defaults it to 1000, which at 5 fps is near a minute of stale frames. This caps the subscriber's share only: how stale an undrained source can get is this queue plus ZMQ_PUB_HWM plus whatever the kernel socket buffer holds, and that last one is bounded in bytes rather than in messages, so it hides more the smaller the frames are (SNDHWM 20 with RCVHWM 8, messages delivered before the first drop: 8 over IPC at 64 KB, 14 over TCP at 64 KB, 60 over TCP at 64 B, 120 over IPC at 64 B)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
 ZMQ_WARN_NEWER        = bool(json_getval((os.getenv('ZMQ_WARN_NEWER') or 'true').lower()))
 ZMQ_WARN_OLDER        = bool(json_getval((os.getenv('ZMQ_WARN_OLDER') or 'true').lower()))
+
+EXIT_LINGER_RESERVE_MS = 1000  # of a stop's graceful budget, left to the teardown steps that follow send_exit_msg
 
 MSG_ID_INITIAL        = 0
 MSG_ID_INITIAL_PREV   = -1
@@ -200,7 +219,8 @@ class ZMQSender:
         self.message_oob   = (lambda l: None) if message_oob is None else message_oob
         self.balance       = balance
         self.outs_required = outs_required or []
-        self.clients       = {}  # {'full_id': Client, ...}
+        self.clients       = {}  # {'full_id': Client, ...}, pruned on CLOSE and on ZMQ_CONN_TIMEOUT: who is connected right now
+        self.clients_ever  = set()  # {'client_id', ...}, never pruned: who was ever confirmed, which is what the exit linger needs
         self.min_send_id   = MSG_ID_INITIAL
         # bytes pushed on the wire by the last successful send_maybe — read by MQ.send
         # to stamp the outer mq.send hop span's payload_bytes attribute.
@@ -272,7 +292,15 @@ class ZMQSender:
 
         ZMQContext.free()
 
-    def send_oob(self, msg: ZMQMessage):
+    def send_oob(self, msg: ZMQMessage, linger: int = 0):
+        """Publish an out-of-band message to every connected client.
+
+        Args:
+            linger: Milliseconds to keep republishing while a client that needs this message may not have it yet,
+                0 to publish once and return. See `_republish_oob` for why this exists and for which clients those
+                are; only the exit message needs it.
+        """
+
         msg_ = [TOPIC_DELIM_B2, json_dumps({'sid': self.server_id, 'mid': MSG_ID_OOB, 'xtra': msg[0]},
             separators=(',', ':')).encode(), *msg[1:]]
 
@@ -281,6 +309,114 @@ class ZMQSender:
 
         for pub in self.pubs:
             pub.send_multipart(msg_)
+
+        # `self.clients` is who is connected right now, not who was ever confirmed: it is pruned on CLOSE and on
+        # ZMQ_CONN_TIMEOUT, so a sender whose downstream closed first reaches here with it empty after delivering
+        # every frame it had, and gating on it waited out the whole window for a client that had already exited.
+        # `clients_ever` is the sticky answer. The second half keeps the fan-out guarantee: a required output that
+        # was never confirmed still needs the exit even when a sibling was.
+        if linger and (not self.clients_ever or not set(self.outs_required).issubset(self.clients_ever)):
+            self._republish_oob(msg_, linger)
+
+    def _republish_oob(self, msg_: list[bytes], linger: int):
+        """Republish an already-published OOB message while anyone is still asking for data.
+
+        A PUB socket discards silently while the SUB side of a client is still connecting, and a sender with an
+        empty `clients_ever` has never completed the HELLO handshake that proves the PUB/SUB link with anybody. A
+        single publish from such a sender can therefore reach nobody, which is how a filter that forwards zero
+        frames (an ultra-short clip, a dedup that drops everything) leaves its downstream waiting on a stream that
+        already ended. `send_oob` gates on `clients_ever` rather than on the live `clients`, which is pruned on
+        CLOSE and on ZMQ_CONN_TIMEOUT and so says nothing about whether a link was ever proven.
+
+        The sticky set answers "was this client_id ever confirmed", which is not quite "is the client that needs
+        this message confirmed". `clients` is keyed on client_id + uid and the uid is fresh per receiver
+        instance, while `clients_ever` holds bare client_ids, so a downstream that restarts (crash-loop,
+        OOMKill, rescheduled pod) reads as already confirmed and the gate skips the linger for it: if the
+        upstream exits while that new instance is still connecting, the exit is published once to a SUB that is
+        not subscribed yet and is lost. That narrower case is knowingly out of scope here. Keying the set on the
+        full id does not close it, since the old entry still leaves the set non-empty, and dropping entries on
+        CLOSE is what this gate exists to stop doing.
+
+        A client resends its unanswered request every ZMQ_POLL_TIMEOUT until it is served, so anything that is
+        genuinely there announces itself on the PULL socket inside this window. Republishing on each request is
+        enough: by the Nth republish the client has had N poll intervals to finish subscribing. The exit message is
+        idempotent, so the extra copies cost nothing.
+
+        A client that got the message acts on it and goes away, and going away sends CLOSE, so this returns as soon
+        as every client it has heard from has closed rather than sitting out the full `linger`. Every declared
+        `outs_required` client has to be among them: on a fan-out, one fast output can connect, take the exit and
+        close while a slower sibling has not announced itself yet, and returning there would strand exactly the
+        client this function exists to reach. Outputs that are NOT declared required cannot be waited for, since
+        their number is unknown, so a fan-out that wants the guarantee has to declare them.
+
+        The window is what the wait is otherwise sized for, and the gap it has to cover is not the subscribe
+        handshake, which is milliseconds: it is a downstream process that has not reached its own `init()` yet,
+        because a filter carrying a model spends tens of seconds on imports before its receiver exists (20.0 s
+        measured for openfilter-sam3-detector:0.1.25, before any model load).
+
+        Two cases pay that window in full with a live downstream on the other end, so they are worth naming:
+
+        - A downstream that does not obey a clean exit. OBEY_EXIT is env-configurable and only acts on a
+          propagated clean exit when it includes `clean` (`filter.py:2068`). Such a client keeps requesting for
+          the whole window and never sends CLOSE, so `asked != closed` throughout and the wait runs to the end.
+        - A doubly-ephemeral (`??`) consumer. `send_push` does nothing at all for `ephemeral >= 2`, so that
+          receiver never sends a request and never sends CLOSE. A sender whose only consumer is one of those
+          has an empty `clients_ever`, enters the wait, and pays the full window on every exit, always. The
+          metrics leg is unaffected: `mq.py` passes no `linger` there, so those `??` collectors cost nothing.
+
+        That window is longer than the runtime gives a signalled filter to die in, so when a stop is already in
+        progress the wait is bounded by the hard-kill deadline instead (see `hard_exit_deadline`): it yields in
+        time for the rest of the teardown rather than being SIGKILLed inside itself. The full budget is therefore
+        only ever available on a self-initiated exit.
+
+        Waiting here is also the weaker of the two waits openfilter already does. The data path blocks in
+        `Filter._send_frames` until a consumer appears, with `outputs_timeout` defaulting to no limit, so a sender
+        holding one frame waits indefinitely. This races only because it holds none, and a bounded wait for the
+        same consumer is the consistent answer rather than a new policy.
+
+        Incoming messages are not handed to `message_oob` here: this runs inside the sender's own teardown, and a
+        neighbour's exit has nothing left to tell a filter that is already on its way out.
+        """
+
+        t_end   = time_ns() + linger * 1_000_000
+        asked   = set()  # client_ids heard from during the wait
+        closed  = set()  # of those, the ones that have since sent CLOSE
+
+        while True:
+            # A stop in progress has a hard SIGKILL behind it (SignalStopper, graceful_exit_timeout=10s by default),
+            # and ZMQ_EXIT_LINGER is 6x that. Waiting past the deadline does not buy the extra seconds, it just
+            # moves the death from "exited" to "killed by signal" and skips fini(), emit_stop() and stop_logging().
+            # Yield with EXIT_LINGER_RESERVE_MS to spare for those instead. Re-read every iteration rather than once
+            # at entry: the full window is only available on a self-initiated exit, which is exactly the case where
+            # no deadline is armed when we get here, so the likelier ordering is a SIGTERM landing mid-wait.
+            t_limit = t_end
+
+            if (deadline := hard_exit_deadline()) is not None:
+                t_limit = min(t_limit, deadline - EXIT_LINGER_RESERVE_MS * 1_000_000)
+
+            if (remaining_ms := (t_limit - time_ns()) // 1_000_000) <= 0:
+                break
+
+            if not (socks := self.poller.poll(min(ZMQ_POLL_TIMEOUT, remaining_ms))):
+                continue
+
+            for pull, _ in socks:
+                env       = json_loads(pull.recv_multipart()[0].decode())
+                client_id = env['cid']
+
+                asked.add(client_id)
+
+                if env['mid'] == MSG_ID_CLOSE:
+                    closed.add(client_id)
+
+            if DEBUG_ZEROMQ:
+                logger.debug(f'republish msg OOB to unconfirmed client(s): {", ".join(sorted(asked))}')
+
+            for pub in self.pubs:
+                pub.send_multipart(msg_)
+
+            if asked and asked == closed and set(self.outs_required).issubset(closed):
+                break
 
     def send(self,
         topicmsgs: dict[str, ZMQMessage] | Callable[[], dict[str, ZMQMessage]],
@@ -394,6 +530,8 @@ class ZMQSender:
                 break
 
             clients[full_id] = ZMQSender.Client(client_id, pull, t, True, ephemeral, prev_id)
+
+            self.clients_ever.add(client_id)  # sticky, see send_oob: `clients` is pruned on CLOSE so it cannot answer "was one ever confirmed?"
 
             if prev_id >= msg_id and not ephemeral:  # if requesting higher frame number than we are sending then discard and return
                 self.min_send_id = min_send_id = prev_id + 1
