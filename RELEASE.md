@@ -4,6 +4,42 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Added
+
+- **`sources_pair_by_ts`, off by default: pair the sources of a join by capture time instead of by
+  message id.** A receiver joining several sources keeps one `min_recv_id` barrier for all of them
+  and decides that two frames belong together when their message ids match. Message ids are
+  per-source counters. Two cameras nominally at the same frame rate do not sample at exactly the
+  same rate, so the counters drift apart and keep drifting, and id equality stops implying time
+  equality.
+
+  The counter gap is not itself a time gap. A source with a lower id has taken fewer samples, which
+  on its own says nothing about when its latest frame was taken. What the drift costs is the only
+  key the join has, plus a second-order effect that does cost real time: the shared barrier is
+  dragged forward by whichever source leads, the lagging source's sender then fast-forwards its own
+  counter to match ("downstream requested newer message id"), and the leading source spends the
+  wait publishing into a subscriber queue nobody drains. `ZMQ_SUB_HWM` bounds how stale that gets;
+  it does not stop it happening.
+
+  With the flag on, every source gets its own barrier, every poll drains every source, and the
+  newest complete frame set from each is held in one slot. A batch is the newest frame every source
+  has. Capture time travels in the message envelope: `MQ.frames2topicmsgs` lifts `meta['ts']` into
+  the per-message `xtra` dict, which the sender already copies into the envelope the receiver
+  already parses, so the pairing costs no extra deserialization and frames with no image keep the
+  wire shape they had.
+
+  Measured on two file sources at 29.6 and 16.5 fps joined by one receiver, 60 s per config, as the
+  wall-clock distance between the two frames of a delivered batch: 273 ms p50 / 287 ms p95 over
+  4123 batches by default, against the numbers in the table of the PR with the flag on. Single
+  source is untouched: the flag resolves to off below two synchronized sources, so the original code
+  path runs unchanged.
+
+  `sources_ts_tolerance` (seconds, default 0 meaning no gate) refuses a batch whose frames are
+  further apart than that and keeps waiting, bounded by `sources_timeout`. Rejected together with
+  `sources_balance`, where the sources are one stream split across workers and only one of them
+  delivers per round. Env defaults `ZMQ_PAIR_BY_TS` and `ZMQ_PAIR_TS_TOLERANCE`, filter config
+  `FILTER_SOURCES_PAIR_BY_TS` and `FILTER_SOURCES_TS_TOLERANCE`.
+
 ### Fixed
 
 - **A receiver joining two sources delivered frames from one of them a minute stale.** On a
