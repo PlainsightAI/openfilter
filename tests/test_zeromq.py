@@ -2223,6 +2223,112 @@ class TestPairByTsMappedTopicsWithoutTimestamps(unittest.TestCase):
             self.assertEqual(sorted(batch), ['camA', 'camB'], 'a batch went out without both sources in it')
 
 
+class TestPairByTsTolerance(unittest.TestCase):
+    """What `pair_ts_tolerance` does when the sources' clocks are further apart than it allows.
+
+    It refuses every batch, and goes on refusing for as long as the clocks stay apart. That is the gate doing
+    what it was asked to do: a tolerance is the operator stating that a wider pair is wrong for this pipeline,
+    so the refusal is not overridden. What it must not be is silent, because a join that refuses every batch is
+    indistinguishable from the livelock this flag exists to avoid, right down to the healthy pod and the sources
+    still publishing. These two tests pin both halves: the refusal, and the warning that explains it.
+    """
+
+    SERVER1 = 'ipc://ipc_5588'
+    SERVER2 = 'ipc://ipc_5590'
+    CLIENT1 = 'ipc://ipc_5588'
+    CLIENT2 = 'ipc://ipc_5590'
+
+    INTERVAL = 0.040  # both sources at 25 samples/s
+    SKEW     = 0.2    # seconds source 2's clock sits ahead of source 1's
+    DURATION = 3.0
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, tolerance):
+        """Drive both sources for DURATION with their clocks SKEW apart, and return the batches delivered."""
+
+        payload = b'x' * 1024
+        stop    = Event()
+        batches = []
+
+        def pump(sendr, topic, skew):
+            while not stop.is_set():
+                sendr.send(lambda: {topic: [{'ts': time_ns() / 1e9 + skew}, payload]}, timeout=1000)
+                sleep(self.INTERVAL)
+
+        sendr1 = ZMQSender(self.SERVER1, 'server1')
+
+        try:
+            sendr2 = ZMQSender(self.SERVER2, 'server2')
+
+            try:
+                recvr = ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', pair_by_ts=True,
+                    pair_ts_tolerance=tolerance)
+
+                try:
+                    recvr.recv(timeout=0)  # prime the senders with a first request
+
+                    sleep(0.2)
+
+                    threads = [
+                        Thread(target=pump, args=(sendr1, 'main', 0.0), daemon=True),
+                        Thread(target=pump, args=(sendr2, 'othr', self.SKEW), daemon=True),
+                    ]
+
+                    for thread in threads:
+                        thread.start()
+
+                    try:
+                        t_end = time_ns() + int(self.DURATION * 1e9)
+
+                        while time_ns() < t_end:
+                            if (res := recvr.recv(timeout=500)) is not None:
+                                batches.append(res[0])
+
+                    finally:
+                        stop.set()
+
+                        for thread in threads:
+                            thread.join(2)
+
+                finally:
+                    recvr.destroy()
+
+            finally:
+                sendr2.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        return batches
+
+    def test_sources_further_apart_than_the_tolerance_deliver_nothing_and_say_so(self):
+        with self.assertLogs(zeromq_logger, level='WARNING') as logs:
+            batches = self._run(tolerance=self.SKEW / 4)
+
+        self.assertEqual(batches, [], 'a batch went out whose frames are further apart than the tolerance')
+
+        refusals = [line for line in logs.output if 'pair_ts_tolerance' in line]
+
+        self.assertTrue(refusals, f'nothing logged to tell this apart from a stall, got {logs.output}')
+
+        # Rate limited, so a 3 s run at 25 fps is a handful of lines and not a few hundred.
+        self.assertLess(len(refusals), 10, f'the over-tolerance warning is not rate limited, {len(refusals)} lines')
+
+        self.assertIn(f'{self.SKEW / 4:.3f} s', refusals[0], 'the warning does not name the tolerance')
+
+    def test_a_tolerance_wider_than_the_skew_still_delivers(self):
+        """The other half, so the test above is about the tolerance and not about the fixture failing to run."""
+
+        batches = self._run(tolerance=self.SKEW * 4)
+
+        self.assertGreater(len(batches), 20, 'too few batches delivered to say anything')
+
+        for batch in batches:
+            self.assertEqual(sorted(batch), ['main', 'othr'], 'a batch went out without both sources in it')
+
+
 class TestJoinBarrierLivelock(unittest.TestCase):
     """A join that stops delivering for good after ONE of its sources skips a single message id.
 

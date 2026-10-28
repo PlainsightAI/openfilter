@@ -37,7 +37,12 @@ OpenFilter Library release notes
   original code path runs unchanged.
 
   `sources_ts_tolerance` (seconds, default 0 meaning no gate) refuses a batch whose frames are
-  further apart than that and keeps waiting, bounded by `sources_timeout`. A value below zero is
+  further apart than that and keeps waiting, bounded by `sources_timeout`. The refusal is not
+  bounded: if the sources' clocks sit further apart than the tolerance, nothing is delivered for as
+  long as that holds. The batch is still refused rather than let through, because setting a
+  tolerance is a statement that a wider pair is wrong for that pipeline, but the receiver logs a
+  rate-limited warning naming the measured spread and the configured tolerance, so an operator can
+  tell this apart from a stall. A value below zero is
   rejected at construction: it is truthy, so it would read as a gate and then ask for a spread
   smaller than a negative number, which no batch has, and the join would deliver nothing at all.
   `sources_pair_by_ts` is rejected together with `sources_balance`, where the sources are one stream

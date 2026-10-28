@@ -152,6 +152,7 @@ ZMQ_WARN_OLDER        = bool(json_getval((os.getenv('ZMQ_WARN_OLDER') or 'true')
 EXIT_LINGER_RESERVE_MS = 1000  # of a stop's graceful budget, left to the teardown steps that follow send_exit_msg
 
 PAIR_TS_KEY           = 'ts'  # key under the per-message `xtra` dict holding capture time in seconds, written by MQ.frames2topicmsgs
+PAIR_SKEW_WARN_IVL_NS = 10 * 1_000_000_000  # at most one over-tolerance warning per receiver per this many nanoseconds, the refusal it reports repeats at the source frame rate
 
 MSG_ID_INITIAL        = 0
 MSG_ID_INITIAL_PREV   = -1
@@ -861,6 +862,9 @@ class ZMQReceiver:
             pair_ts_tolerance: Seconds. With `pair_by_ts` on, do not deliver a batch whose furthest-apart frames
                 were taken more than this far apart; keep waiting instead, bounded by the recv timeout. 0 (the
                 default, from ZMQ_PAIR_TS_TOLERANCE) means no gate. Below zero raises, whatever `pair_by_ts` is.
+                A refusal is not bounded: if the sources' clocks are further apart than this, nothing is ever
+                delivered. That is the gate doing what it was asked to do, so it is logged rather than overridden,
+                at most once every PAIR_SKEW_WARN_IVL_NS, naming the measured spread and this value.
 
         Pairing by timestamp:
 
@@ -920,6 +924,7 @@ class ZMQReceiver:
         self.pair_by_ts  = ZMQ_PAIR_BY_TS if pair_by_ts is None else pair_by_ts
         self.pair_ts_tol = ZMQ_PAIR_TS_TOLERANCE if pair_ts_tolerance is None else pair_ts_tolerance
         self.last_pair_skew = None  # seconds between the furthest-apart frames of the last batch delivered under pair_by_ts, for whoever wants to meter it
+        self.last_skew_warn_ns = 0  # rate limit for the over-tolerance warning in recv(), 0 so the first refusal is reported at once
         self.prev_id     = MSG_ID_INITIAL_PREV
         self.senders     = senders = {}
         # Telemetry handoff state, read by MQ.recv to retroactively stamp the
@@ -944,7 +949,8 @@ class ZMQReceiver:
 
         # A negative tolerance is truthy, so it would pass the `if not pair_ts_tol` gate in `pair_skew_ok` and then
         # evaluate `max - min <= negative`, which is never true for any batch. The join would simply never deliver,
-        # with nothing in the logs to say why. Rejected whatever `pair_by_ts` resolves to, so a typo in
+        # and the over-tolerance warning would be the only clue, repeating a value no batch could ever satisfy.
+        # Rejected whatever `pair_by_ts` resolves to, so a typo in
         # ZMQ_PAIR_TS_TOLERANCE or `sources_ts_tolerance` is found at startup and not on the day someone turns the
         # pairing on. Checked here, before the zmq context is taken and any socket opened, so a bad value costs
         # nothing to unwind.
@@ -1106,9 +1112,31 @@ class ZMQReceiver:
             if not pair_ts_tol:
                 return True
 
-            tss = [s.ready[0] for s in sync_sendervs]
+            tss  = [s.ready[0] for s in sync_sendervs]
+            skew = max(tss) - min(tss)
 
-            return max(tss) - min(tss) <= pair_ts_tol
+            if skew <= pair_ts_tol:
+                return True
+
+            # Refusing a batch is silent by construction: the round simply goes on. That is fine while the skew is
+            # transient, and not fine at all when it is not, which is every case where the sources' clocks sit
+            # further apart than the tolerance. From outside, a join that refuses every batch looks exactly like
+            # the livelock this flag exists to avoid: the pod is healthy, the sources keep publishing, process()
+            # is never called. So say it, with both numbers, rate limited because the refusal repeats at the frame
+            # rate of the sources.
+            #
+            # The batch is still refused. A tolerance is the operator saying that a wider pair is wrong for this
+            # pipeline, and delivering one anyway to avoid a stall would trade a visible failure for a quiet
+            # incorrect one. Bounding the refusal instead (deliver after N in a row) is a real option, but it
+            # changes what downstream receives and belongs in its own change, not in a logging fix.
+            if (now := time_ns()) - self.last_skew_warn_ns >= PAIR_SKEW_WARN_IVL_NS:
+                self.last_skew_warn_ns = now
+
+                logger.warning(f'receiver {self.client_id}: no batch delivered, its sources are {skew:.3f} s apart '
+                    f'and pair_ts_tolerance is {pair_ts_tol:.3f} s. Nothing will be delivered for as long as that '
+                    f'holds: raise the tolerance, or bring the sources\' clocks together')
+
+            return False
 
         def recv_once(timeout) -> bool:  # got_all
             nonlocal balanced, min_recv_id
