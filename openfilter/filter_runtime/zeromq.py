@@ -93,7 +93,8 @@ Environment variables:
 
     ZMQ_PAIR_TS_TOLERANCE: Seconds. With ZMQ_PAIR_BY_TS on, refuse to deliver a batch whose two furthest-apart frames
         were taken more than this far apart, and keep waiting (bounded by the recv timeout) for one that is closer.
-        Default 0, meaning no gate: always deliver the newest frame held from every source, whatever the spread.
+        Default 0, meaning no gate: always deliver the newest frame held from every source, whatever the spread. A
+        value below zero is rejected at construction, it would gate every batch out and stall the join silently.
 
     ZMQ_WARN_NEWER: Warn on newer messages than expected.
     ZMQ_WARN_OLDER: Warn on older messages than expected.
@@ -859,7 +860,7 @@ class ZMQReceiver:
 
             pair_ts_tolerance: Seconds. With `pair_by_ts` on, do not deliver a batch whose furthest-apart frames
                 were taken more than this far apart; keep waiting instead, bounded by the recv timeout. 0 (the
-                default, from ZMQ_PAIR_TS_TOLERANCE) means no gate.
+                default, from ZMQ_PAIR_TS_TOLERANCE) means no gate. Below zero raises, whatever `pair_by_ts` is.
 
         Pairing by timestamp:
 
@@ -940,6 +941,16 @@ class ZMQReceiver:
         self.last_recv_bytes     = 0
         self.last_recv_t_start_ns = 0
         self.last_recv_t_end_ns   = 0
+
+        # A negative tolerance is truthy, so it would pass the `if not pair_ts_tol` gate in `pair_skew_ok` and then
+        # evaluate `max - min <= negative`, which is never true for any batch. The join would simply never deliver,
+        # with nothing in the logs to say why. Rejected whatever `pair_by_ts` resolves to, so a typo in
+        # ZMQ_PAIR_TS_TOLERANCE or `sources_ts_tolerance` is found at startup and not on the day someone turns the
+        # pairing on. Checked here, before the zmq context is taken and any socket opened, so a bad value costs
+        # nothing to unwind.
+        if self.pair_ts_tol < 0:
+            raise ValueError(f'pair_ts_tolerance can not be negative, got {self.pair_ts_tol!r} seconds')
+
         context          = ZMQContext.get()
 
         for addr_n_topics in [addrs_n_topics] if isinstance(addrs_n_topics, str) else addrs_n_topics:
@@ -1170,7 +1181,23 @@ class ZMQReceiver:
                             self.message_oob(msg)
 
                         elif msg_id == MSG_ID_CLOSE:  # close message
-                            sender.min_recv_id = MSG_ID_INITIAL  # for ephemeral only, so that if sender restarts we don't get barrage of older message warnings
+                            if sender_eph or not pair_ts:
+                                sender.min_recv_id = MSG_ID_INITIAL  # for ephemeral only, so that if sender restarts we don't get barrage of older message warnings
+
+                            else:
+                                # Under pair_ts this field is a SYNCHRONIZED source's own barrier and not just an
+                                # ephemeral channel's warning filter, so the reset above would do real damage on a
+                                # graceful restart: the next request would carry the reset id, the restarted sender
+                                # would never be fast-forwarded and would start again from 0, the batch id (the max
+                                # over the sources) would fall back to whatever the other sources are counting, and
+                                # ZMQSender.send would then silently drop this filter's own output for as long as it
+                                # took that id to climb back. The shared-barrier path does not reset for a
+                                # synchronized sender either, which is exactly why it fast-forwards instead. Keep it.
+                                # Drop what this source had in flight, though, so no frame from before the restart
+                                # can be paired with one from after it.
+                                sender.ready = None
+
+                                sender.new_recv()
 
                             if sender.conn:
                                 logger.info(f'disconnected source: {server_id}  @ {sender.addr}  (close)')
@@ -1256,11 +1283,12 @@ class ZMQReceiver:
                             del recvd[t]
 
                     if sender.got_all:
-                        if not pair_ts:  # unregister sender from polling if complete because we don't want newer messages
+                        # Ephemeral senders are not paired and keep the behavior they have without the flag, which
+                        # includes being unregistered here: left registered, the first topic of their next frame
+                        # would replace this complete set with a partial one and `got == 'some'` would then hold the
+                        # whole batch back until that frame finished arriving.
+                        if not pair_ts or sender_eph:  # unregister sender from polling if complete because we don't want newer messages
                             poller.unregister(sender.sub)
-
-                        elif sender_eph:
-                            pass  # ephemeral senders are not paired and keep the behavior they have without the flag
 
                         else:
                             # Hand the completed set to the pairing slot and keep polling this source. Keeping it
@@ -1275,7 +1303,8 @@ class ZMQReceiver:
                                     f'pairing them by arrival time instead', t=60*60)
 
                             sender.ready = (pair_t, recvd)
-                            sender.recvd = None  # so the next message from this source starts a fresh set rather than being merged into the one just handed over
+
+                            sender.new_recv()  # so the next message from this source starts a fresh set rather than being merged into the one just handed over. new_recv() and not `recvd = None`: for a topic-MAPPED sender a fresh set is a dict of Nones over the mapped topics, where `recvd is None` would send process_msg down its init_recvd branch, which rebuilds the set from the source's full published topic list and so waits forever for topics this receiver never subscribed to
 
                 # Return True condition is that all synchronized sender topics received and if any ephemeral senders
                 # then all the individual sender topics must have been received or none at all, no partials. Do not
@@ -1357,7 +1386,13 @@ class ZMQReceiver:
                     # counter and they are not meant to agree. The highest one is the only choice that stays
                     # monotonic, which is all `prev_id` and the handoff to the sender half (mq_msgid_sync) need
                     # from it. Downstream of a timestamp join an id no longer identifies a moment, only an order.
-                    min_recv_id = max(s.min_recv_id for s in sync_sendervs)
+                    # Clamped against `self.prev_id` because the max over the sources is only monotonic while no
+                    # source's counter falls. One does on a graceful restart: that source begins again from 0 (its
+                    # barrier survives CLOSE now, so it is fast-forwarded, but the fast forward is not instant and
+                    # a source that was the one holding the max leaves the max to a lower counter in the meantime).
+                    # The id handed to the sender half must never fall, because ZMQSender.send discards without
+                    # publishing anything whose state id is below what it has already sent.
+                    min_recv_id = max(self.prev_id + 1, max(s.min_recv_id for s in sync_sendervs))
 
                     tss                 = [s.ready[0] for s in sync_sendervs]
                     self.last_pair_skew = max(tss) - min(tss)
