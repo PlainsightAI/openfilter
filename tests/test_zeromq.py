@@ -1909,6 +1909,157 @@ class TestPairByTs(unittest.TestCase):
         with self.assertRaises(ValueError):
             ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', balance=True, pair_by_ts=True)
 
+    def test_a_negative_tolerance_is_rejected(self):
+        """A negative tolerance is truthy, so it would pass the "no gate" check and then ask for a batch whose
+        frames are LESS than a negative number apart, which no batch is. The join would deliver nothing, forever,
+        with nothing in the logs to say why. Rejected at construction instead, and rejected whatever `pair_by_ts`
+        resolves to, so a typo is found at startup and not on the day someone turns the pairing on.
+        """
+
+        with self.assertRaises(ValueError):
+            ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', pair_by_ts=True, pair_ts_tolerance=-0.001)
+
+        with self.assertRaises(ValueError):
+            ZMQReceiver(self.CLIENT1, 'client', pair_by_ts=False, pair_ts_tolerance=-1.0)
+
+        recvr = ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', pair_by_ts=True, pair_ts_tolerance=0)  # 0 is the no-gate default and stays legal
+
+        recvr.destroy()
+
+    # For the restart test below. Source B starts here in id space, far above anything source A reaches in a run
+    # this short, so B's counter is the one the delivered batch id follows and restarting B is what used to make
+    # that id fall off a cliff.
+    RESTART_SERVER1 = 'ipc://ipc_5576'
+    RESTART_SERVER2 = 'ipc://ipc_5578'
+    RESTART_FROM_ID = 5000
+    RESTART_AFTER   = 40     # frames source B publishes before it goes away and comes back
+    RESTART_RUN     = 6.0    # seconds
+
+    def test_the_state_msg_id_stays_monotonic_across_a_source_restart(self):
+        """A source that restarts gracefully must not drag the delivered batch id backwards.
+
+        `MSG_ID_CLOSE` resets the closing sender's `min_recv_id`. Without the flag that field is only ever an
+        ephemeral channel's older-message filter, so the reset is harmless and a synchronized source that comes
+        back is fast-forwarded by the next request against the shared barrier. Under `pair_by_ts` the same field
+        IS a synchronized source's barrier, so resetting it both stops the fast forward and drops the batch id
+        back to whatever the other sources are counting.
+
+        A falling batch id is not cosmetic. With `mq_msgid_sync` on it reaches `ZMQSender.send`, which returns
+        without publishing anything whose state id is below what it has already sent, so the filter keeps being
+        asked to `process()` and its output goes nowhere until the id climbs past the old value. Per-source
+        counters drift freely under this flag, so that can be a long time.
+        """
+
+        payload   = b'x' * 4096
+        interval  = 0.010
+        stop      = Event()
+        restarted = Event()
+        ids       = []
+        errors    = []
+
+        def pump_a(sendr):
+            try:
+                while not stop.is_set():
+                    t_cap = time_ns()
+
+                    sendr.send(lambda: {'main': [{'ts': t_cap / 1e9}, payload]}, timeout=200)
+                    sleep(interval)
+
+            except Exception as exc:  # noqa: BLE001  - reported by the assertions below rather than swallowed
+                errors.append(exc)
+
+        def pump_b():
+            """Source B, including its restart. Every socket operation on B happens in this one thread: a zmq
+            socket is not thread safe, and destroying one under an in-flight send from another thread is the
+            same problem wearing a hat.
+            """
+
+            sendr = ZMQSender(self.RESTART_SERVER2, 'server2')
+            sendr.min_send_id = self.RESTART_FROM_ID  # start high, so B is the source the batch id follows
+
+            try:
+                n = 0
+
+                while not stop.is_set():
+                    if n == self.RESTART_AFTER:
+                        sendr.destroy()  # sends MSG_ID_CLOSE, which is the whole point of this test
+
+                        sendr = ZMQSender(self.RESTART_SERVER2, 'server2')  # same address, counter back to 0
+
+                        restarted.set()
+
+                    t_cap = time_ns()
+
+                    sendr.send(lambda: {'othr': [{'ts': t_cap / 1e9}, payload]}, timeout=200)
+
+                    n += 1
+
+                    sleep(interval)
+
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+            finally:
+                sendr.destroy()
+
+        sendr1 = ZMQSender(self.RESTART_SERVER1, 'server1')
+
+        try:
+            recvr = ZMQReceiver([self.RESTART_SERVER1, self.RESTART_SERVER2], 'client', pair_by_ts=True)
+
+            try:
+                recvr.recv(timeout=0)  # prime the senders with a first request
+
+                sleep(0.2)
+
+                threads = [Thread(target=pump_a, args=(sendr1,), daemon=True), Thread(target=pump_b, daemon=True)]
+
+                for thread in threads:
+                    thread.start()
+
+                try:
+                    before = after = 0
+                    t_end  = time_ns() + int(self.RESTART_RUN * 1e9)
+
+                    while time_ns() < t_end:
+                        if (res := recvr.recv(timeout=100)) is None:
+                            continue
+
+                        ids.append(res[1].msg_id)
+
+                        if restarted.is_set():
+                            after += 1
+                        else:
+                            before += 1
+
+                finally:
+                    stop.set()
+
+                    for thread in threads:
+                        thread.join(3)
+
+            finally:
+                recvr.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        self.assertEqual(errors, [], f'a source thread raised: {errors}')
+        self.assertTrue(restarted.is_set(), 'source B never restarted, so this run measures nothing')
+
+        self.assertGreater(before, 10, f'only {before} batches before the restart, so this run measures nothing')
+        self.assertGreater(after, 10, f'only {after} batches after the restart, so this run measures nothing')
+
+        self.assertGreaterEqual(max(ids), self.RESTART_FROM_ID,
+            f'source B never set the batch id (max delivered {max(ids)}), so resetting B could not have shown '
+            f'up here anyway and this run measures nothing')
+
+        drops = [(ids[i - 1], ids[i]) for i in range(1, len(ids)) if ids[i] < ids[i - 1]]
+
+        self.assertEqual(drops, [],
+            f'the batch id went backwards across the restart, {len(drops)} time(s): {drops[:5]}, over '
+            f'{len(ids)} batches running {min(ids)} to {max(ids)}')
+
 
 class TestPairByTsSingleSource(unittest.TestCase):
     """The flag is a join setting, and a filter that sets it globally must not change on its single-source hops.
@@ -2095,22 +2246,29 @@ class TestJoinBarrierLivelock(unittest.TestCase):
 
         return max_gap, batches, sends
 
-    # Expected to fail while `sources_pair_by_ts` defaults off. That is the defect this class
-    # documents, not a flaky test. The day the default flips, unittest reports this as an
-    # unexpected success, which is the signal to delete the decorator.
-    @unittest.expectedFailure
-    def test_one_skipped_id_does_not_stop_the_join(self):
-        """Fails on the default join: it stops delivering at the skip and never recovers."""
+    def test_one_skipped_id_stops_the_default_join(self):
+        """The defect itself, asserted directly: the default join stops delivering at the skip and stays stopped.
+
+        This used to be the same assertion as the test below under `@unittest.expectedFailure`, which was not
+        worth much: `expectedFailure` counts ANY failure, so the test went on reporting "the livelock still
+        reproduces" if the precondition below broke, if a socket raised, or if the fixture stopped driving the
+        sources at all. Asserting the stall is what makes it a tripwire, the same way
+        `TestPairByTs.test_pairing_skew_is_large_without_it` is one.
+
+        Read it as a statement about the baseline, not as a requirement. If it ever fails it means the default
+        join got BETTER, which is the signal to delete this test and keep only the flag-on one below.
+        """
 
         max_gap, batches, sends = self._run()
 
         self.assertGreater(min(sends.values()), 20,
             f'the sources stopped publishing ({sends}), so this run measures nothing')
 
-        self.assertLess(max_gap, self.MAX_GAP,
-            f'{max_gap:.2f} s with no batch delivered after one source skipped a single message id, over a run '
-            f'of {self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
-            f'{batches}')
+        self.assertGreater(max_gap, self.MAX_GAP,
+            f'the default join went at most {max_gap:.2f} s without a batch after one source skipped a single '
+            f'message id, under the {self.MAX_GAP:.2f} s that counts as a stall, over a run of '
+            f'{self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
+            f'{batches}. The livelock no longer reproduces, so the test below no longer proves anything')
 
     def test_pair_by_ts_survives_one_skipped_id(self):
         """The same run with the flag on. Each source keeps its own barrier, so a skipped id costs one frame."""
