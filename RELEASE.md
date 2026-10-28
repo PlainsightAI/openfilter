@@ -4,6 +4,10 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Changed
+
+- Relax the `setuptools` pin from `~=83.0.0` to `>=83.0,<84.2` to allow setuptools 84.1.x.
+
 ## v1.5.2 - 2026-10-27
 
 ### Fixed
