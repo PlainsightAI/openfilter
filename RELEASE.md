@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.3 - 2026-10-28
+
 ### Added
 
 - **`sources_pair_by_ts`, off by default: pair the sources of a join by capture time instead of by
@@ -39,6 +41,22 @@ OpenFilter Library release notes
   `sources_balance`, where the sources are one stream split across workers and only one of them
   delivers per round. Env defaults `ZMQ_PAIR_BY_TS` and `ZMQ_PAIR_TS_TOLERANCE`, filter config
   `FILTER_SOURCES_PAIR_BY_TS` and `FILTER_SOURCES_TS_TOLERANCE`.
+
+### Fixed
+
+- **A join could stop delivering for good after one of its sources skipped a single message id.** The
+  receiver kept one `min_recv_id` barrier for every source, and the source that arrived last
+  invalidated the frames the others were already holding. `self.prev_id` only advances on a delivery,
+  so once two sources sat a fixed one id apart with the laggard landing after the barrier moved, no
+  batch ever completed and every later `recv()` restarted from the same stale barrier. A two camera
+  pipeline hit this four times in two hours, once for seventeen minutes, with the container reporting
+  healthy and `process()` never called. `sources_pair_by_ts` gives each source its own barrier and
+  removes the cross-source invalidation, which is what ends the cycle.
+
+  A regression test reproduces it deterministically: the default join fails it 20 times out of 20,
+  and passes 20 out of 20 with the flag on. Nothing else helps. `sources_low_latency`,
+  `sources_timeout`, and both together each measured 0 of 20, because the prefetch
+  `sources_low_latency` removes sits inside the delivery branch that a frozen join never reaches.
 
 ## v1.5.2 - 2026-10-27
 
