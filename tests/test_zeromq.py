@@ -1976,5 +1976,155 @@ class TestPairByTsSingleSource(unittest.TestCase):
         self._send_recv_120(pair_by_ts=True)
 
 
+class TestJoinBarrierLivelock(unittest.TestCase):
+    """A join that stops delivering for good after ONE of its sources skips a single message id.
+
+    This is the shape of the production freeze: a receiver joining two cameras delivered its last batch at id
+    28459 and then spent 17 minutes logging `received newer message id N than expected 28460` at 5 Hz, with both
+    cameras still publishing, `process()` never called and the pod still reporting healthy.
+
+    Three things have to be true at once, and all three are true of the production pipeline:
+
+      1. The sources are topic MAPPED (`addr;main>camA`), which is what two cameras that both publish 'main' have
+      to do to join. A mapped source gets `recvd_new` as a dict, so `Sender.new_recv()` hands back a dict of Nones
+      rather than None, so `process_msg` never takes its `recvd is None` first-message branch. Every message whose
+      id is not exactly the barrier therefore lands in the `else` branch, which invalidates the OTHER source's
+      held frame. Unmapped sources get `recvd = None` and the first message of each round initializes instead of
+      invalidating, which is why an unmapped fixture of the same shape does not reproduce this at all.
+
+      2. The two sources' published ids differ by one. One skipped id is enough, and the sender skips ids on its
+      own: the `downstream requested newer message id` path sets `min_send_id = prev_id + 1` without publishing
+      that id. A frame dropped at ZMQ_PUB_HWM does the same thing to the id sequence the receiver reads.
+
+      3. The receiver calls `recv()` with a timeout no longer than ZMQ_POLL_TIMEOUT, which is what `Filter`
+      does (`POLL_TIMEOUT_MS`, 100 ms). One such call issues exactly one request, and it is issued before any
+      message of that round is read, so it carries `min_recv_id - 1` computed from the STALE `self.prev_id`. That
+      is what keeps the sender-side fast forward from ever firing again and closing the gap: with a longer
+      timeout the receiver loops, re-requests with the climbed barrier, and the fast forward rescues the join.
+
+    From there it is self-sustaining. `min_recv_id` is a local, reset to `self.prev_id + 1` at the top of every
+    `recv()`, and `self.prev_id` only moves on a delivery, so every round re-runs from the same stale barrier:
+    source A's frame arrives and takes the barrier, source B's frame arrives one id higher and destroys A's, the
+    round ends with nothing to deliver, and the next round does it again forever.
+    """
+
+    SERVER1 = 'ipc://ipc_5580'
+    SERVER2 = 'ipc://ipc_5582'
+
+    INTERVAL   = 0.200   # both sources at 5 fps, the rate the cameras ran at
+    RECV_MS    = 100     # == ZMQ_POLL_TIMEOUT, == Filter's POLL_TIMEOUT_MS
+    SKIP_AFTER = 5       # source B skips one id on its 6th frame
+    DURATION   = 6.0
+    MAX_GAP    = 1.0     # five frame intervals without a batch is a stall, not jitter
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, **recvr_kwargs):
+        """Drive both sources, skip one id on B, and return (max seconds with no batch, batches, sends)."""
+
+        payload = b'x' * 4096
+        stop    = Event()
+        sends   = {'A': 0, 'B': 0}
+
+        def pump(sendr, name):
+            n = 0
+
+            while not stop.is_set():
+                t_cap = time_ns()
+
+                if name == 'B' and n == self.SKIP_AFTER:
+                    sendr.min_send_id += 1  # the id this source never publishes, exactly what a fast forward leaves behind
+
+                n += 1
+
+                if sendr.send(lambda: {'main': [{'ts': t_cap / 1e9}, payload]}, timeout=int(self.INTERVAL * 1000)) is not None:
+                    sends[name] += 1
+
+                if (left := self.INTERVAL - (time_ns() - t_cap) / 1e9) > 0:
+                    sleep(left)
+
+        sendr1 = ZMQSender(self.SERVER1, 'server1')
+
+        try:
+            sendr2 = ZMQSender(self.SERVER2, 'server2')
+
+            try:
+                recvr = ZMQReceiver([(self.SERVER1, [('main', 'camA')]), (self.SERVER2, [('main', 'camB')])],
+                    'client', **recvr_kwargs)
+
+                try:
+                    recvr.recv(timeout=0)  # prime the senders with a first request
+
+                    sleep(0.2)
+
+                    threads = [Thread(target=pump, args=(sendr1, 'A'), daemon=True),
+                               Thread(target=pump, args=(sendr2, 'B'), daemon=True)]
+
+                    for thread in threads:
+                        thread.start()
+
+                    try:
+                        batches  = 0
+                        t_end    = time_ns() + int(self.DURATION * 1e9)
+                        t_last   = time_ns()
+                        max_gap  = 0.0
+
+                        while time_ns() < t_end:
+                            if recvr.recv(timeout=self.RECV_MS) is not None:
+                                batches += 1
+                                max_gap  = max(max_gap, (time_ns() - t_last) / 1e9)
+                                t_last   = time_ns()
+
+                        max_gap = max(max_gap, (time_ns() - t_last) / 1e9)
+
+                    finally:
+                        stop.set()
+
+                        for thread in threads:
+                            thread.join(2)
+
+                finally:
+                    recvr.destroy()
+
+            finally:
+                sendr2.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        return max_gap, batches, sends
+
+    # Expected to fail while `sources_pair_by_ts` defaults off. That is the defect this class
+    # documents, not a flaky test. The day the default flips, unittest reports this as an
+    # unexpected success, which is the signal to delete the decorator.
+    @unittest.expectedFailure
+    def test_one_skipped_id_does_not_stop_the_join(self):
+        """Fails on the default join: it stops delivering at the skip and never recovers."""
+
+        max_gap, batches, sends = self._run()
+
+        self.assertGreater(min(sends.values()), 20,
+            f'the sources stopped publishing ({sends}), so this run measures nothing')
+
+        self.assertLess(max_gap, self.MAX_GAP,
+            f'{max_gap:.2f} s with no batch delivered after one source skipped a single message id, over a run '
+            f'of {self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
+            f'{batches}')
+
+    def test_pair_by_ts_survives_one_skipped_id(self):
+        """The same run with the flag on. Each source keeps its own barrier, so a skipped id costs one frame."""
+
+        max_gap, batches, sends = self._run(pair_by_ts=True)
+
+        self.assertGreater(min(sends.values()), 20,
+            f'the sources stopped publishing ({sends}), so this run measures nothing')
+
+        self.assertLess(max_gap, self.MAX_GAP,
+            f'{max_gap:.2f} s with no batch delivered after one source skipped a single message id, over a run '
+            f'of {self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
+            f'{batches}')
+
+
 if __name__ == '__main__':
     unittest.main()
