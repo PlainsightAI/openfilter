@@ -1157,7 +1157,7 @@ class ZMQReceiver:
                     msg_id     = env['mid']
                     topics     = env.get('topics')
                     msg        = [env.get('xtra'), *msg[2:]]
-                    t          = time_ns() // 1_000_000  # ns -> ms
+                    t_arrival  = time_ns() // 1_000_000  # ns -> ms, when this message got here, read by the pairing fallback far below
 
                     if msg_balanced := not sender_eph and env.get('bal', False):  # ephemeral channels do not transfer balanced message status
                         balanced = msg_balanced  # because we want 'bal' index if balanced pipeline longer than one filter
@@ -1276,11 +1276,11 @@ class ZMQReceiver:
                                 socks = None  # force poll again from scratch because there may be other senders that have been polled that have just been removed from checking
 
                     if not sender.subscribed_all and (diff := (sr := set(recvd)) - (st := set(topics))) and (not sender_eph or sr & st):
-                        for t in diff:
-                            if t != '-':  # special topic name '-' is treated as a topic that will never exist and is subscribed to only to create the connection, so we don't warn on it not being present
-                                once(logger.warning, f'subscribed topic {t!r} not in source topics {topics}', t=60*60)
+                        for missing in diff:  # deliberately not `t`: that name holds the arrival time this scope still needs below, and shadowing it here made the no-timestamp pairing fallback divide a topic name by 1000
+                            if missing != '-':  # special topic name '-' is treated as a topic that will never exist and is subscribed to only to create the connection, so we don't warn on it not being present
+                                once(logger.warning, f'subscribed topic {missing!r} not in source topics {topics}', t=60*60)
 
-                            del recvd[t]
+                            del recvd[missing]
 
                     if sender.got_all:
                         # Ephemeral senders are not paired and keep the behavior they have without the flag, which
@@ -1298,7 +1298,7 @@ class ZMQReceiver:
                             pair_t = pair_ts_of(recvd)
 
                             if pair_t is None:
-                                pair_t = t / 1000  # ms -> s. No timestamp on any topic of this set: the best estimate left is when it got here. See the pair_by_ts note in __init__
+                                pair_t = t_arrival / 1000  # ms -> s. No timestamp on any topic of this set: the best estimate left is when it got here. See the pair_by_ts note in __init__
                                 once(logger.warning, f'source {server_id} sends frames with no {PAIR_TS_KEY!r}, '
                                     f'pairing them by arrival time instead', t=60*60)
 

@@ -2127,6 +2127,102 @@ class TestPairByTsSingleSource(unittest.TestCase):
         self._send_recv_120(pair_by_ts=True)
 
 
+class TestPairByTsMappedTopicsWithoutTimestamps(unittest.TestCase):
+    """A topic-mapped join where one receiver subscribes to a topic its source does not publish.
+
+    Two things have to be true at once for this to bite. The receiver has to prune a subscribed topic that turned
+    out not to exist on the source, which is what the mapped-topic prune loop does, and the frames have to carry
+    no 'ts', which sends the pairing down its arrival-time fallback. Every non-image frame is in that second set.
+
+    The prune loop used to bind the missing topic name to `t`, which is the same name the arrival time of the
+    message is held under in that scope, so the fallback divided a topic name by 1000 and `recv()` raised
+    `TypeError: unsupported operand type(s) for /: 'str' and 'int'`. The flag off, the same setup delivers.
+    """
+
+    SERVER1 = 'ipc://ipc_5584'
+    SERVER2 = 'ipc://ipc_5586'
+    CLIENT1 = 'ipc://ipc_5584'
+    CLIENT2 = 'ipc://ipc_5586'
+
+    FRAMES = 20
+
+    # Same reason and the same hack as TestPairByTsSingleSource: a strictly lockstep send-then-recv loop never
+    # has a send and a recv running at once, so the connection handshake has no opportunity to complete.
+    @classmethod
+    def setUpClass(cls):
+        from openfilter.filter_runtime import zeromq
+
+        cls._handshake = zeromq.ZMQ_CONN_HANDSHAKE
+        zeromq.ZMQ_CONN_HANDSHAKE = False
+
+    @classmethod
+    def tearDownClass(cls):
+        from openfilter.filter_runtime import zeromq
+
+        zeromq.ZMQ_CONN_HANDSHAKE = cls._handshake
+
+    def tearDown(self):
+        gc.collect()
+
+    def _run(self, pair_by_ts):
+        """Return the batches delivered. Source 1 is subscribed to a topic it never publishes."""
+
+        batches = []
+        sendr1  = ZMQSender(self.SERVER1, 'server1')
+
+        try:
+            sendr2 = ZMQSender(self.SERVER2, 'server2')
+
+            try:
+                recvr = ZMQReceiver([
+                    (self.CLIENT1, [('main', 'camA'), ('extra', 'x')]),  # 'extra' is never published by server1
+                    (self.CLIENT2, [('main', 'camB')]),
+                ], 'client', pair_by_ts=pair_by_ts)
+
+                try:
+                    recvr.recv(timeout=0)  # prime both senders with a request
+
+                    sleep(0.2)
+
+                    for i in range(self.FRAMES):
+                        send(sendr1, {'main': [None, f'a-{i}'.encode()]}, timeout=1000)  # no 'ts' anywhere, which is every non-image frame
+                        send(sendr2, {'main': [None, f'b-{i}'.encode()]}, timeout=1000)
+
+                        if (res := recv(recvr, timeout=1000)) is not None:
+                            batches.append(res[0])
+
+                        sleep(0.01)
+
+                finally:
+                    recvr.destroy()
+
+            finally:
+                sendr2.destroy()
+
+        finally:
+            sendr1.destroy()
+
+        return batches
+
+    def test_a_subscribed_topic_the_source_does_not_publish_does_not_break_recv(self):
+        batches = self._run(pair_by_ts=True)
+
+        self.assertGreater(len(batches), 5, 'too few batches delivered to say anything')
+
+        for batch in batches:
+            self.assertEqual(sorted(batch), ['camA', 'camB'], 'a batch went out without both sources in it')
+
+    def test_the_same_setup_without_the_flag(self):
+        """The baseline the test above has to match. If this one ever fails the fixture itself is broken."""
+
+        batches = self._run(pair_by_ts=False)
+
+        self.assertGreater(len(batches), 5, 'too few batches delivered to say anything')
+
+        for batch in batches:
+            self.assertEqual(sorted(batch), ['camA', 'camB'], 'a batch went out without both sources in it')
+
+
 class TestJoinBarrierLivelock(unittest.TestCase):
     """A join that stops delivering for good after ONE of its sources skips a single message id.
 
