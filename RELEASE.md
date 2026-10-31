@@ -4,10 +4,84 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.3 - 2026-10-28
+
 ### Changed
 
 - Relax the `setuptools` pin from `~=83.0.0` to `>=83.0,<84.2` to allow setuptools 84.1.x.
 
+### Added
+
+- **`sources_pair_by_ts`, off by default: pair the sources of a join by capture time instead of by
+  message id.** A receiver joining several sources keeps one `min_recv_id` barrier for all of them
+  and decides that two frames belong together when their message ids match. Message ids are
+  per-source counters. Two cameras nominally at the same frame rate do not sample at exactly the
+  same rate, so the counters drift apart and keep drifting, and id equality stops implying time
+  equality.
+
+  The counter gap is not itself a time gap. A source with a lower id has taken fewer samples, which
+  on its own says nothing about when its latest frame was taken. What the drift costs is the only
+  key the join has, plus a second-order effect that does cost real time: the shared barrier is
+  dragged forward by whichever source leads, the lagging source's sender then fast-forwards its own
+  counter to match ("downstream requested newer message id"), and the leading source spends the
+  wait publishing into a subscriber queue nobody drains. `ZMQ_SUB_HWM` bounds how stale that gets;
+  it does not stop it happening.
+
+  With the flag on, every source gets its own barrier, every poll drains every source, and the
+  newest complete frame set from each is held in one slot. A batch is the newest frame every source
+  has. Capture time travels in the message envelope: `MQ.frames2topicmsgs` lifts `meta['ts']` into
+  the per-message `xtra` dict, which the sender already copies into the envelope the receiver
+  already parses, so the pairing costs no extra deserialization and frames with no image keep the
+  wire shape they had.
+
+  Measured on two file sources at 29.6 and 16.5 fps joined by one receiver, 60 s per config, as the
+  wall-clock distance between the two frames of a delivered batch: 272.9 ms p50 / 287.3 ms p95 over
+  4191 batches by default, against 1.0 ms p50 / 2.8 ms p95 over 15044 batches with the flag on.
+  Single source is untouched: the flag resolves to off below two synchronized sources, so the
+  original code path runs unchanged.
+
+  `sources_ts_tolerance` (seconds, default 0 meaning no gate) refuses a batch whose frames are
+  further apart than that and keeps waiting, bounded by `sources_timeout`. The refusal is not
+  bounded: if the sources' clocks sit further apart than the tolerance, nothing is delivered for as
+  long as that holds. The batch is still refused rather than let through, because setting a
+  tolerance is a statement that a wider pair is wrong for that pipeline, but the receiver logs a
+  rate-limited warning naming the measured spread and the configured tolerance, so an operator can
+  tell this apart from a stall. A value below zero is
+  rejected at construction: it is truthy, so it would read as a gate and then ask for a spread
+  smaller than a negative number, which no batch has, and the join would deliver nothing at all.
+  `sources_pair_by_ts` is rejected together with `sources_balance`, where the sources are one stream
+  split across workers and only one of them delivers per round. Env defaults `ZMQ_PAIR_BY_TS` and `ZMQ_PAIR_TS_TOLERANCE`, filter config
+  `FILTER_SOURCES_PAIR_BY_TS` and `FILTER_SOURCES_TS_TOLERANCE`.
+
+### Known issues
+
+- **A join can stop delivering for good after one of its sources skips a single message id. Still
+  present on the default settings in this release.** Upgrading to v1.5.3 does not change it. The only
+  thing that avoids it is turning `sources_pair_by_ts` on, and that is off by default, so every join
+  that does not opt in behaves exactly as it did in v1.5.2.
+
+  The receiver keeps one `min_recv_id` barrier for every source, and the source that arrives last
+  invalidates the frames the others are already holding. `self.prev_id` only advances on a delivery,
+  so once two sources sit a fixed one id apart with the laggard landing after the barrier moved, no
+  batch ever completes and every later `recv()` restarts from the same stale barrier. A two camera
+  pipeline hit this four times in two hours, once for seventeen minutes, with the container reporting
+  healthy and `process()` never called.
+
+  `sources_pair_by_ts` gives each source its own barrier and removes the cross-source invalidation,
+  which is what ends the cycle. A regression test reproduces the stall deterministically on the
+  default join, 20 runs out of 20, and the same fixture passes 20 out of 20 with the flag on.
+  `tests/test_zeromq.py::TestJoinBarrierLivelock` asserts both, so the default's behavior is on
+  record rather than described.
+
+  Nothing else helps. `sources_low_latency`, `sources_timeout`, and both together each measured 0 of
+  20, because the prefetch `sources_low_latency` removes sits inside the delivery branch that a
+  frozen join never reaches. `sources_timeout` is worse than the hang rather than better: on expiry
+  the filter emits `frames={}` and keeps sending, so a health check watching the sender stays green
+  while nothing flows.
+
+  Whether the default should flip is open. It cannot simply be flipped as the flag stands, because
+  `pair_by_ts` together with `sources_balance` raises at construction, so auto-enabling would turn
+  working balanced pipelines into startup crashes; it would have to resolve to off for those instead.
 ## v1.5.2 - 2026-10-27
 
 ### Fixed
