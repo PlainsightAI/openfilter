@@ -92,15 +92,18 @@ Environment variables:
         with `balance`. See ZMQReceiver's `pair_by_ts` for what it changes and why.
 
     ZMQ_PAIR_TS_TOLERANCE: Seconds. With ZMQ_PAIR_BY_TS on, refuse to deliver a batch whose two furthest-apart frames
-        were taken more than this far apart, and keep waiting (bounded by the recv timeout) for one that is closer.
-        Default 0, meaning no gate: always deliver the newest frame held from every source, whatever the spread. A
-        value below zero is rejected at construction, it would gate every batch out and stall the join silently.
+        were taken more than this far apart, and keep waiting for one that is closer. The refusal is not bounded:
+        while the sources stay further apart than this, nothing is delivered, which the receiver logs rather than
+        overrides. Default 0, meaning no gate: always deliver the newest frame held from every source, whatever the
+        spread. A value that is negative or not finite is rejected at construction, either would gate every batch
+        out and stall the join.
 
     ZMQ_WARN_NEWER: Warn on newer messages than expected.
     ZMQ_WARN_OLDER: Warn on older messages than expected.
 """
 
 import logging
+from math import isfinite
 import os
 import re
 from json import dumps as json_dumps, loads as json_loads
@@ -860,8 +863,9 @@ class ZMQReceiver:
                 changes for anyone who does not ask for it. See the note below for what it does.
 
             pair_ts_tolerance: Seconds. With `pair_by_ts` on, do not deliver a batch whose furthest-apart frames
-                were taken more than this far apart; keep waiting instead, bounded by the recv timeout. 0 (the
-                default, from ZMQ_PAIR_TS_TOLERANCE) means no gate. Below zero raises, whatever `pair_by_ts` is.
+                were taken more than this far apart; keep waiting instead. 0 (the default, from
+                ZMQ_PAIR_TS_TOLERANCE) means no gate. A value that is negative or not finite raises, whatever
+                `pair_by_ts` is.
                 A refusal is not bounded: if the sources' clocks are further apart than this, nothing is ever
                 delivered. That is the gate doing what it was asked to do, so it is logged rather than overridden,
                 at most once every PAIR_SKEW_WARN_IVL_NS, naming the measured spread and this value.
@@ -954,8 +958,13 @@ class ZMQReceiver:
         # ZMQ_PAIR_TS_TOLERANCE or `sources_ts_tolerance` is found at startup and not on the day someone turns the
         # pairing on. Checked here, before the zmq context is taken and any socket opened, so a bad value costs
         # nothing to unwind.
-        if self.pair_ts_tol < 0:
-            raise ValueError(f'pair_ts_tolerance can not be negative, got {self.pair_ts_tol!r} seconds')
+        # nan and inf get the same treatment and for the same reason. `nan <= tol` is false for every
+        # batch, so nan refuses the whole join exactly as a negative value does, and the warning would
+        # print "nan s" as the thing to compare against. inf is a gate that can never refuse, which is
+        # what leaving the tolerance at 0 already means, said in a way that reads like a limit.
+        if not isfinite(self.pair_ts_tol) or self.pair_ts_tol < 0:
+            raise ValueError(f'pair_ts_tolerance must be a finite number of seconds and can not be '
+                             f'negative, got {self.pair_ts_tol!r}')
 
         context          = ZMQContext.get()
 
