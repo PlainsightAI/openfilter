@@ -7,6 +7,7 @@ import unittest
 from queue import Queue
 from random import randint
 from threading import Event, Thread
+from types import SimpleNamespace
 from time import sleep, time_ns
 
 import zmq
@@ -1909,6 +1910,25 @@ class TestPairByTs(unittest.TestCase):
         with self.assertRaises(ValueError):
             ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', balance=True, pair_by_ts=True)
 
+    def test_a_non_finite_tolerance_is_rejected(self):
+        """nan and inf pass a `< 0` check and then behave as two different kinds of broken gate.
+
+        `nan <= tol` is false for every batch, so a nan tolerance refuses the whole join exactly as a
+        negative one does, and the warning that explains the refusal would name "nan s" as the thing to
+        get under. An inf tolerance is a gate that can never refuse, which is what 0 already means, said
+        in a way that reads like a limit. Both are rejected at construction for the same reason the
+        negative one is: the alternative is a join that silently never delivers, or a setting that reads
+        as protection and is not.
+        """
+
+        for tol in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(tol=tol):
+                with self.assertRaises(ValueError):
+                    ZMQReceiver([self.CLIENT1, self.CLIENT2], 'client', pair_by_ts=True, pair_ts_tolerance=tol)
+
+                with self.assertRaises(ValueError):
+                    ZMQReceiver(self.CLIENT1, 'client', pair_by_ts=False, pair_ts_tolerance=tol)
+
     def test_a_negative_tolerance_is_rejected(self):
         """A negative tolerance is truthy, so it would pass the "no gate" check and then ask for a batch whose
         frames are LESS than a negative number apart, which no batch is. The join would deliver nothing, forever,
@@ -2369,12 +2389,19 @@ class TestJoinBarrierLivelock(unittest.TestCase):
     SKIP_AFTER = 5       # source B skips one id on its 6th frame
     DURATION   = 6.0
     MAX_GAP    = 1.0     # five frame intervals without a batch is a stall, not jitter
+    MIN_TAIL   = 3.0     # the livelock never recovers, so the hole runs to the end of the run
+    MIN_BATCH  = 20      # 5 fps over 6 s is about 30 batches; well under that is a join limping
 
     def tearDown(self):
         gc.collect()
 
     def _run(self, **recvr_kwargs):
-        """Drive both sources, skip one id on B, and return (max seconds with no batch, batches, sends)."""
+        """Drive both sources, skip one id on B, and report what the join delivered.
+
+        Returns batches, how many of them carried both sources, the gaps between consecutive batches,
+        the largest of those, the seconds from the last batch to the end of the run, and what each
+        source published.
+        """
 
         payload = b'x' * 4096
         stop    = Event()
@@ -2418,18 +2445,22 @@ class TestJoinBarrierLivelock(unittest.TestCase):
                         thread.start()
 
                     try:
-                        batches  = 0
                         t_end    = time_ns() + int(self.DURATION * 1e9)
-                        t_last   = time_ns()
-                        max_gap  = 0.0
+                        t_batch  = []   # when each batch was delivered
+                        complete = 0    # batches carrying a frame from BOTH sources
 
                         while time_ns() < t_end:
-                            if recvr.recv(timeout=self.RECV_MS) is not None:
-                                batches += 1
-                                max_gap  = max(max_gap, (time_ns() - t_last) / 1e9)
-                                t_last   = time_ns()
+                            if (res := recvr.recv(timeout=self.RECV_MS)) is not None:
+                                t_batch.append(time_ns())
 
-                        max_gap = max(max_gap, (time_ns() - t_last) / 1e9)
+                                if {'camA', 'camB'} <= set(res[0]):
+                                    complete += 1
+
+                        # Gaps BETWEEN batches only, so a slow start is not read as a stall, and the tail
+                        # separately, because the livelock is a hole that never closes rather than a wide
+                        # gap somewhere in the middle.
+                        gaps = [(b - a) / 1e9 for a, b in zip(t_batch, t_batch[1:])]
+                        tail = (t_end - t_batch[-1]) / 1e9 if t_batch else self.DURATION
 
                     finally:
                         stop.set()
@@ -2446,7 +2477,8 @@ class TestJoinBarrierLivelock(unittest.TestCase):
         finally:
             sendr1.destroy()
 
-        return max_gap, batches, sends
+        return SimpleNamespace(batches=len(t_batch), complete=complete, gaps=gaps,
+                               max_gap=max(gaps, default=0.0), tail=tail, sends=sends)
 
     def test_one_skipped_id_stops_the_default_join(self):
         """The defect itself, asserted directly: the default join stops delivering at the skip and stays stopped.
@@ -2461,29 +2493,45 @@ class TestJoinBarrierLivelock(unittest.TestCase):
         join got BETTER, which is the signal to delete this test and keep only the flag-on one below.
         """
 
-        max_gap, batches, sends = self._run()
+        r = self._run()
 
-        self.assertGreater(min(sends.values()), 20,
-            f'the sources stopped publishing ({sends}), so this run measures nothing')
+        self.assertGreater(min(r.sends.values()), 20,
+            f'the sources stopped publishing ({r.sends}), so this run measures nothing')
 
-        self.assertGreater(max_gap, self.MAX_GAP,
-            f'the default join went at most {max_gap:.2f} s without a batch after one source skipped a single '
-            f'message id, under the {self.MAX_GAP:.2f} s that counts as a stall, over a run of '
-            f'{self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
-            f'{batches}. The livelock no longer reproduces, so the test below no longer proves anything')
+        # The hole has to be the TAIL. A wide gap anywhere would also be produced by a slow start or
+        # by one scheduling hiccup, and neither of those is this defect.
+        self.assertGreater(r.tail, self.MIN_TAIL,
+            f'the default join last delivered {r.tail:.2f} s before the end of a {self.DURATION:.0f} s run, '
+            f'under the {self.MIN_TAIL:.2f} s that says it stopped for good. The sources published {r.sends} '
+            f'and the join delivered {r.batches} batches. The livelock no longer reproduces, so the test '
+            f'below no longer proves anything')
 
     def test_pair_by_ts_survives_one_skipped_id(self):
         """The same run with the flag on. Each source keeps its own barrier, so a skipped id costs one frame."""
 
-        max_gap, batches, sends = self._run(pair_by_ts=True)
+        r = self._run(pair_by_ts=True)
 
-        self.assertGreater(min(sends.values()), 20,
-            f'the sources stopped publishing ({sends}), so this run measures nothing')
+        self.assertGreater(min(r.sends.values()), 20,
+            f'the sources stopped publishing ({r.sends}), so this run measures nothing')
 
-        self.assertLess(max_gap, self.MAX_GAP,
-            f'{max_gap:.2f} s with no batch delivered after one source skipped a single message id, over a run '
-            f'of {self.DURATION:.0f} s in which the sources published {sends} frames and the join delivered '
-            f'{batches}')
+        # Three separate claims. A join delivering one batch a second and otherwise stuck satisfies the
+        # gap bound on its own, and a join delivering only one source satisfies both.
+        self.assertGreaterEqual(r.batches, self.MIN_BATCH,
+            f'the join delivered {r.batches} batches over {self.DURATION:.0f} s from sources that published '
+            f'{r.sends}, under the {self.MIN_BATCH} a 5 fps pair should produce')
+
+        self.assertEqual(r.complete, r.batches,
+            f'{r.batches - r.complete} of {r.batches} batches were missing camA or camB, so the join is '
+            f'delivering one source rather than pairing two')
+
+        self.assertLess(r.max_gap, self.MAX_GAP,
+            f'{r.max_gap:.2f} s between two consecutive batches after one source skipped a single message id, '
+            f'over a run of {self.DURATION:.0f} s in which the sources published {r.sends} and the join '
+            f'delivered {r.batches}')
+
+        self.assertLess(r.tail, self.MAX_GAP,
+            f'the join last delivered {r.tail:.2f} s before the end of the run, so it stopped rather than '
+            f'kept pace ({r.batches} batches from {r.sends})')
 
 
 if __name__ == '__main__':

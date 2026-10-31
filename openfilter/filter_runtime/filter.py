@@ -559,9 +559,12 @@ class Filter:
 
         sources_ts_tolerance:
             Seconds. With `sources_pair_by_ts` on, refuse a batch whose furthest-apart frames were taken more than
-            this far apart and keep waiting, bounded by `sources_timeout`, for a closer one. Default 0, no gate:
-            always deliver the newest frame held from every source. A value below zero is rejected at startup, it
-            would gate out every batch and stall the join silently. Global env var default ZMQ_PAIR_TS_TOLERANCE.
+            this far apart, and keep waiting for a closer one. The refusal is not bounded: while the sources stay
+            further apart than this, nothing is delivered at all, and the receiver says so in a rate-limited
+            warning naming the measured spread. `sources_timeout` does not rescue it; that emits an empty frame
+            set on expiry rather than a closer pair. Default 0, no gate: always deliver the newest frame held
+            from every source. A value that is negative or not finite is rejected at startup, since either would
+            gate out every batch and stall the join. Global env var default ZMQ_PAIR_TS_TOLERANCE.
 
         outputs:
             Where other filters will connect to get their data, e.g. "tcp://127.0.0.1", "tcp://*:5552", "ipc://name".
