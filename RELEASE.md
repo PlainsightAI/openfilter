@@ -6,6 +6,10 @@ OpenFilter Library release notes
 
 ## v1.5.3 - 2026-10-28
 
+### Changed
+
+- Relax the `setuptools` pin from `~=83.0.0` to `>=83.0,<84.2` to allow setuptools 84.1.x.
+
 ### Added
 
 - **`sources_pair_by_ts`, off by default: pair the sources of a join by capture time instead of by
@@ -78,7 +82,6 @@ OpenFilter Library release notes
   Whether the default should flip is open. It cannot simply be flipped as the flag stands, because
   `pair_by_ts` together with `sources_balance` raises at construction, so auto-enabling would turn
   working balanced pipelines into startup crashes; it would have to resolve to off for those instead.
-
 ## v1.5.2 - 2026-10-27
 
 ### Fixed
