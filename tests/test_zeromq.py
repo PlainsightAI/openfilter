@@ -2498,6 +2498,20 @@ class TestJoinBarrierLivelock(unittest.TestCase):
         self.assertGreater(min(r.sends.values()), 20,
             f'the sources stopped publishing ({r.sends}), so this run measures nothing')
 
+        # The stall has to START, which means the join delivered before it stopped. With no batch at all
+        # `tail` falls back to DURATION and passes the check below, so a join that never delivers anything
+        # for some unrelated reason, a broken topic map say, would read as this defect. The default join
+        # delivers up to the skip: SKIP_AFTER batches in the runs measured here, every one of them with
+        # both sources, so assert the floor rather than the exact count, which is timing.
+        self.assertGreater(r.batches, 0,
+            f'the default join delivered nothing at all over {self.DURATION:.0f} s from sources that '
+            f'published {r.sends}. This test is about a join that stops AFTER the skip, so a join that '
+            f'never started is a broken fixture, not the livelock')
+
+        self.assertEqual(r.complete, r.batches,
+            f'{r.batches - r.complete} of the {r.batches} batches delivered before the stall were missing '
+            f'camA or camB, so the join was not pairing two sources even before the skipped id')
+
         # The hole has to be the TAIL. A wide gap anywhere would also be produced by a slow start or
         # by one scheduling hiccup, and neither of those is this defect.
         self.assertGreater(r.tail, self.MIN_TAIL,
