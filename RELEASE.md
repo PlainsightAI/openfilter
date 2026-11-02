@@ -41,14 +41,18 @@ OpenFilter Library release notes
   original code path runs unchanged.
 
   `sources_ts_tolerance` (seconds, default 0 meaning no gate) refuses a batch whose frames are
-  further apart than that and keeps waiting, bounded by `sources_timeout`. The refusal is not
-  bounded: if the sources' clocks sit further apart than the tolerance, nothing is delivered for as
-  long as that holds. The batch is still refused rather than let through, because setting a
+  further apart than that and keeps waiting for a closer one. The refusal is not bounded, and
+  `sources_timeout` does not bound it either: that emits an empty frame set on expiry rather than a
+  closer pair. If the sources' clocks sit further apart than the tolerance, nothing is delivered for
+  as long as that holds. The batch is still refused rather than let through, because setting a
   tolerance is a statement that a wider pair is wrong for that pipeline, but the receiver logs a
   rate-limited warning naming the measured spread and the configured tolerance, so an operator can
-  tell this apart from a stall. A value below zero is
-  rejected at construction: it is truthy, so it would read as a gate and then ask for a spread
-  smaller than a negative number, which no batch has, and the join would deliver nothing at all.
+  tell this apart from a stall. A value below zero is rejected at construction: it is truthy, so it
+  would read as a gate and then ask for a spread smaller than a negative number, which no batch has,
+  and the join would deliver nothing at all. `nan` and `inf` are rejected there too: `nan` refuses
+  every batch the same way a negative value does, and the warning would name `nan s` as the thing to
+  get under, while `inf` is a gate that can never refuse, which is what leaving the tolerance at 0
+  already says.
   `sources_pair_by_ts` is rejected together with `sources_balance`, where the sources are one stream
   split across workers and only one of them delivers per round. Env defaults `ZMQ_PAIR_BY_TS` and `ZMQ_PAIR_TS_TOLERANCE`, filter config
   `FILTER_SOURCES_PAIR_BY_TS` and `FILTER_SOURCES_TS_TOLERANCE`.
@@ -79,9 +83,20 @@ OpenFilter Library release notes
   the filter emits `frames={}` and keeps sending, so a health check watching the sender stays green
   while nothing flows.
 
+  Capping both sources at the same rate with `VideoIn`'s `maxfps` does not avoid it either, at 5 fps
+  or at any other rate. On a live source `maxfps` drops reads before publish, so each source's
+  message ids stay contiguous, and the counters stay per source with each reader pacing on its own
+  clock. Once any single id is skipped, by the fast forward in `ZMQSender.send` or by a drop at
+  `ZMQ_PUB_HWM`, two sources incrementing at the same rate stay exactly one id apart from then on.
+  That is the steady state the barrier cannot leave, not a transient, and it is the shape
+  `TestJoinBarrierLivelock` drives: both sources at 200 ms, then one skipped id. What remains with
+  `sources_pair_by_ts` on is the floor on pairing the newest frame from each source, about half the
+  slower source's period, 100 ms at 5 fps. Neither this change nor matched `maxfps` buffers past it.
+
   Whether the default should flip is open. It cannot simply be flipped as the flag stands, because
   `pair_by_ts` together with `sources_balance` raises at construction, so auto-enabling would turn
   working balanced pipelines into startup crashes; it would have to resolve to off for those instead.
+
 ## v1.5.2 - 2026-10-27
 
 ### Fixed
