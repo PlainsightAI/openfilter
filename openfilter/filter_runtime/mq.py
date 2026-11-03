@@ -67,6 +67,8 @@ class MQ:
         *,
         srcs_balance:  bool = False,
         srcs_low_lat:  bool | None = None,
+        srcs_pair_ts:  bool | None = None,
+        srcs_ts_tol:   float | None = None,
         outs_balance:  bool = False,
         outs_required: list[str] | None = None,
         outs_jpg:      bool | None = None,
@@ -97,8 +99,8 @@ class MQ:
         on_exit_msg_       = (lambda m: None) if on_exit_msg is None else (lambda m: on_exit_msg(m[0]))
         self.sender        = ZMQSender(outs_bind, self.mq_id, on_exit_msg_, outs_balance, outs_required) \
             if outs_bind else None
-        self.receiver      = ZMQReceiver(srcs_n_topics, self.mq_id, on_exit_msg_, srcs_balance, srcs_low_lat) \
-            if srcs_n_topics else None
+        self.receiver      = ZMQReceiver(srcs_n_topics, self.mq_id, on_exit_msg_, srcs_balance, srcs_low_lat,
+            srcs_pair_ts, srcs_ts_tol) if srcs_n_topics else None
         self.outs_jpg      = OUTPUTS_JPG if outs_jpg is None else outs_jpg
         self.outs_metrics  = outs_metrics = OUTPUTS_METRICS if outs_metrics is None else outs_metrics
         self.outs_filter   = OUTPUTS_FILTER if outs_filter is None else outs_filter
@@ -412,6 +414,23 @@ class MQ:
         return frames
 
     @staticmethod
+    def _frame_ts(frame: Frame) -> float | None:
+        """Capture time of a frame in seconds, as video_in stamps it, or None if it has none.
+
+        Defensive on shape rather than on type: `frame.data` is arbitrary user JSON and a filter is free to put
+        something that is not a dict under 'meta', or a string under 'ts'. A bad shape means no timestamp, not an
+        exception on the send path.
+        """
+
+        if not isinstance(data := frame.data, dict):
+            return None
+
+        if not isinstance(meta := data.get('meta'), dict):
+            return None
+
+        return ts if isinstance(ts := meta.get('ts'), (int, float)) and not isinstance(ts, bool) else None
+
+    @staticmethod
     def frames2topicmsgs(frames: dict[str, Frame], outs_jpg: bool | None = None, *, pool: SHMPool | None = None) -> dict[str, ZMQMessage]:
         topicmsgs = {}
 
@@ -424,6 +443,15 @@ class MQ:
             else:
                 enc  = 'jpg' if (do_jpg := frame.has_jpg if outs_jpg is None else outs_jpg) else 'raw'  # preferentially send jpg if is already encoded
                 xtra = {'img': [frame.height, frame.width, frame.format, enc]}
+
+                # Lift the capture timestamp out of the data payload and into `xtra`, which the sender copies
+                # whole into the message envelope (`env['xtra'] = msg[0]` in ZMQSender.send). A receiver joining
+                # several sources can then read it while parsing the envelope it already parses, instead of
+                # deserializing the data part of every message just to find out when the frame was taken. See
+                # ZMQReceiver's pair_by_ts. Only image frames carry it: a frame with no image keeps `msg[0] = None`
+                # exactly as before, so nothing a reader of the old wire format looks at changes shape.
+                if (ts := MQ._frame_ts(frame)) is not None:
+                    xtra['ts'] = ts
 
                 if pool is not None and not do_jpg:
                     shm_name, shm_nbytes = pool.put(memoryview(frame.image).cast('B'))
@@ -443,7 +471,7 @@ class MQ:
 
         for topic, msg in topicmsgs.items():
             xtra_dict = msg[0]
-            xtra      = xtra_dict['img'] if xtra_dict else None
+            xtra      = xtra_dict.get('img') if xtra_dict else None  # .get: `xtra` now also carries 'ts', and a future key must not make this a KeyError
             shm_info  = xtra_dict.get('shm') if xtra_dict else None
 
             if shm_info is not None:
@@ -523,6 +551,8 @@ class MQReceiver(MQ):
         *,
         srcs_balance:  bool = False,
         srcs_low_lat:  bool | None = None,
+        srcs_pair_ts:  bool | None = None,
+        srcs_ts_tol:   float | None = None,
         on_exit_msg:   Callable[[str], None] | None = None,
         tracer:        "otel_trace.Tracer | None" = None,
     ):
@@ -532,6 +562,8 @@ class MQReceiver(MQ):
             mq_id         = mq_id,
             srcs_balance  = srcs_balance,
             srcs_low_lat  = srcs_low_lat,
+            srcs_pair_ts  = srcs_pair_ts,
+            srcs_ts_tol   = srcs_ts_tol,
             on_exit_msg   = on_exit_msg,
             tracer        = tracer,
         )

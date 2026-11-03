@@ -139,6 +139,8 @@ class FilterConfigBase(BaseSettings):
     sources_balance: bool | None = Managed(None)
     sources_timeout: int | None = Managed(None)
     sources_low_latency: bool | None = Managed(None)
+    sources_pair_by_ts: bool | None = Managed(None)
+    sources_ts_tolerance: float | None = Managed(None)
 
     outputs: str | list[str] | None = Managed(
         None, resolve="orchestrator-generated"
