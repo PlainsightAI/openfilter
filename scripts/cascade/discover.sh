@@ -34,7 +34,7 @@ is_excluded() {
     *-old|filter-template|\
     filter-mocktext|filter-timescaledb|filter-pytorch-model|\
     filter-florence|filter-pytorch|filter-facedetector|\
-    filter-nov-pilot|filter-tracking-reid)
+    filter-nov-pilot)
       return 0 ;;
   esac
   return 1
