@@ -86,11 +86,24 @@ Environment variables:
     ZMQ_LOW_LATENCY: If 'true'ish then favor lower latency over higher throughput. Will only help in some cases with
         the right properties. Really on things immediately downstream of VideoIn.
 
+    ZMQ_PAIR_BY_TS: If 'true'ish then a receiver joining two or more synchronized sources pairs their frames by the
+        capture timestamp each frame carries, instead of by the message id counter. Default false, which is the
+        historical behavior. Has no effect on a receiver with a single synchronized source, and is rejected together
+        with `balance`. See ZMQReceiver's `pair_by_ts` for what it changes and why.
+
+    ZMQ_PAIR_TS_TOLERANCE: Seconds. With ZMQ_PAIR_BY_TS on, refuse to deliver a batch whose two furthest-apart frames
+        were taken more than this far apart, and keep waiting for one that is closer. The refusal is not bounded:
+        while the sources stay further apart than this, nothing is delivered, which the receiver logs rather than
+        overrides. Default 0, meaning no gate: always deliver the newest frame held from every source, whatever the
+        spread. A value that is negative or not finite is rejected at construction, either would gate every batch
+        out and stall the join.
+
     ZMQ_WARN_NEWER: Warn on newer messages than expected.
     ZMQ_WARN_OLDER: Warn on older messages than expected.
 """
 
 import logging
+from math import isfinite
 import os
 import re
 from json import dumps as json_dumps, loads as json_loads
@@ -134,10 +147,15 @@ ZMQ_PUSH_HWM          = int(os.getenv('ZMQ_PUSH_HWM') or max(3, min(100, ZMQ_CON
 ZMQ_PUB_HWM           = int(os.getenv('ZMQ_PUB_HWM') or 20)           # will start dropping after this many messages are backed up, low because messages are expected to be large and we don't want latency building up. The unit is whole multipart messages and not parts: a PUSH at SNDHWM 20 whose peer is not reading accepts exactly 20 four-part messages before it refuses the next, measured, so this is 20 frames and not 5
 ZMQ_SUB_HWM           = int(os.getenv('ZMQ_SUB_HWM') or 4 * 2)        # messages a subscriber will queue on its side, 4 topics x 2 frames, one being worked on and one next, and it has to stay above the topic fan-out of any source because a sender publishes one message per topic per frame. Unit is whole multipart messages, same as ZMQ_PUB_HWM above. On a receiver that joins two sources this is the only cap that applies to the source nobody is draining: the receiver holds one barrier for all of them and the only discard path is sender-side and can only fire on the source BEHIND that barrier, so the source AHEAD publishes into a socket nobody reads and the frames it eventually delivers are as old as this queue is deep. libzmq defaults it to 1000, which at 5 fps is near a minute of stale frames. This caps the subscriber's share only: how stale an undrained source can get is this queue plus ZMQ_PUB_HWM plus whatever the kernel socket buffer holds, and that last one is bounded in bytes rather than in messages, so it hides more the smaller the frames are (SNDHWM 20 with RCVHWM 8, messages delivered before the first drop: 8 over IPC at 64 KB, 14 over TCP at 64 KB, 60 over TCP at 64 B, 120 over IPC at 64 B)
 ZMQ_LOW_LATENCY       = bool(json_getval((os.getenv('ZMQ_LOW_LATENCY') or 'false').lower()))
+ZMQ_PAIR_BY_TS        = bool(json_getval((os.getenv('ZMQ_PAIR_BY_TS') or 'false').lower()))  # pair multi-source frames by capture timestamp instead of by message id
+ZMQ_PAIR_TS_TOLERANCE = float(os.getenv('ZMQ_PAIR_TS_TOLERANCE') or 0)  # seconds, 0 for no gate
 ZMQ_WARN_NEWER        = bool(json_getval((os.getenv('ZMQ_WARN_NEWER') or 'true').lower()))
 ZMQ_WARN_OLDER        = bool(json_getval((os.getenv('ZMQ_WARN_OLDER') or 'true').lower()))
 
 EXIT_LINGER_RESERVE_MS = 1000  # of a stop's graceful budget, left to the teardown steps that follow send_exit_msg
+
+PAIR_TS_KEY           = 'ts'  # key under the per-message `xtra` dict holding capture time in seconds, written by MQ.frames2topicmsgs
+PAIR_SKEW_WARN_IVL_NS = 10 * 1_000_000_000  # at most one over-tolerance warning per receiver per this many nanoseconds, the refusal it reports repeats at the source frame rate
 
 MSG_ID_INITIAL        = 0
 MSG_ID_INITIAL_PREV   = -1
@@ -709,7 +727,8 @@ class ZMQReceiver:
             self.conn        = False  # if the server is "connected" or not
             self.server_id   = None
             self.unique_id   = rndstr(12, 64)  # unique id for connection because otherwise upstream has no way to differentiate between clients with same client_id on same requestor socket
-            self.min_recv_id = MSG_ID_INITIAL  # this is only used by ephemeral channels individually, synchronized channels have a shared global value
+            self.min_recv_id = MSG_ID_INITIAL  # last message id accepted from THIS sender. Used by ephemeral channels always, and by synchronized channels only under pair_by_ts, which gives every source its own barrier; otherwise synchronized channels share ZMQReceiver.recv's single `min_recv_id`
+            self.ready       = None  # pair_by_ts only: (ts, recvd) of the newest COMPLETE frame set from this sender that has not been delivered yet, or None. Depth one on purpose, see ZMQReceiver's pair_by_ts: an older complete set from the same source can never be the better pairing for anything that is still to come, so holding more than the newest would only add memory and staleness
             self.init_recvd  = lambda msg, topic, topics: {t: msg if t == topic else None for t in topics if not t.startswith('_')}  # subscribed to lowercase all so we don't include '_' prefix hidden topics
 
             if addr_connect.startswith('tcp://'):
@@ -820,6 +839,8 @@ class ZMQReceiver:
         message_oob:    Callable[[ZMQMessage], None] | None = None,
         balance:        bool = False,
         low_latency:    bool | None = None,
+        pair_by_ts:     bool | None = None,
+        pair_ts_tolerance: float | None = None,
     ):
         """Consumer of published messages (upon request) from possibly multiple publishers at multiple addresses.
 
@@ -836,6 +857,56 @@ class ZMQReceiver:
 
             low_latency: Low latency mode means that next message is NOT preemptively requested when current message is
                 received, leads to lower latency but also lower throughput.
+
+            pair_by_ts: Pair the frames of two or more synchronized sources by the capture timestamp they carry
+                instead of by the message id counter. Default (None) reads ZMQ_PAIR_BY_TS, which is off, so nothing
+                changes for anyone who does not ask for it. See the note below for what it does.
+
+            pair_ts_tolerance: Seconds. With `pair_by_ts` on, do not deliver a batch whose furthest-apart frames
+                were taken more than this far apart; keep waiting instead. 0 (the default, from
+                ZMQ_PAIR_TS_TOLERANCE) means no gate. A value that is negative or not finite raises, whatever
+                `pair_by_ts` is.
+                A refusal is not bounded: if the sources' clocks are further apart than this, nothing is ever
+                delivered. That is the gate doing what it was asked to do, so it is logged rather than overridden,
+                at most once every PAIR_SKEW_WARN_IVL_NS, naming the measured spread and this value.
+
+        Pairing by timestamp:
+
+            Message ids are PER-SOURCE counters. Two live cameras nominally at the same frame rate do not sample at
+            exactly the same rate, so their counters drift apart and keep drifting. The defect that causes is not
+            that the id gap IS a time gap, it is not: a source with a lower id has taken fewer samples, which says
+            nothing on its own about when its latest frame was taken. The defect is that id equality does not imply
+            time equality, so the one key the default join has for deciding that two frames belong together stops
+            meaning anything.
+
+            What the default join actually does with the drift is worse than mispairing. The barrier is shared, so
+            the LEADING source drags it forward; the lagging source's sender then sees a request for an id above
+            what it is sending, fast-forwards its own counter (see ZMQSender.send, 'downstream requested newer
+            message id'), and the two are nominally back in step. Meanwhile the leading source has been publishing
+            into a subscriber queue that nobody drains, because the receiver will not take a second frame from it
+            until the barrier moves, and the frame it eventually delivers from that source is as old as the queue
+            is deep. ZMQ_SUB_HWM exists to bound exactly that.
+
+            `pair_by_ts` replaces the one shared barrier with a per-source one, so no source can drag another's
+            counter, and every poll drains every source, keeping only the newest COMPLETE frame set from each in
+            `Sender.ready`. A batch goes out when every synchronized source holds one, and it is made of the newest
+            frame each source has. Depth one is not a simplification: timestamps rise within a source, so the newest
+            held frame is always the closest to the newest frame seen anywhere, and an older one could never be the
+            better choice for a batch that has not gone out yet.
+
+            Grouping the topics WITHIN one source stays by message id, which is exact there (one send() stamps one
+            id across all its topics) and must stay exact, since one video_in with several topics reads each of them
+            at its own instant and so stamps them with different timestamps.
+
+            A frame with no timestamp (any producer that does not populate meta['ts'], or a non-image frame, which
+            does not carry the field at all) is treated as having been taken when it was received. That keeps the
+            all-sources-present contract rather than stalling, degrades to the arrival-order pairing the id barrier
+            was already giving, and warns once an hour naming the source.
+
+            Not available with `balance`, which is the opposite situation: there the sources are one stream split
+            across workers, exactly one of them delivers per round, and there is no pairing to do. Construction
+            raises. Ignored, with an info line, on a receiver with a single synchronized source, so a filter that
+            turns it on globally does not change behavior on the single-source hops of its own pipeline.
 
         Notes:
             * An address can have a trailing '?' character which will not be considered part of the address but will
@@ -854,6 +925,10 @@ class ZMQReceiver:
         self.message_oob = (lambda m: None) if message_oob is None else message_oob
         self.balance     = balance
         self.low_latency = ZMQ_LOW_LATENCY if low_latency is None else low_latency
+        self.pair_by_ts  = ZMQ_PAIR_BY_TS if pair_by_ts is None else pair_by_ts
+        self.pair_ts_tol = ZMQ_PAIR_TS_TOLERANCE if pair_ts_tolerance is None else pair_ts_tolerance
+        self.last_pair_skew = None  # seconds between the furthest-apart frames of the last batch delivered under pair_by_ts, for whoever wants to meter it
+        self.last_skew_warn_ns = 0  # rate limit for the over-tolerance warning in recv(), 0 so the first refusal is reported at once
         self.prev_id     = MSG_ID_INITIAL_PREV
         self.senders     = senders = {}
         # Telemetry handoff state, read by MQ.recv to retroactively stamp the
@@ -875,6 +950,22 @@ class ZMQReceiver:
         self.last_recv_bytes     = 0
         self.last_recv_t_start_ns = 0
         self.last_recv_t_end_ns   = 0
+
+        # A negative tolerance is truthy, so it would pass the `if not pair_ts_tol` gate in `pair_skew_ok` and then
+        # evaluate `max - min <= negative`, which is never true for any batch. The join would simply never deliver,
+        # and the over-tolerance warning would be the only clue, repeating a value no batch could ever satisfy.
+        # Rejected whatever `pair_by_ts` resolves to, so a typo in
+        # ZMQ_PAIR_TS_TOLERANCE or `sources_ts_tolerance` is found at startup and not on the day someone turns the
+        # pairing on. Checked here, before the zmq context is taken and any socket opened, so a bad value costs
+        # nothing to unwind.
+        # nan and inf get the same treatment and for the same reason. `nan <= tol` is false for every
+        # batch, so nan refuses the whole join exactly as a negative value does, and the warning would
+        # print "nan s" as the thing to compare against. inf is a gate that can never refuse, which is
+        # what leaving the tolerance at 0 already means, said in a way that reads like a limit.
+        if not isfinite(self.pair_ts_tol) or self.pair_ts_tol < 0:
+            raise ValueError(f'pair_ts_tolerance must be a finite number of seconds and can not be '
+                             f'negative, got {self.pair_ts_tol!r}')
+
         context          = ZMQContext.get()
 
         for addr_n_topics in [addrs_n_topics] if isinstance(addrs_n_topics, str) else addrs_n_topics:
@@ -884,6 +975,19 @@ class ZMQReceiver:
 
             if balance and sender.ephemeral:
                 raise ValueError(f"balanced sources can not be ephemeral '?' like {addr!r}")
+
+        if self.pair_by_ts and balance:
+            raise ValueError('balanced sources can not be paired by timestamp, exactly one of them delivers per round')
+
+        self.sync_senders = [s for s in senders.values() if not s.ephemeral]
+        # The flag is a receiver-wide setting but the behavior only exists for a join. Resolving it to False here,
+        # once, is what makes a single-source pipeline run the original code path byte for byte rather than a
+        # same-result-we-hope reimplementation of it.
+        self.pair_ts      = self.pair_by_ts and len(self.sync_senders) > 1
+
+        if self.pair_by_ts and not self.pair_ts:
+            logger.info(f'receiver {self.client_id}: pair_by_ts ignored, it needs two or more synchronized sources '
+                f'and this receiver has {len(self.sync_senders)}')
 
         self.new_recv()
 
@@ -917,7 +1021,33 @@ class ZMQReceiver:
         self.poller = poller = zmq.Poller()
 
         for sender in self.senders.values():
+            sender.ready = None
+
             sender.new_recv(poller=poller)
+
+    def _new_recv_pair_ts(self):
+        """End-of-batch reset for pair_by_ts. Deliberately NOT `new_recv`.
+
+        `new_recv` throws away every sender's partially assembled frame set. Under the shared barrier that is free,
+        because a batch only goes out when every synchronized sender is complete, so there is nothing partial to
+        lose. Under pair_by_ts it is not: sources are drained independently, so when a batch goes out a source can
+        easily hold some topics of its NEXT frame already. A sender does not resend, so dropping those topics would
+        leave that frame permanently incomplete and stall the source for good.
+
+        So: hand back the delivered sets, rebuild the poller (nothing is ever unregistered in this mode, but the
+        caller's contract is a fresh one), and leave `recvd` alone on the synchronized senders. Ephemeral senders
+        keep the old reset, which is the behavior they have today.
+        """
+
+        self.poller = poller = zmq.Poller()
+
+        for sender in self.senders.values():
+            if sender.ephemeral:
+                sender.new_recv(poller=poller)
+            else:
+                sender.ready = None
+
+                poller.register(sender.sub, zmq.POLLIN)
 
     def recv(self,
         state:   ZMQStateRecv | None = None,
@@ -947,9 +1077,12 @@ class ZMQReceiver:
         client_id   = self.client_id
         balance     = self.balance  # whether we are balancing incoming source messages
         balanced    = False         # whether any of the incoming source messages arrived balanced
-        min_recv_id = self.prev_id + 1 if state is None else state.msg_id
+        pair_ts     = self.pair_ts  # pair synchronized sources by capture timestamp, per-source barriers, see __init__
+        pair_ts_tol = self.pair_ts_tol
+        min_recv_id = self.prev_id + 1 if state is None else state.msg_id  # unused for synchronized senders under pair_ts, which barrier themselves
         senders     = self.senders
         sendervs    = senders.values()
+        sync_sendervs = self.sync_senders
         poller      = self.poller
 
         # Snapshot the tracing on/off state ONCE per recv() and use it to gate the
@@ -970,6 +1103,49 @@ class ZMQReceiver:
             self.last_recv_bytes      = 0
             self.last_recv_t_start_ns = 0
             self.last_recv_t_end_ns   = 0
+
+        def pair_ts_of(recvd: dict[str, ZMQMessage]) -> float | None:
+            """Capture time of a complete frame set, or None if no topic in it carries one.
+
+            The oldest of the set's topics, not the newest: a source publishing several topics read at different
+            instants is as current as its stalest part, and the pairing should be honest about that.
+            """
+
+            tss = [ts for msg in recvd.values()
+                if msg is not None and isinstance(xtra := msg[0], dict)
+                and isinstance(ts := xtra.get(PAIR_TS_KEY), (int, float)) and not isinstance(ts, bool)]
+
+            return min(tss) if tss else None
+
+        def pair_skew_ok() -> bool:
+            if not pair_ts_tol:
+                return True
+
+            tss  = [s.ready[0] for s in sync_sendervs]
+            skew = max(tss) - min(tss)
+
+            if skew <= pair_ts_tol:
+                return True
+
+            # Refusing a batch is silent by construction: the round simply goes on. That is fine while the skew is
+            # transient, and not fine at all when it is not, which is every case where the sources' clocks sit
+            # further apart than the tolerance. From outside, a join that refuses every batch looks exactly like
+            # the livelock this flag exists to avoid: the pod is healthy, the sources keep publishing, process()
+            # is never called. So say it, with both numbers, rate limited because the refusal repeats at the frame
+            # rate of the sources.
+            #
+            # The batch is still refused. A tolerance is the operator saying that a wider pair is wrong for this
+            # pipeline, and delivering one anyway to avoid a stall would trade a visible failure for a quiet
+            # incorrect one. Bounding the refusal instead (deliver after N in a row) is a real option, but it
+            # changes what downstream receives and belongs in its own change, not in a logging fix.
+            if (now := time_ns()) - self.last_skew_warn_ns >= PAIR_SKEW_WARN_IVL_NS:
+                self.last_skew_warn_ns = now
+
+                logger.warning(f'receiver {self.client_id}: no batch delivered, its sources are {skew:.3f} s apart '
+                    f'and pair_ts_tolerance is {pair_ts_tol:.3f} s. Nothing will be delivered for as long as that '
+                    f'holds: raise the tolerance, or bring the sources\' clocks together')
+
+            return False
 
         def recv_once(timeout) -> bool:  # got_all
             nonlocal balanced, min_recv_id
@@ -1018,7 +1194,7 @@ class ZMQReceiver:
                     msg_id     = env['mid']
                     topics     = env.get('topics')
                     msg        = [env.get('xtra'), *msg[2:]]
-                    t          = time_ns() // 1_000_000  # ns -> ms
+                    t_arrival  = time_ns() // 1_000_000  # ns -> ms, when this message got here, read by the pairing fallback far below
 
                     if msg_balanced := not sender_eph and env.get('bal', False):  # ephemeral channels do not transfer balanced message status
                         balanced = msg_balanced  # because we want 'bal' index if balanced pipeline longer than one filter
@@ -1042,7 +1218,23 @@ class ZMQReceiver:
                             self.message_oob(msg)
 
                         elif msg_id == MSG_ID_CLOSE:  # close message
-                            sender.min_recv_id = MSG_ID_INITIAL  # for ephemeral only, so that if sender restarts we don't get barrage of older message warnings
+                            if sender_eph or not pair_ts:
+                                sender.min_recv_id = MSG_ID_INITIAL  # for ephemeral only, so that if sender restarts we don't get barrage of older message warnings
+
+                            else:
+                                # Under pair_ts this field is a SYNCHRONIZED source's own barrier and not just an
+                                # ephemeral channel's warning filter, so the reset above would do real damage on a
+                                # graceful restart: the next request would carry the reset id, the restarted sender
+                                # would never be fast-forwarded and would start again from 0, the batch id (the max
+                                # over the sources) would fall back to whatever the other sources are counting, and
+                                # ZMQSender.send would then silently drop this filter's own output for as long as it
+                                # took that id to climb back. The shared-barrier path does not reset for a
+                                # synchronized sender either, which is exactly why it fast-forwards instead. Keep it.
+                                # Drop what this source had in flight, though, so no frame from before the restart
+                                # can be paired with one from after it.
+                                sender.ready = None
+
+                                sender.new_recv()
 
                             if sender.conn:
                                 logger.info(f'disconnected source: {server_id}  @ {sender.addr}  (close)')
@@ -1082,6 +1274,19 @@ class ZMQReceiver:
 
                         sender.min_recv_id = msg_id
 
+                    elif pair_ts:  # synchronized sender, barriered on its own id counter and paired on timestamp
+                        # `sender.min_recv_id` holds the last id accepted from THIS sender, so the next one is
+                        # expected to be exactly one higher. Anything above that means the source skipped, which is
+                        # worth the same warning the shared barrier gives, but now it can only ever be about that
+                        # one source: nothing another source does moves this barrier, which is the whole point.
+                        if msg_id > sender.min_recv_id + 1 and not msg_balanced and sender.min_recv_id != MSG_ID_INITIAL and ZMQ_WARN_NEWER:
+                            logger.warning(f'received newer message id {msg_id} than expected {sender.min_recv_id + 1} from {server_id}  ({topic})')
+
+                        if process_msg(sender.min_recv_id) is None:
+                            continue
+
+                        sender.min_recv_id = msg_id
+
                     else:  # synchronized sender
                         if msg_id > min_recv_id and not msg_balanced and min_recv_id != MSG_ID_INITIAL and ZMQ_WARN_NEWER:
                             logger.warning(f'received newer message id {msg_id} than expected {min_recv_id} from {server_id}  ({topic})')
@@ -1108,18 +1313,51 @@ class ZMQReceiver:
                                 socks = None  # force poll again from scratch because there may be other senders that have been polled that have just been removed from checking
 
                     if not sender.subscribed_all and (diff := (sr := set(recvd)) - (st := set(topics))) and (not sender_eph or sr & st):
-                        for t in diff:
-                            if t != '-':  # special topic name '-' is treated as a topic that will never exist and is subscribed to only to create the connection, so we don't warn on it not being present
-                                once(logger.warning, f'subscribed topic {t!r} not in source topics {topics}', t=60*60)
+                        for missing in diff:  # deliberately not `t`: that name holds the arrival time this scope still needs below, and shadowing it here made the no-timestamp pairing fallback divide a topic name by 1000
+                            if missing != '-':  # special topic name '-' is treated as a topic that will never exist and is subscribed to only to create the connection, so we don't warn on it not being present
+                                once(logger.warning, f'subscribed topic {missing!r} not in source topics {topics}', t=60*60)
 
-                            del recvd[t]
+                            del recvd[missing]
 
-                    if sender.got_all:  # unregister sender from polling if complete because we don't want newer messages
-                        poller.unregister(sender.sub)
+                    if sender.got_all:
+                        # Ephemeral senders are not paired and keep the behavior they have without the flag, which
+                        # includes being unregistered here: left registered, the first topic of their next frame
+                        # would replace this complete set with a partial one and `got == 'some'` would then hold the
+                        # whole batch back until that frame finished arriving.
+                        if not pair_ts or sender_eph:  # unregister sender from polling if complete because we don't want newer messages
+                            poller.unregister(sender.sub)
+
+                        else:
+                            # Hand the completed set to the pairing slot and keep polling this source. Keeping it
+                            # registered is what stops the leading source's frames going stale in the subscriber
+                            # queue while a slower source catches up: the queue is drained every poll and only the
+                            # newest set survives, instead of being left to age at whatever depth ZMQ_SUB_HWM allows.
+                            pair_t = pair_ts_of(recvd)
+
+                            if pair_t is None:
+                                pair_t = t_arrival / 1000  # ms -> s. No timestamp on any topic of this set: the best estimate left is when it got here. See the pair_by_ts note in __init__
+                                once(logger.warning, f'source {server_id} sends frames with no {PAIR_TS_KEY!r}, '
+                                    f'pairing them by arrival time instead', t=60*60)
+
+                            sender.ready = (pair_t, recvd)
+
+                            sender.new_recv()  # so the next message from this source starts a fresh set rather than being merged into the one just handed over. new_recv() and not `recvd = None`: for a topic-MAPPED sender a fresh set is a dict of Nones over the mapped topics, where `recvd is None` would send process_msg down its init_recvd branch, which rebuilds the set from the source's full published topic list and so waits forever for topics this receiver never subscribed to
 
                 # Return True condition is that all synchronized sender topics received and if any ephemeral senders
                 # then all the individual sender topics must have been received or none at all, no partials. Do not
                 # return if nothing received at all. Also return if a single channel from balaning received entirely.
+
+                if pair_ts:
+                    # Deliver when every synchronized source is holding a frame. A synchronized source part way
+                    # through its NEXT frame is normal here and must not hold the batch, which is why this cannot
+                    # reuse the partials rule below. The ephemeral rule is unchanged: all of an ephemeral source's
+                    # topics or none of them, never a partial.
+                    if all(s.ready is not None for s in sync_sendervs) \
+                            and not any(s.got == 'some' for s in sendervs if s.ephemeral) \
+                            and pair_skew_ok() and not poller.poll(0):
+                        return True
+
+                    continue
 
                 got_all_synced   = True   # should really be 'got_all_synced_or_sources_are_balanced' but that is too long
                 got_any_complete = False
@@ -1144,10 +1382,21 @@ class ZMQReceiver:
 
             return False  # should only get here due to timeout with negative return condition
 
-        def request(prev_id):
+        def request(prev_id, behind: int = 0):
+            """Ask every source for a frame.
+
+            `prev_id` is the shared barrier. Under pair_ts there is no shared barrier, so each synchronized source
+            is asked against its OWN last accepted id, offset by `behind` the same way the shared call is. That is
+            not a detail: asking a source for an id derived from a different source's counter is what makes
+            ZMQSender fast-forward its `min_send_id` ('downstream requested newer message id') and throw away its
+            own id space. With per-source ids that path cannot be reached by drift.
+            """
+
             msg_req = {'cid': client_id, 'mid': prev_id}
 
             for sender in sendervs:
+                msg_req['mid'] = sender.min_recv_id - behind if pair_ts and not sender.ephemeral else prev_id
+
                 if sender.ephemeral:
                     msg_req['eph'] = sender.ephemeral
                 elif 'eph' in msg_req:
@@ -1169,27 +1418,44 @@ class ZMQReceiver:
                 if not self.low_latency and balanced != 1:  # first receiver after load balancing split never prefetches because that can confuse splitter, TODO: fix that
                     request(min_recv_id)  # preemptively request the next expected frame before returning, sacrifices latency for throughput
 
+                if pair_ts:
+                    # There is no single id for a batch any more, by construction: every source kept its own
+                    # counter and they are not meant to agree. The highest one is the only choice that stays
+                    # monotonic, which is all `prev_id` and the handoff to the sender half (mq_msgid_sync) need
+                    # from it. Downstream of a timestamp join an id no longer identifies a moment, only an order.
+                    # Clamped against `self.prev_id` because the max over the sources is only monotonic while no
+                    # source's counter falls. One does on a graceful restart: that source begins again from 0 (its
+                    # barrier survives CLOSE now, so it is fast-forwarded, but the fast forward is not instant and
+                    # a source that was the one holding the max leaves the max to a lower counter in the meantime).
+                    # The id handed to the sender half must never fall, because ZMQSender.send discards without
+                    # publishing anything whose state id is below what it has already sent.
+                    min_recv_id = max(self.prev_id + 1, max(s.min_recv_id for s in sync_sendervs))
+
+                    tss                 = [s.ready[0] for s in sync_sendervs]
+                    self.last_pair_skew = max(tss) - min(tss)
+
                 self.prev_id = min_recv_id
                 data         = {}
 
                 for sender in sendervs:
                     topic_map = sender.topic_map
+                    recvd     = sender.ready[1] if pair_ts and not sender.ephemeral else sender.recvd
 
-                    for topic, frame in (recvd.items() if (recvd := sender.recvd) is not None else ()):
+                    for topic, frame in (recvd.items() if recvd is not None else ()):
                         if frame is not None:
                             if (topic := topic_map.get(topic, topic)) in data:
                                 raise RuntimeError(f'duplicate topic {topic!r} from: {sender.server_id}  @ {sender.addr}')
 
                             data[topic] = frame
 
-                self.new_recv()
+                self._new_recv_pair_ts() if pair_ts else self.new_recv()
 
                 if balance and not balanced:
                     once(logger.warning, f'balanced sources receiver received non-balanced message(s)', t=60*60)
 
                 return (data, ZMQStateSend(min_recv_id, balanced))
 
-            request(min_recv_id - 1)
+            request(min_recv_id - 1, 1)
 
             if timeout is None:
                 recv_once_timeout = ZMQ_POLL_TIMEOUT

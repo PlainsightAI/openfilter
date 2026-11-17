@@ -329,6 +329,8 @@ class FilterConfig(
     sources_balance: bool | None
     sources_timeout: int | None
     sources_low_latency: bool | None
+    sources_pair_by_ts: bool | None
+    sources_ts_tolerance: float | None
 
     outputs: str | list[str] | None
     outputs_balance: bool | None
@@ -545,6 +547,24 @@ class Filter:
             the pipeline when this filter comes back to request it, but in the case of sources which provikde data at
             the moment of the request (like video), this will increase the amount of time that has passed between frame
             generation and when you get it (higher latency). Global env var default ZMQ_LOW_LATENCY.
+
+        sources_pair_by_ts:
+            Only means anything on a filter joining two or more synchronized `sources`. Pair their frames by the
+            capture timestamp each frame carries (meta['ts'], stamped by video_in when it reads the frame) instead
+            of by the message id counter. Message ids are per-source counters that drift apart on sources sampling
+            at even slightly different rates, and equal ids then say nothing about equal time. Off by default, so
+            a pipeline that does not ask for it is unaffected. Ignored on a single-source filter; rejected together
+            with `sources_balance`, where the sources are one stream split across workers and only one of them
+            delivers per round. Global env var default ZMQ_PAIR_BY_TS.
+
+        sources_ts_tolerance:
+            Seconds. With `sources_pair_by_ts` on, refuse a batch whose furthest-apart frames were taken more than
+            this far apart, and keep waiting for a closer one. The refusal is not bounded: while the sources stay
+            further apart than this, nothing is delivered at all, and the receiver says so in a rate-limited
+            warning naming the measured spread. `sources_timeout` does not rescue it; that emits an empty frame
+            set on expiry rather than a closer pair. Default 0, no gate: always deliver the newest frame held
+            from every source. A value that is negative or not finite is rejected at startup, since either would
+            gate out every batch and stall the join. Global env var default ZMQ_PAIR_TS_TOLERANCE.
 
         outputs:
             Where other filters will connect to get their data, e.g. "tcp://127.0.0.1", "tcp://*:5552", "ipc://name".
@@ -2216,6 +2236,8 @@ class Filter:
             config.id,
             srcs_balance=bool(config.sources_balance),
             srcs_low_lat=None if (_ := config.sources_low_latency) is None else bool(_),
+            srcs_pair_ts=None if (_ := config.sources_pair_by_ts) is None else bool(_),
+            srcs_ts_tol=None if (_ := config.sources_ts_tolerance) is None else float(_),
             outs_balance=bool(config.outputs_balance),
             outs_required=config.outputs_required,
             outs_jpg=config.outputs_jpg,
