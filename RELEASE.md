@@ -4,6 +4,8 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+## v1.5.4 - 2026-11-23
+
 ### Changed
 
 - Bump the OpenTelemetry pins from `~=1.44.0` to `~=1.45.2` (and `opentelemetry-semantic-conventions`
@@ -16,6 +18,12 @@ OpenFilter Library release notes
 - `av` (the `video_out` extra): `~=18.1.1` on Python 3.11+, which bundles FFmpeg 8.1.3, and `~=17.1.0`
   kept on Python 3.10, which PyAV 18 dropped. Neither `av.open` nor `av.VideoFrame.from_ndarray`, the
   two calls `video_out` makes, changed in PyAV 18.
+
+### Internal
+
+Nothing here changes the published library or images.
+
+- Cap the `run-unit-tests` CI job at 30 minutes, so a hung test run fails instead of holding a runner for the 6-hour default (#196)
 
 ## v1.5.3 - 2026-11-17
 
