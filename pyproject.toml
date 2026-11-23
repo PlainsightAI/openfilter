@@ -29,22 +29,22 @@ dependencies = [
   # interpreter so 3.10-3.13 stay on 2.2.6 (unchanged) and only 3.14 pulls 2.3+.
   "numpy~=2.2.6; python_version < '3.14'",
   "numpy>=2.3.2,<3; python_version >= '3.14'",
-  "opencv-python-headless~=5.0.0.93",
+  "opencv-python-headless~=5.1.0.95",
   "psutil~=7.2.1",
   "pyzmq~=27.1.0",
   "openlineage-python~=1.51.0",
   "requests~=2.34.2",
   "scarf-sdk~=0.2.1",
-  "opentelemetry-api~=1.44.0",
+  "opentelemetry-api~=1.45.2",
   "opentelemetry-exporter-gcp-monitoring~=1.12.0a0",
-  "opentelemetry-exporter-otlp~=1.44.0",
-  "opentelemetry-exporter-otlp-proto-common~=1.44.0",
-  "opentelemetry-exporter-otlp-proto-grpc~=1.44.0",
-  "opentelemetry-exporter-otlp-proto-http~=1.44.0",
-  "opentelemetry-proto~=1.44.0",
+  "opentelemetry-exporter-otlp~=1.45.2",
+  "opentelemetry-exporter-otlp-proto-common~=1.45.2",
+  "opentelemetry-exporter-otlp-proto-grpc~=1.45.2",
+  "opentelemetry-exporter-otlp-proto-http~=1.45.2",
+  "opentelemetry-proto~=1.45.2",
   "opentelemetry-resourcedetector-gcp~=1.14.0",
-  "opentelemetry-sdk~=1.44.0",
-  "opentelemetry-semantic-conventions~=0.65b0",
+  "opentelemetry-sdk~=1.45.2",
+  "opentelemetry-semantic-conventions~=0.66b2",
 
   "pydantic~=2.13.4",
   "pydantic-settings~=2.6",
@@ -96,7 +96,7 @@ video = []
 
 video_in = ["boto3>=1.42.31"]
 
-video_out = ["av~=17.1.0"]
+video_out = ["av~=17.1.0; python_version < '3.11'", "av~=18.1.1; python_version >= '3.11'"]
 
 webvis = ["fastapi~=0.139.2", "uvicorn~=0.51.0"]
 
@@ -110,7 +110,8 @@ all = [
   "google-cloud-monitoring~=2.31.0",
   "google-cloud-storage~=3.13.0",
 
-  "av~=17.1.0",
+  "av~=17.1.0; python_version < '3.11'",
+  "av~=18.1.1; python_version >= '3.11'",
   "boto3>=1.42.31",
 ]
 

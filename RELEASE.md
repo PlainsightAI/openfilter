@@ -4,6 +4,19 @@ OpenFilter Library release notes
 
 ## [Unreleased]
 
+### Changed
+
+- Bump the OpenTelemetry pins from `~=1.44.0` to `~=1.45.2` (and `opentelemetry-semantic-conventions`
+  from `~=0.65b0` to `~=0.66b2`). 1.45.1 and 1.45.2 fix GHSA-xcq7-p3pf-p88h and GHSA-mf5v-w3w3-f6cg in
+  `opentelemetry-api`; with the old pin, a filter could not take that fix at all, because its own lock
+  cannot resolve past what openfilter allows.
+- Bump `opencv-python-headless` from `~=5.0.0.93` to `~=5.1.0.95`. 5.0.0.93 bundles FFmpeg 8.1.1; 5.1.0.95
+  bundles FFmpeg 9.0.2, which grype reports with no fixable FFmpeg advisories left (18 before). The
+  wheel is still abi3, so every supported Python takes it.
+- `av` (the `video_out` extra): `~=18.1.1` on Python 3.11+, which bundles FFmpeg 8.1.3, and `~=17.1.0`
+  kept on Python 3.10, which PyAV 18 dropped. Neither `av.open` nor `av.VideoFrame.from_ndarray`, the
+  two calls `video_out` makes, changed in PyAV 18.
+
 ## v1.5.3 - 2026-11-17
 
 ### Changed
